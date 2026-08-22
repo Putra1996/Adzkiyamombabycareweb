@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="id" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Adzkiya Mom Baby Care — Layanan Kesehatan Ibu & Anak Terpercaya</title>
+<meta name="description" content="Spa & treatment khusus ibu hamil, nifas, bayi, dan balita. Home service area Nusawungu, Cilacap. Bidan profesional bersertifikat.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Playfair+Display:wght@600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/css/style.css">
+<link rel="icon" href="/api/logo">
+</head>
+<body>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a href="/" class="brand">
+      <div class="brand-logo" id="brandLogoImg">
+        <img src="/api/logo" alt="Adzkiya" onerror="this.parentElement.innerHTML='🌸';this.parentElement.classList.add('fallback');" style="width:100%;height:100%;object-fit:contain;">
+      </div>
+      <div class="brand-text">
+        <span id="brandName">Adzkiya Mom Baby Care</span>
+        <small>Mom & Baby Care</small>
+      </div>
+    </a>
+    <button class="mobile-toggle" onclick="document.getElementById('navLinks').classList.toggle('open')">☰</button>
+    <div class="nav-links" id="navLinks">
+      <a href="#beranda" class="active">Beranda</a>
+      <a href="#layanan">Layanan</a>
+      <a href="#tentang">Tentang</a>
+      <a href="#testimoni">Testimoni</a>
+      <a href="/kalender.html">Kalender</a>
+      <a href="#kontak">Kontak</a>
+      <button class="theme-toggle" id="themeToggle" title="Toggle theme">🌙</button>
+      <a href="/reservasi.html" class="btn-nav">Reservasi</a>
+    </div>
+  </div>
+</nav>
+
+<!-- HERO -->
+<section class="hero" id="beranda">
+  <div class="hero-bg" id="heroBg"></div>
+  <div class="hero-inner">
+    <div>
+      <span class="eyebrow">✨ Home Service Nusawungu — Cilacap</span>
+      <h1>Sentuhan Lembut untuk <span>Bunda & Si Kecil</span></h1>
+      <p class="lead" id="heroTagline">Spa, massage, dan perawatan profesional khusus ibu hamil, nifas, bayi, balita & kids. Dipandu bidan tersertifikasi langsung ke rumah Anda.</p>
+      <div class="hero-ctas">
+        <a href="/reservasi.html" class="btn btn-primary">📅 Reservasi Sekarang</a>
+        <a href="https://wa.me/6285887018194?text=Halo%20Adzkiya%20Mom%20Baby%20Care%2C%20saya%20ingin%20bertanya" target="_blank" class="btn btn-wa">💬 Chat WhatsApp</a>
+      </div>
+      <div class="hero-stats">
+        <div><strong>40+</strong><span>Jenis Layanan</span></div>
+        <div><strong>100%</strong><span>Home Service</span></div>
+        <div><strong>CBME</strong><span>Bidan Bersertifikat</span></div>
+      </div>
+    </div>
+    <div class="hero-visual" id="heroVisual">
+      <div class="hero-blob"></div>
+      <div class="hero-logo-wrap" id="heroLogoWrap">
+        <img src="/api/logo" alt="Adzkiya" id="heroLogoImg" onerror="document.getElementById('heroLogoWrap').innerHTML='<div class=hero-emoji>🤱</div>'">
+      </div>
+      <div class="float-card fc1"><div class="ic" style="background:var(--pink-400)">💆</div>Mom Spa<br><small style="color:var(--text-soft);font-weight:500">Mulai 80rb</small></div>
+      <div class="float-card fc2"><div class="ic" style="background:var(--peach-300)">👶</div>Baby Treatment<br><small style="color:var(--text-soft);font-weight:500">Mulai 25rb</small></div>
+    </div>
+  </div>
+</section>
+
+<!-- FEATURES -->
+<section class="section">
+  <div class="container">
+    <div class="section-head">
+      <span class="section-eyebrow">Mengapa Memilih Kami</span>
+      <h2>Perawatan yang Bisa Dipercaya</h2>
+      <p>Dirancang dengan kelembutan, dijalankan dengan keahlian. Setiap sesi disesuaikan dengan kebutuhan ibu dan buah hati.</p>
+    </div>
+    <div class="features">
+      <div class="feature"><div class="icn">🏠</div><h3>Home Service</h3><p>Bidan datang langsung ke rumah, Bunda cukup rebahan dan menikmati perawatan.</p></div>
+      <div class="feature"><div class="icn">🎓</div><h3>Bidan Bersertifikat</h3><p>Ditangani A.Md. Keb., CBME (Certified Baby Massage Educator) yang berpengalaman.</p></div>
+      <div class="feature"><div class="icn">🌿</div><h3>Bahan Alami</h3><p>Menggunakan minyak & produk aman bagi ibu hamil, ibu menyusui, dan bayi.</p></div>
+      <div class="feature"><div class="icn">⏰</div><h3>Fleksibel</h3><p>Jadwal bisa disesuaikan dengan kenyamanan Bunda, termasuk akhir pekan.</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- SERVICES -->
+<section class="section" id="layanan">
+  <div class="container">
+    <div class="section-head">
+      <span class="section-eyebrow">Daftar Layanan</span>
+      <h2>Pilih Perawatan Favoritmu</h2>
+      <p>Mulai dari pijat ibu hamil sampai newborn care, semuanya tersedia di sini.</p>
+    </div>
+    <div class="cat-tabs" id="catTabs"></div>
+    <div class="service-grid" id="serviceGrid"></div>
+  </div>
+</section>
+
+<!-- ABOUT -->
+<section class="section" id="tentang">
+  <div class="container">
+    <div class="about-grid">
+      <div class="about-visual" id="aboutVisual">
+        <img src="/api/logo" alt="Adzkiya" onerror="this.parentElement.innerHTML='🌷'" style="width:65%;height:auto;object-fit:contain;">
+      </div>
+      <div class="about-content">
+        <span class="section-eyebrow">Tentang Adzkiya</span>
+        <h2>Mom & Baby Care Profesional di Nusawungu</h2>
+        <p>Adzkiya Mom Baby Care hadir untuk menemani perjalanan Bunda — sejak kehamilan, masa nifas, menyusui, hingga tumbuh kembang si kecil. Kami percaya setiap ibu berhak mendapat perawatan yang lembut, aman, dan profesional di lingkungan rumahnya sendiri.</p>
+        <p>Dengan layanan home service, kami siap melayani area <strong>Nusawungu, Cilacap</strong> dan sekitarnya.</p>
+        <div class="bidan-card">
+          <div class="bidan-avatar">👩‍⚕️</div>
+          <div>
+            <h4 id="practitionerName">Tasya Hanifah Pramesti</h4>
+            <div class="role">A.Md. Keb., CBME — Bidan Praktisi</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- TESTIMONI -->
+<section class="section" id="testimoni" style="background:linear-gradient(180deg, var(--pink-50) 0%, var(--bg) 100%);">
+  <div class="container">
+    <div class="section-head">
+      <span class="section-eyebrow">Apa Kata Bunda</span>
+      <h2>Testimoni Pelanggan</h2>
+      <p>Cerita nyata dari ibu-ibu yang sudah mempercayakan perawatan kepada kami.</p>
+    </div>
+    <div class="testi-grid" id="testiGrid">
+      <div style="text-align:center;color:var(--text-soft);grid-column:1/-1;padding:30px;">Memuat testimoni...</div>
+    </div>
+    <div style="text-align:center;margin-top:30px;">
+      <a id="gmapsBtn" href="https://maps.app.goo.gl/V5RcUDQbep3T5ryp7" target="_blank" rel="noopener" class="btn btn-primary">
+        ⭐ Lihat Semua Ulasan di Google Maps
+      </a>
+    </div>
+  </div>
+</section>
+
+<!-- CONTACT -->
+<section class="section" id="kontak">
+  <div class="container">
+    <div class="section-head">
+      <span class="section-eyebrow">Hubungi Kami</span>
+      <h2>Siap Melayani Bunda</h2>
+      <p>Hubungi kami untuk konsultasi gratis atau langsung lakukan reservasi.</p>
+    </div>
+    <div class="contact-grid">
+      <div class="contact-card"><div class="icn">📍</div><strong>Alamat</strong><span id="contactAddress">Dusun Klumprit Kulon No. 217, RT 1 RW 1 Klumprit, Nusawungu, Cilacap 53283</span></div>
+      <div class="contact-card"><div class="icn">📞</div><strong>WhatsApp</strong><span id="contactPhone"><a href="https://wa.me/6285887018194" target="_blank">085887018194</a></span></div>
+      <div class="contact-card"><div class="icn">🗺️</div><strong>Wilayah Layanan</strong><span id="contactArea">Nusawungu, Cilacap & sekitarnya</span></div>
+      <div class="contact-card"><div class="icn">🚗</div><strong>Jenis Layanan</strong><span>Home Service (Bidan ke rumah)</span></div>
+      <div class="contact-card" style="grid-column:span 2;">
+        <div class="icn">🕒</div><strong>Jam Operasional</strong>
+        <div id="hoursList" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:6px;margin-top:8px;width:100%;font-size:0.88rem;text-align:left;">Memuat...</div>
+      </div>
+      <div class="contact-card" style="grid-column:span 2;" id="socialContactCard" style="display:none;">
+        <div class="icn">🌐</div><strong>Media Sosial</strong>
+        <div id="socialContactList" style="display:flex;gap:10px;flex-wrap:wrap;margin-top:8px;justify-content:center;"></div>
+      </div>
+      <div class="contact-card" style="grid-column:span 2;" id="gmapsCard">
+        <div class="icn">📍</div><strong>Lokasi di Google Maps</strong>
+        <div id="gmapsWrap" style="width:100%;margin-top:10px;border-radius:14px;overflow:hidden;"></div>
+      </div>
+    </div>
+    <div style="text-align:center; margin-top:40px;">
+      <a href="/reservasi.html" class="btn btn-primary">📅 Reservasi Sekarang</a>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="footer-inner">
+    <div>
+      © 2026 <span id="footerBrand">Adzkiya Mom Baby Care</span> · Layanan Kesehatan Ibu & Anak Terpercaya
+      <div id="socialLinks" style="display:flex;gap:12px;margin-top:10px;flex-wrap:wrap;"></div>
+    </div>
+    <div><a href="/admin">Admin Login</a></div>
+  </div>
+</footer>
+
+<script src="/js/main.js"></script>
+<script>
+// Load business settings to update name/contact/hero
+fetch('/api/public-settings').then(r => r.json()).then(s => {
+  if (s.business_name) {
+    document.getElementById('brandName').textContent = s.business_name;
+    document.getElementById('footerBrand').textContent = s.business_name;
+    document.title = `${s.business_name} — ${s.tagline || ''}`;
+  }
+  if (s.tagline) document.getElementById('heroTagline').textContent = s.tagline;
+  if (s.address) document.getElementById('contactAddress').textContent = s.address;
+  if (s.phone) {
+    const intl = s.phone.replace(/[^\d]/g, '').replace(/^0/, '62');
+    document.getElementById('contactPhone').innerHTML = `<a href="https://wa.me/${intl}" target="_blank">${s.phone}</a>`;
+  }
+  if (s.area) document.getElementById('contactArea').textContent = s.area;
+  if (s.practitioner) document.getElementById('practitionerName').textContent = s.practitioner.split(',')[0];
+  if (s.has_hero) {
+    document.getElementById('heroBg').style.backgroundImage = `url(/api/hero)`;
+    document.getElementById('heroBg').classList.add('active');
+  }
+
+  // Testimoni
+  const tg = document.getElementById('testiGrid');
+  const list = Array.isArray(s.testimonials) ? s.testimonials : [];
+  if (tg) {
+    if (!list.length) {
+      tg.innerHTML = '<div style="text-align:center;color:var(--text-soft);grid-column:1/-1;padding:30px;">Belum ada testimoni.</div>';
+    } else {
+      tg.innerHTML = list.map(t => {
+        const stars = '★'.repeat(t.rating || 5) + '☆'.repeat(5 - (t.rating || 5));
+        const initial = (t.name || '?').trim().charAt(0).toUpperCase();
+        const safe = (str) => String(str || '').replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
+        return `
+          <div class="testi-card">
+            <div class="testi-head">
+              <div class="testi-avatar">${safe(initial)}</div>
+              <div>
+                <div class="testi-name">${safe(t.name)}</div>
+                <div class="testi-stars">${stars}</div>
+              </div>
+            </div>
+            <p class="testi-text">"${safe(t.text)}"</p>
+            <div class="testi-src">— ${safe(t.source || 'Google Maps')}</div>
+          </div>
+        `;
+      }).join('');
+    }
+  }
+  if (s.gmaps_url) {
+    const btn = document.getElementById('gmapsBtn');
+    if (btn) btn.href = s.gmaps_url;
+  }
+
+  // Jam Operasional
+  const hEl = document.getElementById('hoursList');
+  if (hEl && Array.isArray(s.hours) && s.hours.length) {
+    const todayIdx = (new Date().getDay() + 6) % 7; // 0=Senin
+    hEl.innerHTML = s.hours.map((h, i) => `
+      <div style="display:flex;justify-content:space-between;padding:6px 10px;border-radius:8px;${i === todayIdx ? 'background:var(--pink-100);font-weight:700;color:var(--pink-700);' : ''}">
+        <span>${h.day}${i === todayIdx ? ' (Hari ini)' : ''}</span>
+        <span>${h.closed ? '<em style="color:#c43050;">Tutup</em>' : `${h.open} – ${h.close}`}</span>
+      </div>
+    `).join('');
+  }
+
+  // Google Maps embed (or link card)
+  const gw = document.getElementById('gmapsWrap');
+  const gcard = document.getElementById('gmapsCard');
+  if (s.gmaps_embed && gw) {
+    // Sanitize: keep only iframe tag
+    const m = s.gmaps_embed.match(/<iframe[^>]*src=["']([^"']+)["'][^>]*><\/iframe>/i);
+    if (m) {
+      gw.innerHTML = `<iframe src="${m[1]}" style="width:100%;height:280px;border:0;" loading="lazy" referrerpolicy="no-referrer-when-downgrade"></iframe>`;
+    } else {
+      gw.innerHTML = s.gmaps_embed;
+    }
+  } else if (s.gmaps_url && gw) {
+    gw.innerHTML = `<a href="${s.gmaps_url}" target="_blank" rel="noopener" style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:30px;background:linear-gradient(135deg,#ffe2ed,#fff1e1);border-radius:14px;text-decoration:none;color:var(--pink-700);font-weight:700;">🗺️ Buka di Google Maps →</a>`;
+  } else if (gcard) {
+    gcard.style.display = 'none';
+  }
+
+  // Socials (footer + contact)
+  const socials = Array.isArray(s.socials) ? s.socials.filter(x => x && x.url) : [];
+  // Auto-add IG legacy field if present and not duplicated
+  if (s.instagram && !socials.find(x => /instagram/i.test(x.platform))) {
+    let url = s.instagram.trim();
+    if (!/^https?:\/\//i.test(url)) url = 'https://instagram.com/' + url.replace(/^@/, '');
+    socials.unshift({ platform: 'Instagram', icon: '📷', url });
+  }
+  const footerSocial = document.getElementById('socialLinks');
+  const contactSocial = document.getElementById('socialContactList');
+  const contactCard = document.getElementById('socialContactCard');
+  if (socials.length) {
+    const html = socials.map(soc => {
+      const icon = soc.icon || '🌐';
+      const url = soc.url.startsWith('http') ? soc.url : 'https://' + soc.url;
+      return `<a href="${url}" target="_blank" rel="noopener" title="${soc.platform}" style="display:inline-flex;align-items:center;gap:6px;padding:8px 14px;background:var(--pink-100);color:var(--pink-700);border-radius:999px;text-decoration:none;font-weight:700;font-size:0.88rem;transition:all .15s;">${icon} ${soc.platform}</a>`;
+    }).join('');
+    if (footerSocial) footerSocial.innerHTML = html;
+    if (contactSocial) contactSocial.innerHTML = html;
+    if (contactCard) contactCard.style.display = '';
+  } else {
+    if (contactCard) contactCard.style.display = 'none';
+  }
+});
+</script>
+</body>
+</html>

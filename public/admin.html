@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="id" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Admin — Adzkiya Mom Baby Care</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/css/style.css">
+<link rel="icon" href="/api/logo">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+</head>
+<body>
+
+<!-- LOGIN VIEW -->
+<div id="loginView" class="admin-login-bg" style="display:none;">
+  <div class="admin-login-card">
+    <div class="brand" style="justify-content:center;margin-bottom:20px;">
+      <div class="brand-logo"><img src="/api/logo" alt="" onerror="this.parentElement.innerHTML='🌸';this.parentElement.classList.add('fallback');" style="width:100%;height:100%;object-fit:contain;"></div>
+      <div class="brand-text">Adzkiya Mom Baby Care<small>Admin Panel</small></div>
+    </div>
+    <h2>Selamat Datang</h2>
+    <p class="sub">Masuk untuk mengelola reservasi & dashboard</p>
+    <div id="loginAlert"></div>
+    <form id="loginForm">
+      <div class="form-group">
+        <label>📧 Email</label>
+        <input type="email" name="email" required autocomplete="off" placeholder="masukkan email admin">
+      </div>
+      <div class="form-group">
+        <label>🔒 Password</label>
+        <input type="password" name="password" required autocomplete="off" placeholder="masukkan password">
+      </div>
+      <button type="submit" class="btn btn-primary" style="width:100%;justify-content:center;">Masuk →</button>
+    </form>
+  </div>
+</div>
+
+<!-- DASHBOARD VIEW -->
+<div id="appView" style="display:none;">
+<div class="admin-layout">
+  <aside class="admin-sidebar">
+    <div class="brand">
+      <div class="brand-logo"><img src="/api/logo" alt="" onerror="this.parentElement.innerHTML='🌸';this.parentElement.classList.add('fallback');" style="width:100%;height:100%;object-fit:contain;"></div>
+      <div class="brand-text">Adzkiya<small>Admin Panel</small></div>
+    </div>
+    <nav>
+      <button class="active" data-page="dashboard">📊 Dashboard</button>
+      <button data-page="reservations">📅 Reservasi</button>
+      <button data-page="notifications" style="position:relative;">🔔 Notifikasi<span id="navNotifBadge" class="nav-badge" style="display:none;">0</span></button>
+      <button data-page="calendar">🗓️ Kalender</button>
+      <button data-page="receipts">🧾 Kwitansi</button>
+      <button data-page="recap">📈 Rekap Bulanan</button>
+      <button data-page="backup">💾 Backup/Restore</button>
+      <button data-page="settings">⚙️ Pengaturan</button>
+    </nav>
+    <div style="margin-top:30px;padding:0 8px;">
+      <button class="theme-toggle" id="themeToggle" style="margin-bottom:10px;">🌙</button>
+      <button onclick="logout()" class="btn-sm btn-del" style="width:100%;padding:10px;">🚪 Logout</button>
+    </div>
+  </aside>
+  <main class="admin-main">
+    <div id="pageContent"></div>
+  </main>
+</div>
+</div>
+
+<!-- Modal Container -->
+<div id="modalRoot"></div>
+
+<!-- Toast Container -->
+<div id="toastRoot" style="position:fixed;top:20px;right:20px;z-index:9999;display:flex;flex-direction:column;gap:10px;max-width:380px;"></div>
+
+<script src="/js/main.js"></script>
+<script src="/js/admin.js"></script>
+</body>
+</html>
