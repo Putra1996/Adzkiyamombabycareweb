@@ -257,6 +257,8 @@ footer { padding: 40px 24px; background: var(--card); border-top: 1px solid var(
 .cal-cell .ev { font-size: 0.7rem; padding: 2px 4px; border-radius: 4px; background: var(--pink-100); color: var(--primary); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* ---------- ADMIN ---------- */
+.link-button { background: none; border: 0; padding: 0; color: var(--pink-600); font: inherit; font-weight: 700; text-decoration: underline; cursor: pointer; }
+.link-button:hover { color: var(--pink-700); }
 .admin-layout { display: grid; grid-template-columns: 240px 1fr; min-height: 100vh; }
 .admin-sidebar { background: var(--card); border-right: 1px solid var(--border); padding: 24px 16px; position: sticky; top: 0; height: 100vh; overflow-y: auto; }
 .admin-sidebar .brand { margin-bottom: 32px; padding: 0 8px; }

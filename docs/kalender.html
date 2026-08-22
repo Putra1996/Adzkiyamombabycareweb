@@ -15,8 +15,8 @@
 <nav class="nav">
   <div class="nav-inner">
     <a href="index.html" class="brand">
-      <div class="brand-logo">🌸</div>
-      <div class="brand-text">Adzkiya Mom Baby Care<small>Mom & Baby Care</small></div>
+      <div class="brand-logo" id="calendarBrandLogo">🌸</div>
+      <div class="brand-text"><span id="calendarBrandName">Adzkiya Mom Baby Care</span><small>Mom & Baby Care</small></div>
     </a>
     <button class="mobile-toggle" onclick="document.getElementById('navLinks').classList.toggle('open')">☰</button>
     <div class="nav-links" id="navLinks">
@@ -62,28 +62,44 @@
 
 <footer>
   <div class="footer-inner">
-    <div>© 2026 Adzkiya Mom Baby Care</div>
+    <div>© 2026 <span id="calendarFooterBrand">Adzkiya Mom Baby Care</span></div>
   </div>
 </footer>
 
+<script src="js/api-config.js"></script>
 <script src="js/main.js"></script>
 <script>
 var viewDate = new Date();
 var events = [];
 
-// In the static version, the calendar is empty.
-// Events would be managed through the admin panel (server.js).
+function applyCalendarSettings(settings) {
+  if (settings.business_name) {
+    document.getElementById('calendarBrandName').textContent = settings.business_name;
+    document.getElementById('calendarFooterBrand').textContent = settings.business_name;
+  }
+  if (settings.has_logo) {
+    document.getElementById('calendarBrandLogo').innerHTML = '<img src="' + publicApiUrl('/api/logo') + '" alt="" style="width:100%;height:100%;object-fit:contain;">';
+  }
+}
+applyCalendarSettings(SETTINGS_DATA);
+window.addEventListener('adzkiya:settings', function(event) { applyCalendarSettings(event.detail); });
+
 function loadEvents() {
-  // Try loading from local data file if available
-  fetch('data/calendar.json')
-    .then(function(r) { return r.json(); })
+  fetch(publicApiUrl('/api/calendar'))
+    .then(function(response) {
+      if (!response.ok) throw new Error(response.statusText);
+      return response.json();
+    })
     .then(function(data) {
-      events = data;
+      events = Array.isArray(data) ? data : [];
       renderCalendar();
     })
-    .catch(function() {
-      // If no data file, show empty calendar
-      renderCalendar();
+    .catch(function(error) {
+      console.warn('Kalender live tidak tersedia; mencoba data fallback.', error);
+      fetch('data/calendar.json')
+        .then(function(response) { return response.ok ? response.json() : []; })
+        .then(function(data) { events = Array.isArray(data) ? data : []; renderCalendar(); })
+        .catch(function() { events = []; renderCalendar(); });
     });
 }
 

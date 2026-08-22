@@ -1,5 +1,7 @@
-// Public site shared JS — Static version for GitHub Pages
+// Public site shared JS — live API with embedded fallback data for GitHub Pages.
 const fmtRp = (n) => 'Rp ' + (n || 0).toLocaleString('id-ID');
+const PUBLIC_API_BASE = String(window.ADZKIYA_API_BASE || '').replace(/\/$/, '');
+const publicApiUrl = (path) => `${PUBLIC_API_BASE}${path.startsWith('/') ? path : `/${path}`}`;
 
 // Embedded services data (from server.js SERVICES)
 const SERVICES_DATA = [
@@ -184,25 +186,27 @@ function initTheme() {
   }
 }
 
-// Load services and render (static version)
-function loadServices() {
+// Render fallback immediately, then replace it with the server catalog when available.
+function renderServices(cats) {
   const grid = document.getElementById('serviceGrid');
   const tabs = document.getElementById('catTabs');
-  if (!grid) return;
-  const cats = SERVICES_DATA;
-  // tabs
+  if (!grid || !tabs) return;
+  grid.innerHTML = '';
+  tabs.innerHTML = '';
+
   const allBtn = document.createElement('button');
   allBtn.className = 'cat-tab active';
   allBtn.textContent = 'Semua';
   allBtn.dataset.cat = 'all';
   tabs.appendChild(allBtn);
   cats.forEach(c => {
-    const b = document.createElement('button');
-    b.className = 'cat-tab';
-    b.textContent = c.cat;
-    b.dataset.cat = c.cat;
-    tabs.appendChild(b);
+    const button = document.createElement('button');
+    button.className = 'cat-tab';
+    button.textContent = c.cat;
+    button.dataset.cat = c.cat;
+    tabs.appendChild(button);
   });
+
   const renderGrid = (filter) => {
     grid.innerHTML = '';
     cats.forEach(c => {
@@ -221,13 +225,37 @@ function loadServices() {
     });
   };
   renderGrid('all');
-  tabs.querySelectorAll('.cat-tab').forEach(t => {
-    t.onclick = () => {
-      tabs.querySelectorAll('.cat-tab').forEach(x => x.classList.remove('active'));
-      t.classList.add('active');
-      renderGrid(t.dataset.cat);
+  tabs.querySelectorAll('.cat-tab').forEach(tab => {
+    tab.onclick = () => {
+      tabs.querySelectorAll('.cat-tab').forEach(item => item.classList.remove('active'));
+      tab.classList.add('active');
+      renderGrid(tab.dataset.cat);
     };
   });
+}
+
+async function loadServices() {
+  renderServices(SERVICES_DATA);
+  try {
+    const response = await fetch(publicApiUrl('/api/services'));
+    if (!response.ok) throw new Error(response.statusText);
+    const liveServices = await response.json();
+    if (Array.isArray(liveServices) && liveServices.length) renderServices(liveServices);
+  } catch (error) {
+    console.warn('Katalog live tidak tersedia; memakai data fallback.', error);
+  }
+}
+
+async function loadPublicSettings() {
+  try {
+    const response = await fetch(publicApiUrl('/api/public-settings'));
+    if (!response.ok) throw new Error(response.statusText);
+    const liveSettings = await response.json();
+    Object.assign(SETTINGS_DATA, liveSettings);
+    window.dispatchEvent(new CustomEvent('adzkiya:settings', { detail: SETTINGS_DATA }));
+  } catch (error) {
+    console.warn('Pengaturan live tidak tersedia; memakai data fallback.', error);
+  }
 }
 
 function goReserve(name, price) {
@@ -242,4 +270,5 @@ function goReserve(name, price) {
 document.addEventListener('DOMContentLoaded', () => {
   initTheme();
   loadServices();
+  loadPublicSettings();
 });

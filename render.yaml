@@ -1,0 +1,34 @@
+services:
+  - type: web
+    name: adzkiya-mom-baby-care-api-putra1996
+    runtime: node
+    region: singapore
+    plan: starter
+    buildCommand: npm ci --omit=dev
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: adzkiya-mom-baby-care-db
+          property: connectionString
+      - key: JWT_SECRET
+        generateValue: true
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: ADMIN_NAME
+        value: Tasya Hanifah
+      - key: ALLOWED_ORIGINS
+        value: https://putra1996.github.io
+
+databases:
+  - name: adzkiya-mom-baby-care-db
+    databaseName: adzkiya_mom_baby_care
+    user: adzkiya_app
+    region: singapore
+    plan: basic-256mb
+    ipAllowList: []

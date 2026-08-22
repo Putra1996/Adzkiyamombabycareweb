@@ -1,129 +1,125 @@
-# 🚀 Panduan Deploy ke GitHub Pages
+# Deployment Adzkiya Mom & Baby Care
 
-Website Adzkiya Mom Baby Care sudah dikonversi menjadi **static site** agar bisa di-deploy di GitHub Pages.
+Aplikasi memakai arsitektur terpisah:
 
-## 📁 Struktur File untuk GitHub Pages
+- **Frontend publik + admin:** GitHub Pages dari folder `docs/`
+- **API:** Node.js/Express di Render
+- **Database:** PostgreSQL terkelola di Render
 
-Semua file static ada di folder `docs/`:
-```
-docs/
-├── index.html          # Halaman utama
-├── reservasi.html      # Form reservasi (kirim via WhatsApp)
-├── kalender.html       # Kalender treatment
-├── 404.html            # Halaman error
-├── css/style.css       # Styling
-├── js/main.js          # JavaScript + data embedded
-├── img/logo.png        # Logo
-└── data/calendar.json  # Data kalender (JSON)
-```
+URL produksi yang diharapkan:
 
-## 🌐 Cara Deploy ke GitHub Pages
+- Website: <https://putra1996.github.io/Adzkiyamombabycareweb/>
+- Admin: <https://putra1996.github.io/Adzkiyamombabycareweb/admin.html>
+- API: <https://adzkiya-mom-baby-care-api-putra1996.onrender.com>
+- Health check: <https://adzkiya-mom-baby-care-api-putra1996.onrender.com/health>
 
-### Opsi 1: Deploy via Settings (Paling Mudah)
+> Admin GitHub Pages tidak menyimpan data sendiri. Login, reservasi, kalender, bukti pembayaran, kwitansi, pengaturan, backup, dan rekap semuanya memakai API dan database yang sama.
 
-1. Buka repository di GitHub: `https://github.com/Putra1996/Adzkiyamombabycareweb`
-2. Masuk ke **Settings** → **Pages**
-3. Pada bagian **Source**, pilih:
-   - **Branch:** `main` (atau `arena/01a02a42-adzkiyamombabycareweb`)
-   - **Folder:** `/docs`
-4. Klik **Save**
-5. Tunggu beberapa menit, website akan live di:
-   `https://putra1996.github.io/Adzkiyamombabycareweb/`
+## 1. Deploy frontend di GitHub Pages
 
-### Opsi 2: Deploy via GitHub Actions (Otomatis)
+1. Merge perubahan ke branch `main`.
+2. Buka repository **Settings → Pages**.
+3. Pilih **Deploy from a branch**.
+4. Pilih branch **main** dan folder **/docs**.
+5. Simpan dan tunggu deployment Pages selesai.
 
-1. Merge branch ini ke `main`
-2. Tambahkan file `.github/workflows/deploy.yml`:
+Folder `docs/` sudah berisi `admin.html` dan konfigurasi API di `docs/js/api-config.js`.
 
-```yaml
-name: Deploy to GitHub Pages
+Jika Render memberikan hostname yang berbeda, ubah satu baris berikut lalu deploy ulang Pages:
 
-on:
-  push:
-    branches: ["main"]
-  workflow_dispatch:
-
-permissions:
-  contents: read
-  pages: write
-  id-token: write
-
-concurrency:
-  group: "pages"
-  cancel-in-progress: false
-
-jobs:
-  deploy:
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Setup Pages
-        uses: actions/configure-pages@v5
-      - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: './docs'
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
+```js
+window.ADZKIYA_API_BASE = 'https://HOSTNAME-API.onrender.com';
 ```
 
-3. Push ke GitHub, dan deployment akan berjalan otomatis.
+## 2. Provision API dan PostgreSQL di Render
 
-## 🔄 Cara Update Data
+File `render.yaml` adalah Render Blueprint yang membuat:
 
-Jika ada perubahan data (layanan, testimoni, jam operasional, dll):
+- satu Node web service di region Singapore;
+- satu PostgreSQL database terkelola di region Singapore;
+- `DATABASE_URL` yang terhubung otomatis;
+- `JWT_SECRET` yang dibuat otomatis oleh Render;
+- health check `/health`;
+- CORS yang hanya mengizinkan origin GitHub Pages.
 
-1. Edit file `data.json` di root repository
-2. Jalankan build script:
-   ```bash
-   node build-gh-pages.js
-   ```
-3. Commit dan push perubahan:
-   ```bash
-   git add docs/ data.json
-   git commit -m "update: perbarui data layanan"
-   git push
-   ```
+Buka Blueprint untuk repository ini:
 
-## ⚠️ Perbedaan dengan Versi Server
+<https://render.com/deploy?repo=https://github.com/Putra1996/Adzkiyamombabycareweb>
 
-Karena ini versi **static** (tanpa backend), ada beberapa perbedaan:
+Kemudian:
 
-| Fitur | Versi Server | Versi GitHub Pages |
-|-------|-------------|-------------------|
-| Reservasi | Disimpan di database | Dikirim via WhatsApp |
-| Admin Panel | Tersedia | Tidak tersedia |
-| Kalender | Otomatis dari database | Manual (edit `data/calendar.json`) |
-| Upload Bukti | Tersedia | Tidak tersedia |
-| Testimoni | Editable via admin | Edit via `data.json` |
+1. Hubungkan akun GitHub jika diminta.
+2. Pastikan Blueprint menggunakan branch `main` yang sudah berisi perubahan ini.
+3. Isi secret yang diminta:
+   - `ADMIN_EMAIL` — email login admin;
+   - `ADMIN_PASSWORD` — password awal minimal 12 karakter.
+4. Periksa biaya yang ditampilkan Render.
+5. Klik **Apply/Deploy Blueprint**.
+6. Tunggu database dan web service berstatus **Live**.
+7. Buka endpoint `/health`; respons yang benar berbentuk:
 
-## 💬 Reservasi via WhatsApp
+```json
+{"ok":true,"storage":"postgres"}
+```
 
-Form reservasi sekarang mengirim data langsung ke WhatsApp admin (`085887018194`). Pesan yang dikirim berisi:
-- Nama pasien
-- Nomor WhatsApp
-- Alamat
-- Daftar layanan + harga
-- Jadwal yang diinginkan
-- Metode pembayaran
-- Total estimasi
-- Catatan tambahan
+Blueprint memakai web plan `starter` dan PostgreSQL plan `basic-256mb`. Database berbayar dipilih agar data produksi persisten; database gratis/temporer tidak cocok untuk penyimpanan reservasi jangka panjang.
 
-Admin cukup konfirmasi langsung via WhatsApp, tanpa perlu login ke panel admin.
+## 3. Login pertama
 
-## 📝 Custom Domain (Opsional)
+Buka:
 
-Jika ingin menggunakan domain sendiri (misalnya `adzkiya.com`):
+<https://putra1996.github.io/Adzkiyamombabycareweb/admin.html>
 
-1. Di GitHub: **Settings** → **Pages** → **Custom domain**
-2. Masukkan domain Anda
-3. Update DNS record domain ke GitHub Pages IP:
-   - `185.199.108.153`
-   - `185.199.109.153`
-   - `185.199.110.153`
-   - `185.199.111.153`
+Masuk dengan `ADMIN_EMAIL` dan `ADMIN_PASSWORD` yang diisi di Render. Kredensial tidak disimpan di Git dan tidak boleh ditambahkan ke file frontend.
+
+Admin awal dibuat hanya saat database belum memiliki akun dengan email tersebut. Untuk merotasi password:
+
+1. ubah `ADMIN_PASSWORD` di Render;
+2. tambahkan sementara `RESET_ADMIN_PASSWORD=true`;
+3. deploy ulang dan pastikan login baru berhasil;
+4. ubah `RESET_ADMIN_PASSWORD` kembali menjadi `false` atau hapus variabelnya.
+
+## 4. Alur data produksi
+
+- Form `reservasi.html` mengirim multipart data ke `POST /api/reservations`.
+- Harga dihitung ulang dari katalog server; harga dari browser tidak dipercaya.
+- Reservasi baru langsung muncul di panel admin.
+- Kalender publik membaca reservasi berstatus `approved` dari `/api/calendar`.
+- Pengaturan publik, logo, hero, QRIS, rekening, jam, testimoni, dan sosial media dibaca dari API.
+- Bukti pembayaran hanya dapat dibuka oleh admin dengan JWT aktif.
+- Data aplikasi disimpan sebagai satu state JSON tertransaksi di PostgreSQL. Penulisan diserialkan agar snapshot lama tidak menimpa perubahan baru.
+
+Data fallback tetap tertanam di Pages agar konten dasar tampil saat API sedang restart, tetapi perubahan dan reservasi live memerlukan API Render aktif.
+
+## 5. Pengembangan lokal
+
+Gunakan Node.js 20 atau lebih baru:
+
+```bash
+npm ci
+ADMIN_EMAIL=admin@adzkiya.id \
+ADMIN_PASSWORD='password-lokal-aman' \
+JWT_SECRET='secret-lokal-minimal-32-karakter' \
+npm start
+```
+
+Tanpa `DATABASE_URL`, server memakai `data.json`. Untuk memakai database, isi `DATABASE_URL` dengan URL PostgreSQL atau MySQL/TiDB.
+
+Jalankan pemeriksaan:
+
+```bash
+npm run check
+npm test
+npm run build:pages
+```
+
+`npm run build:pages` memperbarui data fallback dan menyalin versi terbaru admin/reservasi ke `docs/`; file `docs/js/api-config.js` tetap menjadi konfigurasi khusus GitHub Pages.
+
+## 6. Keamanan dan operasi
+
+- Jangan commit `ADMIN_PASSWORD`, `JWT_SECRET`, atau `DATABASE_URL`.
+- Render hanya menerima CORS dari `https://putra1996.github.io` secara default.
+- Jika memakai custom domain Pages, tambahkan origin tersebut ke `ALLOWED_ORIGINS` di Render, dipisahkan koma.
+- Upload dibatasi satu file maksimal 5 MB dan hanya menerima PNG, JPEG, WebP, atau PDF yang valid.
+- Download backup JSON secara berkala dari menu **Backup/Restore**.
+- Pantau log Render dan endpoint `/health` jika admin menampilkan error koneksi.

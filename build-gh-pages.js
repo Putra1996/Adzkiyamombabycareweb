@@ -84,6 +84,12 @@ fs.copyFileSync(
 );
 console.log('[build] CSS copied');
 
+// Keep the GitHub Pages admin and reservation clients in sync with their maintained sources.
+fs.copyFileSync(path.join(ROOT, 'public', 'admin.html'), path.join(DOCS, 'admin.html'));
+fs.copyFileSync(path.join(ROOT, 'public', 'reservasi.html'), path.join(DOCS, 'reservasi.html'));
+fs.copyFileSync(path.join(ROOT, 'public', 'js', 'admin.js'), path.join(DOCS, 'js', 'admin.js'));
+console.log('[build] Admin and reservation clients copied');
+
 // Build main.js with embedded data
 const servicesCode = `
 // Embedded services data (from server.js SERVICES)
@@ -171,4 +177,4 @@ fs.writeFileSync(path.join(DOCS, 'js', 'main.js'), mainJs);
 console.log('[build] main.js updated with embedded data');
 
 console.log('\n[build] ✅ Done! docs/ folder is ready for GitHub Pages.');
-console.log('[build] Push to GitHub and enable Pages from /docs branch in Settings > Pages.');
+console.log('[build] Push to GitHub and publish GitHub Pages from the main branch /docs folder.');
