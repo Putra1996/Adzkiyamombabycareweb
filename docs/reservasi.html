@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="css/style.css">
-<link rel="icon" href="img/logo.png" type="image/png">
+<link rel="icon" href="img/logo.png">
 </head>
 <body>
 
@@ -34,7 +34,7 @@
     <div class="section-head" style="margin-bottom: 30px;">
       <span class="section-eyebrow">Formulir Reservasi</span>
       <h2>📅 Booking Layanan</h2>
-      <p>Pilih beberapa layanan & tentukan beberapa jadwal sekaligus. Reservasi akan dikirim via WhatsApp.</p>
+      <p>Pilih beberapa layanan & tentukan beberapa jadwal sekaligus.</p>
     </div>
 
     <div class="form-wrap">
@@ -84,6 +84,12 @@
         <!-- Bank info area -->
         <div id="paymentInfo" style="display:none;"></div>
 
+        <div class="form-group" id="proofGroup" style="display:none;">
+          <label>📎 Upload Bukti Pembayaran</label>
+          <input type="file" name="proof" accept="image/*,application/pdf">
+          <div class="help-text">Untuk Transfer / QRIS — upload screenshot atau PDF bukti transfer (maks 5 MB).</div>
+        </div>
+
         <div class="form-group">
           <label>📝 Catatan Tambahan (opsional)</label>
           <textarea name="notes" rows="2" placeholder="Mis. usia bayi, keluhan, patokan rumah, dll"></textarea>
@@ -97,10 +103,10 @@
         </div>
 
         <button type="submit" class="btn btn-primary" style="width:100%;justify-content:center;" id="submitBtn">
-          💬 Kirim Reservasi via WhatsApp
+          ✨ Kirim Reservasi
         </button>
         <p class="help-text" style="text-align:center;margin-top:14px;">
-          Setelah form diisi, Anda akan diarahkan ke WhatsApp untuk mengirim reservasi.
+          Setelah reservasi terkirim, admin akan menghubungi Anda via WhatsApp untuk konfirmasi.
         </p>
       </form>
     </div>
@@ -110,78 +116,104 @@
 <footer>
   <div class="footer-inner">
     <div>© 2026 Adzkiya Mom Baby Care</div>
+    <div><a href="admin.html">Admin Login</a></div>
   </div>
 </footer>
 
+<script src="js/api-config.js"></script>
 <script src="js/main.js"></script>
 <script>
-var SERVICES = SERVICES_DATA;
-var SETTINGS = SETTINGS_DATA;
-var cart = []; // {name, price, qty}
-var slots = []; // {date, time}
+let SERVICES = [];
+let SETTINGS = {};
+let cart = []; // {name, price, qty}
+let slots = []; // {date, time}
+const reservationApiBase = String(window.ADZKIYA_API_BASE || '').replace(/\/$/, '');
+const reservationApiUrl = path => reservationApiBase + (path.startsWith('/') ? path : '/' + path);
 
-function bootstrap() {
+async function bootstrap() {
+  try {
+    const [serviceResponse, settingsResponse] = await Promise.all([
+      fetch(reservationApiUrl('/api/services')),
+      fetch(reservationApiUrl('/api/public-settings'))
+    ]);
+    if (!serviceResponse.ok || !settingsResponse.ok) throw new Error('API tidak tersedia');
+      SERVICES = await serviceResponse.json();
+    SETTINGS = await settingsResponse.json();
+  } catch (error) {
+    if (typeof SERVICES_DATA !== 'undefined') SERVICES = SERVICES_DATA;
+    if (typeof SETTINGS_DATA !== 'undefined') SETTINGS = SETTINGS_DATA;
+    document.getElementById('alertBox').innerHTML = '<div class="alert alert-error">Koneksi server sedang lambat. Data harga cadangan ditampilkan; coba kirim kembali beberapa saat lagi.</div>';
+  }
   if (SETTINGS.business_name) document.getElementById('brandName').textContent = SETTINGS.business_name;
+  if (SETTINGS.has_logo) {
+    const brandLogo = document.querySelector('.brand-logo img');
+    if (brandLogo) brandLogo.src = reservationApiUrl('/api/logo');
+  }
+  if (SETTINGS.primary_color) document.documentElement.style.setProperty('--pink-500', SETTINGS.primary_color);
+  if (SETTINGS.accent_color) document.documentElement.style.setProperty('--peach-400', SETTINGS.accent_color);
 
   // Prefill from query
-  var q = new URLSearchParams(location.search);
-  var preService = q.get('service');
-  var prePrice = parseInt(q.get('price')) || 0;
-  if (preService && prePrice) cart.push({ name: preService, price: prePrice, qty: 1 });
+  const q = new URLSearchParams(location.search);
+  const preService = q.get('service');
+  const catalogItem = SERVICES.flatMap(category => category.items || []).find(item => item.name === preService);
+  if (catalogItem) cart.push({ name: catalogItem.name, price: catalogItem.price, qty: 1 });
   if (!cart.length) cart.push({ name: '', price: 0, qty: 1 });
   // Default 1 slot today 09:00
-  var today = new Date().toISOString().slice(0, 10);
+  const today = new Date().toISOString().slice(0, 10);
   slots.push({ date: today, time: '09:00' });
   renderCart(); renderSlots(); updateSummary();
 }
 
 function svcOptions(selected) {
-  var html = '<option value="">— pilih layanan —</option>';
-  SERVICES.forEach(function(c) {
-    html += '<optgroup label="' + c.cat + '">';
-    c.items.forEach(function(it) {
-      html += '<option value="' + it.name + '" data-price="' + it.price + '" ' + (selected===it.name?'selected':'') + '>' + it.name + ' — Rp ' + it.price.toLocaleString('id-ID') + '</option>';
+  let html = `<option value="">— pilih layanan —</option>`;
+  SERVICES.forEach(c => {
+    html += `<optgroup label="${c.cat}">`;
+    c.items.forEach(it => {
+      html += `<option value="${it.name}" data-price="${it.price}" ${selected===it.name?'selected':''}>${it.name} — Rp ${it.price.toLocaleString('id-ID')}</option>`;
     });
-    html += '</optgroup>';
+    html += `</optgroup>`;
   });
   return html;
 }
 
 function renderCart() {
-  var el = document.getElementById('cartItems');
+  const el = document.getElementById('cartItems');
   el.innerHTML = '';
-  cart.forEach(function(it, i) {
-    var row = document.createElement('div');
+  cart.forEach((it, i) => {
+    const row = document.createElement('div');
     row.className = 'cart-row';
-    row.innerHTML =
-      '<select onchange="cart[' + i + '].name=this.value;cart[' + i + '].price=parseInt(this.options[this.selectedIndex].dataset.price)||0;updateSummary();">' + svcOptions(it.name) + '</select>' +
-      '<input type="number" placeholder="Harga" value="' + (it.price || '') + '" min="0" oninput="cart[' + i + '].price=parseInt(this.value)||0;updateSummary();">' +
-      '<input type="number" placeholder="Qty" value="' + it.qty + '" min="1" max="50" oninput="cart[' + i + '].qty=parseInt(this.value)||1;updateSummary();">' +
-      '<button type="button" class="rm-btn" onclick="cart.splice(' + i + ',1);renderCart();updateSummary();">×</button>';
+    row.innerHTML = `
+      <select onchange="cart[${i}].name=this.value;cart[${i}].price=parseInt(this.options[this.selectedIndex].dataset.price)||0;updateSummary();">${svcOptions(it.name)}</select>
+      <input type="number" placeholder="Harga" value="${it.price || ''}" min="0" readonly aria-label="Harga layanan">
+      <input type="number" placeholder="Qty" value="${it.qty}" min="1" max="20" oninput="cart[${i}].qty=parseInt(this.value)||1;updateSummary();">
+      <button type="button" class="rm-btn" onclick="cart.splice(${i},1);renderCart();updateSummary();">×</button>
+    `;
     el.appendChild(row);
   });
 }
 function addCartItem() { cart.push({ name: '', price: 0, qty: 1 }); renderCart(); updateSummary(); }
 
 function renderSlots() {
-  var el = document.getElementById('slotsList');
+  const el = document.getElementById('slotsList');
   el.innerHTML = '';
-  var today = new Date().toISOString().slice(0, 10);
-  slots.forEach(function(s, i) {
-    var row = document.createElement('div');
+  const today = new Date().toISOString().slice(0, 10);
+  slots.forEach((s, i) => {
+    const row = document.createElement('div');
     row.className = 'slot-row';
-    row.innerHTML =
-      '<input type="date" value="' + s.date + '" min="' + today + '" oninput="slots[' + i + '].date=this.value;updateSummary();">' +
-      '<input type="time" value="' + s.time + '" oninput="slots[' + i + '].time=this.value;updateSummary();">' +
-      '<button type="button" class="rm-btn" onclick="slots.splice(' + i + ',1);renderSlots();updateSummary();">×</button>';
+    row.innerHTML = `
+      <input type="date" value="${s.date}" min="${today}" oninput="slots[${i}].date=this.value;updateSummary();">
+      <input type="time" value="${s.time}" oninput="slots[${i}].time=this.value;updateSummary();">
+      <button type="button" class="rm-btn" onclick="slots.splice(${i},1);renderSlots();updateSummary();">×</button>
+    `;
     el.appendChild(row);
   });
 }
 function addSlot() {
-  var last = slots[slots.length - 1];
-  var next = last ? { date: last.date, time: last.time } : { date: new Date().toISOString().slice(0,10), time: '09:00' };
+  const last = slots[slots.length - 1];
+  const next = last ? { date: last.date, time: last.time } : { date: new Date().toISOString().slice(0,10), time: '09:00' };
+  // increment date by 1 if more than one slot to avoid duplicates
   if (slots.length >= 1) {
-    var d = new Date(next.date); d.setDate(d.getDate() + 1);
+    const d = new Date(next.date); d.setDate(d.getDate() + 1);
     next.date = d.toISOString().slice(0, 10);
   }
   slots.push(next);
@@ -189,10 +221,10 @@ function addSlot() {
 }
 
 function updateSummary() {
-  var validItems = cart.filter(function(it) { return it.name && it.price > 0; });
-  var validSlots = slots.filter(function(s) { return s.date && s.time; });
-  var itemSum = validItems.reduce(function(s, it) { return s + it.price * it.qty; }, 0);
-  var total = itemSum * validSlots.length;
+  const validItems = cart.filter(it => it.name && it.price > 0);
+  const validSlots = slots.filter(s => s.date && s.time);
+  const itemSum = validItems.reduce((s, it) => s + it.price * it.qty, 0);
+  const total = itemSum * validSlots.length;
   document.getElementById('sumItemCount').textContent = validItems.length;
   document.getElementById('sumItemTotal').textContent = fmtRp(itemSum);
   document.getElementById('sumSlotCount').textContent = validSlots.length;
@@ -200,19 +232,20 @@ function updateSummary() {
 }
 
 // Payment options
-document.querySelectorAll('.pay-option').forEach(function(el) {
-  el.onclick = function() {
-    document.querySelectorAll('.pay-option').forEach(function(x) { x.classList.remove('selected'); });
+document.querySelectorAll('.pay-option').forEach(el => {
+  el.onclick = () => {
+    document.querySelectorAll('.pay-option').forEach(x => x.classList.remove('selected'));
     el.classList.add('selected');
-    var m = el.dataset.method;
+    const m = el.dataset.method;
     document.getElementById('payMethod').value = m;
-    var info = document.getElementById('paymentInfo');
+    const info = document.getElementById('paymentInfo');
+    document.getElementById('proofGroup').style.display = m === 'COD' ? 'none' : 'block';
     if (m === 'Transfer' && SETTINGS.bank_accounts && SETTINGS.bank_accounts.length) {
       info.style.display = 'block';
-      info.innerHTML = '<div class="summary-card"><strong>🏦 Transfer ke rekening berikut:</strong>' + SETTINGS.bank_accounts.map(function(b) { return '<div class="row"><span>' + b.bank + '</span><span><strong>' + b.number + '</strong> a.n. ' + b.name + '</span></div>'; }).join('') + '</div>';
-    } else if (m === 'QRIS') {
+      info.innerHTML = `<div class="summary-card"><strong>🏦 Transfer ke rekening berikut:</strong>${SETTINGS.bank_accounts.map(b => `<div class="row"><span>${b.bank}</span><span><strong>${b.number}</strong> a.n. ${b.name}</span></div>`).join('')}</div>`;
+    } else if (m === 'QRIS' && (SETTINGS.has_qris || SETTINGS.qris_link)) {
       info.style.display = 'block';
-      info.innerHTML = '<div class="summary-card" style="text-align:center;"><strong>📱 QRIS tersedia</strong><br><small>Hubungi admin untuk informasi QRIS</small></div>';
+      info.innerHTML = `<div class="summary-card" style="text-align:center;"><strong>📱 Scan QRIS berikut:</strong><br>${SETTINGS.has_qris ? `<img src="${reservationApiUrl('/api/qris')}" style="max-width:240px;margin:10px auto;display:block;border-radius:12px;border:1px solid var(--border);">` : ''}${SETTINGS.qris_link ? `<a href="${SETTINGS.qris_link}" target="_blank" class="btn btn-outline" style="margin-top:8px;">Buka link QRIS</a>` : ''}</div>`;
     } else {
       info.style.display = 'none';
       info.innerHTML = '';
@@ -220,54 +253,46 @@ document.querySelectorAll('.pay-option').forEach(function(el) {
   };
 });
 
-document.getElementById('reservasiForm').addEventListener('submit', function(e) {
+document.getElementById('reservasiForm').addEventListener('submit', async (e) => {
   e.preventDefault();
-  var alertBox = document.getElementById('alertBox');
+  const alertBox = document.getElementById('alertBox');
   alertBox.innerHTML = '';
-  var validItems = cart.filter(function(it) { return it.name && it.price > 0; });
-  var validSlots = slots.filter(function(s) { return s.date && s.time; });
+  const validItems = cart.filter(it => it.name && it.price > 0);
+  const validSlots = slots.filter(s => s.date && s.time);
   if (!validItems.length) { alertBox.innerHTML = '<div class="alert alert-error">Pilih minimal 1 layanan</div>'; return; }
   if (!validSlots.length) { alertBox.innerHTML = '<div class="alert alert-error">Tambah minimal 1 jadwal</div>'; return; }
   if (!document.getElementById('payMethod').value) { alertBox.innerHTML = '<div class="alert alert-error">Pilih metode pembayaran</div>'; return; }
 
-  var fd = new FormData(e.target);
-  var patientName = fd.get('patient_name');
-  var whatsapp = fd.get('whatsapp');
-  var address = fd.get('address');
-  var paymentMethod = fd.get('payment_method');
-  var notes = fd.get('notes') || '-';
+  const fd = new FormData(e.target);
+  fd.set('items', JSON.stringify(validItems));
+  fd.set('slots', JSON.stringify(validSlots));
 
-  var itemSum = validItems.reduce(function(s, it) { return s + it.price * it.qty; }, 0);
-  var total = itemSum * validSlots.length;
-
-  // Build WhatsApp message
-  var msg = '🌸 *RESERVASI ADZKIYA MOM BABY CARE*\n\n';
-  msg += '👤 *Nama:* ' + patientName + '\n';
-  msg += '📱 *WA:* ' + whatsapp + '\n';
-  msg += '📍 *Alamat:* ' + address + '\n\n';
-  msg += '💆 *Layanan:*\n';
-  validItems.forEach(function(it) {
-    msg += '  • ' + it.name + ' (x' + it.qty + ') — Rp ' + it.price.toLocaleString('id-ID') + '\n';
-  });
-  msg += '\n📅 *Jadwal:*\n';
-  validSlots.forEach(function(s) {
-    msg += '  • ' + s.date + ' ' + s.time + '\n';
-  });
-  msg += '\n💳 *Pembayaran:* ' + paymentMethod + '\n';
-  msg += '💰 *Subtotal:* Rp ' + itemSum.toLocaleString('id-ID') + '\n';
-  msg += '📆 *Jumlah sesi:* ' + validSlots.length + '\n';
-  msg += '🧾 *Total Estimasi:* Rp ' + total.toLocaleString('id-ID') + '\n';
-  if (notes !== '-') msg += '\n📝 *Catatan:* ' + notes + '\n';
-  msg += '\nMohon konfirmasi reservasi ini. Terima kasih! 🙏';
-
-  var phone = (SETTINGS.phone || '085887018194').replace(/\D/g, '').replace(/^0/, '62');
-  var waUrl = 'https://wa.me/' + phone + '?text=' + encodeURIComponent(msg);
-
-  alertBox.innerHTML = '<div class="alert alert-success">✅ Reservasi siap dikirim! Anda akan diarahkan ke WhatsApp...</div>';
-
-  setTimeout(function() {
-    window.open(waUrl, '_blank');
-  }, 800);
+  const btn = document.getElementById('submitBtn');
+  btn.disabled = true; btn.textContent = 'Mengirim...';
+  try {
+    const res = await fetch(reservationApiUrl('/api/reservations'), { method: 'POST', body: fd });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Gagal');
+    alertBox.innerHTML = `<div class="alert alert-success">
+      ✅ Reservasi #${data.id} berhasil dikirim (total: ${fmtRp(data.total)})! Admin akan menghubungi Anda via WhatsApp.
+    </div>`;
+    setTimeout(() => {
+      const phone = (SETTINGS.phone || '085887018194').replace(/\D/g,'').replace(/^0/, '62');
+      const wa = `https://wa.me/${phone}?text=${encodeURIComponent('Halo Admin, saya baru saja reservasi #' + data.id + ' atas nama ' + fd.get('patient_name'))}`;
+      alertBox.innerHTML += `<div class="alert alert-success">📲 <a href="${wa}" target="_blank" style="text-decoration:underline">Klik di sini untuk lanjut chat WhatsApp ke admin →</a></div>`;
+    }, 100);
+    e.target.reset();
+    cart = [{ name: '', price: 0, qty: 1 }];
+    slots = [{ date: new Date().toISOString().slice(0,10), time: '09:00' }];
+    renderCart(); renderSlots(); updateSummary();
+    document.querySelectorAll('.pay-option').forEach(x => x.classList.remove('selected'));
+    document.getElementById('paymentInfo').style.display = 'none';
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  } catch (err) {
+    alertBox.innerHTML = `<div class="alert alert-error">❌ ${err.message}</div>`;
+  } finally {
+    btn.disabled = false; btn.innerHTML = '✨ Kirim Reservasi';
+  }
 });
 
 bootstrap();

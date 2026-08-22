@@ -181,17 +181,34 @@
   </div>
 </footer>
 
+<script src="js/api-config.js"></script>
 <script src="js/main.js"></script>
 <script>
-// Render dynamic content from SETTINGS_DATA
-(function() {
-  const s = SETTINGS_DATA;
+// Render static fallback first, then re-render when live settings arrive.
+function applyPublicSettings(s) {
   if (s.business_name) {
     document.getElementById('brandName').textContent = s.business_name;
     document.getElementById('footerBrand').textContent = s.business_name;
     document.title = s.business_name + ' — ' + (s.tagline || '');
   }
   if (s.tagline) document.getElementById('heroTagline').textContent = s.tagline;
+  if (s.primary_color) document.documentElement.style.setProperty('--pink-500', s.primary_color);
+  if (s.accent_color) document.documentElement.style.setProperty('--peach-400', s.accent_color);
+  if (s.has_logo) {
+    document.querySelectorAll('img[src="img/logo.png"]').forEach(function(img) {
+      img.src = publicApiUrl('/api/logo') + '?v=' + Date.now();
+    });
+    var favicon = document.querySelector('link[rel="icon"]');
+    if (favicon) favicon.href = publicApiUrl('/api/logo');
+  }
+  if (s.has_hero) {
+    var heroBg = document.getElementById('heroBg');
+    if (heroBg) {
+      heroBg.style.backgroundImage = 'linear-gradient(rgba(255,255,255,.72),rgba(255,255,255,.72)),url("' + publicApiUrl('/api/hero') + '?v=' + Date.now() + '")';
+      heroBg.style.backgroundSize = 'cover';
+      heroBg.style.backgroundPosition = 'center';
+    }
+  }
   if (s.address) document.getElementById('contactAddress').textContent = s.address;
   if (s.phone) {
     const intl = s.phone.replace(/[^\d]/g, '').replace(/^0/, '62');
@@ -265,7 +282,11 @@
   } else {
     if (contactCard) contactCard.style.display = 'none';
   }
-})();
+}
+applyPublicSettings(SETTINGS_DATA);
+window.addEventListener('adzkiya:settings', function(event) {
+  applyPublicSettings(event.detail);
+});
 </script>
 </body>
 </html>

@@ -7,23 +7,23 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/css/style.css">
-<link rel="icon" href="/api/logo">
+<link rel="stylesheet" href="css/style.css">
+<link rel="icon" href="img/logo.png">
 </head>
 <body>
 
 <nav class="nav">
   <div class="nav-inner">
-    <a href="/" class="brand">
-      <div class="brand-logo"><img src="/api/logo" alt="" onerror="this.parentElement.innerHTML='🌸';this.parentElement.classList.add('fallback');" style="width:100%;height:100%;object-fit:contain;"></div>
+    <a href="index.html" class="brand">
+      <div class="brand-logo"><img src="img/logo.png" alt="" onerror="this.parentElement.innerHTML='🌸';this.parentElement.classList.add('fallback');" style="width:100%;height:100%;object-fit:contain;"></div>
       <div class="brand-text"><span id="brandName">Adzkiya Mom Baby Care</span><small>Mom & Baby Care</small></div>
     </a>
     <button class="mobile-toggle" onclick="document.getElementById('navLinks').classList.toggle('open')">☰</button>
     <div class="nav-links" id="navLinks">
-      <a href="/">Beranda</a>
-      <a href="/#layanan">Layanan</a>
-      <a href="/kalender.html">Kalender</a>
-      <a href="/#kontak">Kontak</a>
+      <a href="index.html">Beranda</a>
+      <a href="index.html#layanan">Layanan</a>
+      <a href="kalender.html">Kalender</a>
+      <a href="index.html#kontak">Kontak</a>
       <button class="theme-toggle" id="themeToggle">🌙</button>
     </div>
   </div>
@@ -87,7 +87,7 @@
         <div class="form-group" id="proofGroup" style="display:none;">
           <label>📎 Upload Bukti Pembayaran</label>
           <input type="file" name="proof" accept="image/*,application/pdf">
-          <div class="help-text">Untuk Transfer / QRIS — upload screenshot bukti transfer (maks 8MB).</div>
+          <div class="help-text">Untuk Transfer / QRIS — upload screenshot atau PDF bukti transfer (maks 5 MB).</div>
         </div>
 
         <div class="form-group">
@@ -116,30 +116,47 @@
 <footer>
   <div class="footer-inner">
     <div>© 2026 Adzkiya Mom Baby Care</div>
-    <div><a href="/admin">Admin Login</a></div>
+    <div><a href="admin.html">Admin Login</a></div>
   </div>
 </footer>
 
-<script src="/js/main.js"></script>
+<script src="js/api-config.js"></script>
+<script src="js/main.js"></script>
 <script>
 let SERVICES = [];
 let SETTINGS = {};
 let cart = []; // {name, price, qty}
 let slots = []; // {date, time}
+const reservationApiBase = String(window.ADZKIYA_API_BASE || '').replace(/\/$/, '');
+const reservationApiUrl = path => reservationApiBase + (path.startsWith('/') ? path : '/' + path);
 
 async function bootstrap() {
-  const [svc, set] = await Promise.all([
-    fetch('/api/services').then(r => r.json()),
-    fetch('/api/public-settings').then(r => r.json())
-  ]);
-  SERVICES = svc; SETTINGS = set;
+  try {
+    const [serviceResponse, settingsResponse] = await Promise.all([
+      fetch(reservationApiUrl('/api/services')),
+      fetch(reservationApiUrl('/api/public-settings'))
+    ]);
+    if (!serviceResponse.ok || !settingsResponse.ok) throw new Error('API tidak tersedia');
+      SERVICES = await serviceResponse.json();
+    SETTINGS = await settingsResponse.json();
+  } catch (error) {
+    if (typeof SERVICES_DATA !== 'undefined') SERVICES = SERVICES_DATA;
+    if (typeof SETTINGS_DATA !== 'undefined') SETTINGS = SETTINGS_DATA;
+    document.getElementById('alertBox').innerHTML = '<div class="alert alert-error">Koneksi server sedang lambat. Data harga cadangan ditampilkan; coba kirim kembali beberapa saat lagi.</div>';
+  }
   if (SETTINGS.business_name) document.getElementById('brandName').textContent = SETTINGS.business_name;
+  if (SETTINGS.has_logo) {
+    const brandLogo = document.querySelector('.brand-logo img');
+    if (brandLogo) brandLogo.src = reservationApiUrl('/api/logo');
+  }
+  if (SETTINGS.primary_color) document.documentElement.style.setProperty('--pink-500', SETTINGS.primary_color);
+  if (SETTINGS.accent_color) document.documentElement.style.setProperty('--peach-400', SETTINGS.accent_color);
 
   // Prefill from query
   const q = new URLSearchParams(location.search);
   const preService = q.get('service');
-  const prePrice = parseInt(q.get('price')) || 0;
-  if (preService && prePrice) cart.push({ name: preService, price: prePrice, qty: 1 });
+  const catalogItem = SERVICES.flatMap(category => category.items || []).find(item => item.name === preService);
+  if (catalogItem) cart.push({ name: catalogItem.name, price: catalogItem.price, qty: 1 });
   if (!cart.length) cart.push({ name: '', price: 0, qty: 1 });
   // Default 1 slot today 09:00
   const today = new Date().toISOString().slice(0, 10);
@@ -167,8 +184,8 @@ function renderCart() {
     row.className = 'cart-row';
     row.innerHTML = `
       <select onchange="cart[${i}].name=this.value;cart[${i}].price=parseInt(this.options[this.selectedIndex].dataset.price)||0;updateSummary();">${svcOptions(it.name)}</select>
-      <input type="number" placeholder="Harga" value="${it.price || ''}" min="0" oninput="cart[${i}].price=parseInt(this.value)||0;updateSummary();">
-      <input type="number" placeholder="Qty" value="${it.qty}" min="1" max="50" oninput="cart[${i}].qty=parseInt(this.value)||1;updateSummary();">
+      <input type="number" placeholder="Harga" value="${it.price || ''}" min="0" readonly aria-label="Harga layanan">
+      <input type="number" placeholder="Qty" value="${it.qty}" min="1" max="20" oninput="cart[${i}].qty=parseInt(this.value)||1;updateSummary();">
       <button type="button" class="rm-btn" onclick="cart.splice(${i},1);renderCart();updateSummary();">×</button>
     `;
     el.appendChild(row);
@@ -228,7 +245,7 @@ document.querySelectorAll('.pay-option').forEach(el => {
       info.innerHTML = `<div class="summary-card"><strong>🏦 Transfer ke rekening berikut:</strong>${SETTINGS.bank_accounts.map(b => `<div class="row"><span>${b.bank}</span><span><strong>${b.number}</strong> a.n. ${b.name}</span></div>`).join('')}</div>`;
     } else if (m === 'QRIS' && (SETTINGS.has_qris || SETTINGS.qris_link)) {
       info.style.display = 'block';
-      info.innerHTML = `<div class="summary-card" style="text-align:center;"><strong>📱 Scan QRIS berikut:</strong><br>${SETTINGS.has_qris ? `<img src="/api/qris" style="max-width:240px;margin:10px auto;display:block;border-radius:12px;border:1px solid var(--border);">` : ''}${SETTINGS.qris_link ? `<a href="${SETTINGS.qris_link}" target="_blank" class="btn btn-outline" style="margin-top:8px;">Buka link QRIS</a>` : ''}</div>`;
+      info.innerHTML = `<div class="summary-card" style="text-align:center;"><strong>📱 Scan QRIS berikut:</strong><br>${SETTINGS.has_qris ? `<img src="${reservationApiUrl('/api/qris')}" style="max-width:240px;margin:10px auto;display:block;border-radius:12px;border:1px solid var(--border);">` : ''}${SETTINGS.qris_link ? `<a href="${SETTINGS.qris_link}" target="_blank" class="btn btn-outline" style="margin-top:8px;">Buka link QRIS</a>` : ''}</div>`;
     } else {
       info.style.display = 'none';
       info.innerHTML = '';
@@ -253,7 +270,7 @@ document.getElementById('reservasiForm').addEventListener('submit', async (e) =>
   const btn = document.getElementById('submitBtn');
   btn.disabled = true; btn.textContent = 'Mengirim...';
   try {
-    const res = await fetch('/api/reservations', { method: 'POST', body: fd });
+    const res = await fetch(reservationApiUrl('/api/reservations'), { method: 'POST', body: fd });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Gagal');
     alertBox.innerHTML = `<div class="alert alert-success">

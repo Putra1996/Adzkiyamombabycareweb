@@ -1,5 +1,5 @@
-// Adzkiya Mom Baby Care - Backend v2.1 (persistent via TiDB/MySQL)
-// Features: multi-items, multi-slots, settings (logo/hero/QRIS/bank), charts, xlsx export, notifications, persistence
+// Adzkiya Mom Baby Care - Backend v2.2
+// Split deployment: GitHub Pages frontend + Express API + PostgreSQL/MySQL persistence.
 const express = require('express');
 const multer = require('multer');
 const path = require('path');
@@ -8,15 +8,25 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const ExcelJS = require('exceljs');
 const mysql = require('mysql2/promise');
+const { Pool: PostgresPool } = require('pg');
 
 const app = express();
 const PORT = parseInt(process.env.PORT || '3000', 10);
-const JWT_SECRET = process.env.JWT_SECRET || 'adzkiya-mom-baby-care-secret-key-2026';
+const IS_PRODUCTION = process.env.NODE_ENV === 'production';
+if (IS_PRODUCTION) app.set('trust proxy', 1);
+const JWT_SECRET = process.env.JWT_SECRET || 'adzkiya_local_development_secret';
 const DATABASE_URL = process.env.DATABASE_URL || '';
+const DATABASE_KIND = DATABASE_URL.startsWith('postgres://') || DATABASE_URL.startsWith('postgresql://')
+  ? 'postgres'
+  : (DATABASE_URL ? 'mysql' : 'file');
+
+if (IS_PRODUCTION && (!process.env.JWT_SECRET || process.env.JWT_SECRET.length < 32)) {
+  throw new Error('JWT_SECRET production wajib diisi minimal 32 karakter');
+}
 
 // ---- DATA LAYER ----
-// Use TiDB/MySQL when DATABASE_URL is set (production). Falls back to local data.json otherwise.
-const DATA_FILE = path.join(__dirname, 'data.json');
+// Production supports PostgreSQL (Render) and MySQL/TiDB. Local development uses JSON.
+const DATA_FILE = process.env.DATA_FILE || path.join(__dirname, 'data.json');
 let DB = {
   admins: [],
   reservations: [],
@@ -26,14 +36,31 @@ let DB = {
 };
 
 let pool = null;
-let usingMysql = false;
 let saveTimer = null;
-let savePromise = null;
+let saveChain = Promise.resolve();
+
+function normalizeState() {
+  DB._seq = DB._seq || { admins: 0, reservations: 0, receipts: 0 };
+  ['admins', 'reservations', 'receipts'].forEach((key) => { DB[key] = DB[key] || []; });
+}
 
 async function initStorage() {
-  if (DATABASE_URL) {
+  if (DATABASE_KIND === 'postgres') {
+    pool = new PostgresPool({
+      connectionString: DATABASE_URL,
+      ssl: IS_PRODUCTION ? { rejectUnauthorized: false } : undefined
+    });
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS app_state (
+        id INTEGER PRIMARY KEY,
+        data JSONB NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    const result = await pool.query('SELECT data FROM app_state WHERE id = 1');
+    if (result.rows.length) DB = result.rows[0].data;
+  } else if (DATABASE_KIND === 'mysql') {
     pool = mysql.createPool(DATABASE_URL);
-    // Single-row blob table — simple, atomic, idempotent for app size (small).
     await pool.execute(`
       CREATE TABLE IF NOT EXISTS app_state (
         id INT PRIMARY KEY,
@@ -41,82 +68,99 @@ async function initStorage() {
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
       )
     `);
-    const [rows] = await pool.execute('SELECT data FROM app_state WHERE id=1');
-    if (rows.length) {
-      try {
-        DB = JSON.parse(rows[0].data);
-        DB._seq = DB._seq || { admins: 0, reservations: 0, receipts: 0 };
-        ['admins','reservations','receipts'].forEach(k => { DB[k] = DB[k] || []; });
-        console.log(`[storage] Loaded from MySQL: ${DB.reservations.length} reservasi, ${DB.receipts.length} kwitansi`);
-      } catch (e) { console.error('[storage] parse err', e); }
-    } else {
-      console.log('[storage] Fresh MySQL — seeding defaults');
-    }
-    usingMysql = true;
+    const [rows] = await pool.execute('SELECT data FROM app_state WHERE id = 1');
+    if (rows.length) DB = JSON.parse(rows[0].data);
   } else {
-    // Local dev fallback
     try {
-      if (fs.existsSync(DATA_FILE)) {
-        DB = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
-        DB._seq = DB._seq || { admins: 0, reservations: 0, receipts: 0 };
-        ['admins','reservations','receipts'].forEach(k => { DB[k] = DB[k] || []; });
-      }
-    } catch (e) { console.error('load err', e); }
-    console.log('[storage] Using local data.json (no DATABASE_URL)');
+      if (fs.existsSync(DATA_FILE)) DB = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
+    } catch (error) {
+      console.error('[storage] Gagal membaca file lokal:', error.message);
+    }
   }
+
+  normalizeState();
+  console.log(`[storage] ${DATABASE_KIND}: ${DB.reservations.length} reservasi, ${DB.receipts.length} kwitansi`);
+}
+
+async function persistSnapshot(json) {
+  if (DATABASE_KIND === 'postgres' && pool) {
+    await pool.query(
+      `INSERT INTO app_state (id, data, updated_at) VALUES (1, $1::jsonb, CURRENT_TIMESTAMP)
+       ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = CURRENT_TIMESTAMP`,
+      [json]
+    );
+  } else if (DATABASE_KIND === 'mysql' && pool) {
+    await pool.execute(
+      'INSERT INTO app_state (id, data) VALUES (1, ?) ON DUPLICATE KEY UPDATE data = VALUES(data)',
+      [json]
+    );
+  } else {
+    await fs.promises.writeFile(DATA_FILE, json);
+  }
+}
+
+function queueSave() {
+  const json = JSON.stringify(DB);
+  saveChain = saveChain
+    .then(() => persistSnapshot(json))
+    .catch((error) => console.error(`[storage] ${DATABASE_KIND} save gagal:`, error.message));
+  return saveChain;
 }
 
 function save() {
-  // Debounce 200ms; writes a single LONGTEXT blob to the DB.
-  if (saveTimer) return;
-  saveTimer = setTimeout(async () => {
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
     saveTimer = null;
-    const json = JSON.stringify(DB);
-    if (usingMysql && pool) {
-      try {
-        savePromise = pool.execute(
-          'INSERT INTO app_state (id, data) VALUES (1, ?) ON DUPLICATE KEY UPDATE data=VALUES(data)',
-          [json]
-        );
-        await savePromise;
-      } catch (e) { console.error('[storage] mysql save err', e.message); }
-    } else {
-      try { fs.writeFileSync(DATA_FILE, json); }
-      catch (e) { console.error('save err', e); }
-    }
+    queueSave();
   }, 200);
 }
 
-// Force-flush on shutdown
 async function flush() {
-  if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
-  const json = JSON.stringify(DB);
-  if (usingMysql && pool) {
-    try {
-      await pool.execute(
-        'INSERT INTO app_state (id, data) VALUES (1, ?) ON DUPLICATE KEY UPDATE data=VALUES(data)',
-        [json]
-      );
-    } catch (e) { console.error('[flush] mysql err', e.message); }
-  } else {
-    try { fs.writeFileSync(DATA_FILE, json); } catch (e) {}
+  if (saveTimer) {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+    queueSave();
   }
+  await saveChain;
 }
-process.on('SIGTERM', async () => { await flush(); process.exit(0); });
-process.on('SIGINT',  async () => { await flush(); process.exit(0); });
+
+let server;
+async function shutdown() {
+  await flush();
+  if (server) await new Promise((resolve) => server.close(resolve));
+  if (pool) await pool.end();
+  process.exit(0);
+}
+process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);
 
 function nextId(t) { DB._seq[t] = (DB._seq[t] || 0) + 1; return DB._seq[t]; }
 
 function seedAdmin() {
-  if (!DB.admins.find(a => a.email === 'admin@adzkiya.id')) {
+  const configuredEmail = (process.env.ADMIN_EMAIL || '').trim().toLowerCase();
+  const configuredPassword = process.env.ADMIN_PASSWORD || '';
+  const email = configuredEmail || (IS_PRODUCTION ? '' : 'admin@adzkiya.id');
+  const password = configuredPassword || (IS_PRODUCTION ? '' : 'admin123');
+
+  if (!email || !password) {
+    throw new Error('ADMIN_EMAIL dan ADMIN_PASSWORD wajib diisi pada production');
+  }
+  if (IS_PRODUCTION && password.length < 12) {
+    throw new Error('ADMIN_PASSWORD production wajib minimal 12 karakter');
+  }
+
+  const existing = DB.admins.find((admin) => admin.email.toLowerCase() === email);
+  if (!existing) {
     DB.admins.push({
       id: nextId('admins'),
-      email: 'admin@adzkiya.id',
-      password_hash: bcrypt.hashSync('admin123', 10),
-      name: 'Tasya Hanifah',
+      email,
+      password_hash: bcrypt.hashSync(password, 12),
+      name: process.env.ADMIN_NAME || 'Tasya Hanifah',
       role: 'super',
       created_at: new Date().toISOString()
     });
+  } else if (configuredPassword && process.env.RESET_ADMIN_PASSWORD === 'true') {
+    existing.password_hash = bcrypt.hashSync(configuredPassword, 12);
   }
 }
 
@@ -202,19 +246,19 @@ function ensureNewSettings() {
   if (typeof DB.settings.notif_sound !== 'boolean') DB.settings.notif_sound = true;
 }
 
-// Async boot — load from MySQL/file, seed defaults, start server
+// Async boot — load persistent state, seed defaults, then start the API.
 (async () => {
   try {
     await initStorage();
     seedAdmin();
     seedSettings();
     ensureNewSettings();
-    save();
-    app.listen(PORT, '0.0.0.0', () => {
-      console.log(`Adzkiya Mom Baby Care v2.1 on 0.0.0.0:${PORT} (storage: ${usingMysql ? 'MySQL' : 'JSON file'})`);
+    await queueSave();
+    server = app.listen(PORT, '0.0.0.0', () => {
+      console.log(`Adzkiya Mom Baby Care v2.2 on 0.0.0.0:${PORT} (storage: ${DATABASE_KIND})`);
     });
-  } catch (e) {
-    console.error('FATAL boot:', e);
+  } catch (error) {
+    console.error('FATAL boot:', error);
     process.exit(1);
   }
 })();
@@ -281,19 +325,83 @@ const SERVICES = [
   ]},
 ];
 
+const SERVICE_PRICE_BY_NAME = new Map(
+  SERVICES.flatMap((category) => category.items.map((item) => [item.name, item.price]))
+);
+
 // ---- MIDDLEWARE ----
-app.use(express.json({ limit: '30mb' }));
-app.use(express.urlencoded({ extended: true, limit: '30mb' }));
+app.disable('x-powered-by');
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+  if (IS_PRODUCTION) res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  if (req.path.startsWith('/api/admin') || req.path.startsWith('/api/auth')) {
+    res.setHeader('Cache-Control', 'private, no-store');
+  }
+  next();
+});
+
+const allowedOrigins = new Set(
+  (process.env.ALLOWED_ORIGINS || 'https://putra1996.github.io')
+    .split(',')
+    .map((origin) => origin.trim().replace(/\/$/, ''))
+    .filter(Boolean)
+);
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  if (!origin) return next();
+  const normalized = origin.replace(/\/$/, '');
+  const localOrigin = !IS_PRODUCTION && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(normalized);
+  if (!allowedOrigins.has(normalized) && !localOrigin) {
+    return res.status(403).json({ error: 'Origin tidak diizinkan' });
+  }
+  res.setHeader('Access-Control-Allow-Origin', origin);
+  res.setHeader('Vary', 'Origin');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+  if (req.method === 'OPTIONS') return res.sendStatus(204);
+  next();
+});
+
+const standardJsonParser = express.json({ limit: '2mb' });
+const restoreJsonParser = express.json({ limit: '24mb' });
+app.use((req, res, next) => {
+  if (req.path === '/api/admin/restore') return next();
+  standardJsonParser(req, res, next);
+});
+app.use(express.urlencoded({ extended: true, limit: '2mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 8 * 1024 * 1024 } });
+const ALLOWED_UPLOAD_MIMES = new Set(['image/jpeg', 'image/png', 'image/webp', 'application/pdf']);
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024, files: 1 },
+  fileFilter: (req, file, callback) => {
+    if (!ALLOWED_UPLOAD_MIMES.has(file.mimetype)) {
+      return callback(new multer.MulterError('LIMIT_UNEXPECTED_FILE', file.fieldname));
+    }
+    callback(null, true);
+  }
+});
+
+function validFileSignature(file) {
+  if (!file || !file.buffer || file.buffer.length < 4) return false;
+  const b = file.buffer;
+  if (file.mimetype === 'image/jpeg') return b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff;
+  if (file.mimetype === 'image/png') return b.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+  if (file.mimetype === 'image/webp') return b.subarray(0, 4).toString() === 'RIFF' && b.subarray(8, 12).toString() === 'WEBP';
+  if (file.mimetype === 'application/pdf') return b.subarray(0, 5).toString() === '%PDF-';
+  return false;
+}
 
 function auth(req, res, next) {
   const h = req.headers.authorization || '';
   const token = h.startsWith('Bearer ') ? h.slice(7) : null;
   if (!token) return res.status(401).json({ error: 'No token' });
-  try { req.user = jwt.verify(token, JWT_SECRET); next(); }
-  catch (e) { return res.status(401).json({ error: 'Invalid token' }); }
+  try { req.user = jwt.verify(token, JWT_SECRET, { issuer: 'adzkiya-api' }); next(); }
+  catch (e) { return res.status(401).json({ error: 'Token tidak valid atau kedaluwarsa' }); }
 }
 
 // Compute reservation total: sum(items × price) × slots count
@@ -314,6 +422,7 @@ function calcReservationTotal(r) {
 // Admin backup/restore
 
 // ===== PUBLIC =====
+app.get('/health', (req, res) => res.json({ ok: true, storage: DATABASE_KIND }));
 app.get('/api/services', (req, res) => res.json(SERVICES));
 
 app.get('/api/business', (req, res) => {
@@ -363,34 +472,65 @@ app.get('/api/qris', (req, res) => {
 app.post('/api/reservations', upload.single('proof'), (req, res) => {
   try {
     const b = req.body;
-    const required = ['patient_name','whatsapp','address','payment_method'];
-    for (const f of required) if (!b[f]) return res.status(400).json({ error: 'Field ' + f + ' wajib diisi' });
+    const required = ['patient_name', 'whatsapp', 'address', 'payment_method'];
+    for (const field of required) {
+      if (!String(b[field] || '').trim()) return res.status(400).json({ error: `Field ${field} wajib diisi` });
+    }
+    if (!['COD', 'Transfer', 'QRIS'].includes(b.payment_method)) {
+      return res.status(400).json({ error: 'Metode pembayaran tidak valid' });
+    }
+    if (req.file && !validFileSignature(req.file)) {
+      return res.status(400).json({ error: 'Format atau isi bukti pembayaran tidak valid' });
+    }
 
-    let items, slots;
-    try { items = JSON.parse(b.items || '[]'); } catch { return res.status(400).json({ error: 'items invalid' }); }
-    try { slots = JSON.parse(b.slots || '[]'); } catch { return res.status(400).json({ error: 'slots invalid' }); }
-    if (!Array.isArray(items) || !items.length) return res.status(400).json({ error: 'Minimal pilih 1 layanan' });
-    if (!Array.isArray(slots) || !slots.length) return res.status(400).json({ error: 'Minimal pilih 1 jadwal' });
-    items = items.map(it => ({ name: String(it.name||'').slice(0, 200), price: parseInt(it.price)||0, qty: parseInt(it.qty)||1 }));
-    slots = slots.map(s => ({ date: String(s.date||'').slice(0, 10), time: String(s.time||'').slice(0, 5) })).filter(s => s.date && s.time);
-    if (!items.every(i => i.name && i.price > 0)) return res.status(400).json({ error: 'Layanan tidak valid' });
-    if (!slots.length) return res.status(400).json({ error: 'Jadwal tidak valid' });
+    let requestedItems;
+    let slots;
+    try { requestedItems = JSON.parse(b.items || '[]'); }
+    catch { return res.status(400).json({ error: 'items invalid' }); }
+    try { slots = JSON.parse(b.slots || '[]'); }
+    catch { return res.status(400).json({ error: 'slots invalid' }); }
+
+    if (!Array.isArray(requestedItems) || requestedItems.length < 1 || requestedItems.length > 20) {
+      return res.status(400).json({ error: 'Pilih 1 sampai 20 layanan' });
+    }
+    if (!Array.isArray(slots) || slots.length < 1 || slots.length > 14) {
+      return res.status(400).json({ error: 'Pilih 1 sampai 14 jadwal' });
+    }
+
+    // Never trust browser-submitted prices. Resolve every item against the server catalog.
+    const items = requestedItems.map((item) => {
+      const name = String(item.name || '').trim().slice(0, 200);
+      const price = SERVICE_PRICE_BY_NAME.get(name);
+      const qty = Math.min(20, Math.max(1, parseInt(item.qty, 10) || 1));
+      return { name, price, qty };
+    });
+    if (!items.every((item) => item.name && Number.isFinite(item.price))) {
+      return res.status(400).json({ error: 'Terdapat layanan yang tidak valid' });
+    }
+
+    const datePattern = /^\d{4}-\d{2}-\d{2}$/;
+    const timePattern = /^([01]\d|2[0-3]):[0-5]\d$/;
+    slots = slots.map((slot) => ({
+      date: String(slot.date || '').slice(0, 10),
+      time: String(slot.time || '').slice(0, 5)
+    }));
+    if (!slots.every((slot) => datePattern.test(slot.date) && timePattern.test(slot.time))) {
+      return res.status(400).json({ error: 'Jadwal tidak valid' });
+    }
 
     const id = nextId('reservations');
-    const itemSum = items.reduce((s, it) => s + it.price * it.qty, 0);
+    const itemSum = items.reduce((sum, item) => sum + item.price * item.qty, 0);
     const total = itemSum * slots.length;
-
     const rec = {
       id,
-      patient_name: b.patient_name,
-      whatsapp: b.whatsapp,
-      address: b.address,
+      patient_name: String(b.patient_name).trim().slice(0, 150),
+      whatsapp: String(b.whatsapp).trim().slice(0, 30),
+      address: String(b.address).trim().slice(0, 1000),
       items,
       slots,
       item_total: itemSum,
       total,
-      // Backward-compat first-slot/first-item summary fields
-      service_name: items.map(i => i.name).join(', '),
+      service_name: items.map((item) => item.name).join(', '),
       service_price: itemSum,
       qty: slots.length,
       reservation_date: slots[0].date,
@@ -398,15 +538,18 @@ app.post('/api/reservations', upload.single('proof'), (req, res) => {
       payment_method: b.payment_method,
       proof_mime: req.file ? req.file.mimetype : null,
       proof_b64: req.file ? req.file.buffer.toString('base64') : null,
-      notes: b.notes || '',
+      notes: String(b.notes || '').trim().slice(0, 2000),
       status: 'pending',
       payment_status: 'unpaid',
       created_at: new Date().toISOString()
     };
     DB.reservations.push(rec);
     save();
-    res.json({ ok: true, id, total });
-  } catch (e) { console.error(e); res.status(500).json({ error: e.message }); }
+    res.status(201).json({ ok: true, id, total });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Gagal menyimpan reservasi' });
+  }
 });
 
 app.get('/api/calendar', (req, res) => {
@@ -427,20 +570,38 @@ app.get('/api/calendar', (req, res) => {
   res.json(out);
 });
 
-app.get('/api/proof/:id', (req, res) => {
-  const r = DB.reservations.find(x => x.id === parseInt(req.params.id));
-  if (!r || !r.proof_b64) return res.status(404).send('No proof');
-  res.setHeader('Content-Type', r.proof_mime || 'application/octet-stream');
-  res.send(Buffer.from(r.proof_b64, 'base64'));
+app.get('/api/proof/:id', auth, (req, res) => {
+  const reservation = DB.reservations.find((item) => item.id === parseInt(req.params.id, 10));
+  if (!reservation || !reservation.proof_b64) return res.status(404).send('Bukti tidak ditemukan');
+  res.setHeader('Content-Type', reservation.proof_mime || 'application/octet-stream');
+  res.setHeader('Cache-Control', 'private, no-store');
+  res.send(Buffer.from(reservation.proof_b64, 'base64'));
 });
 
 // ===== AUTH =====
+const loginAttempts = new Map();
 app.post('/api/auth/login', (req, res) => {
-  const { email, password } = req.body;
-  const admin = DB.admins.find(a => a.email === email);
-  if (!admin) return res.status(401).json({ error: 'Email tidak ditemukan' });
-  if (!bcrypt.compareSync(password, admin.password_hash)) return res.status(401).json({ error: 'Password salah' });
-  const token = jwt.sign({ id: admin.id, email: admin.email, role: admin.role }, JWT_SECRET, { expiresIn: '7d' });
+  const key = req.ip;
+  const now = Date.now();
+  const current = loginAttempts.get(key) || { count: 0, resetAt: now + 15 * 60 * 1000 };
+  if (now > current.resetAt) Object.assign(current, { count: 0, resetAt: now + 15 * 60 * 1000 });
+  if (current.count >= 10) return res.status(429).json({ error: 'Terlalu banyak percobaan. Coba lagi nanti.' });
+
+  const email = String(req.body.email || '').trim().toLowerCase();
+  const password = String(req.body.password || '');
+  const admin = DB.admins.find((item) => item.email.toLowerCase() === email);
+  if (!admin || !bcrypt.compareSync(password, admin.password_hash)) {
+    current.count += 1;
+    loginAttempts.set(key, current);
+    return res.status(401).json({ error: 'Email atau password salah' });
+  }
+
+  loginAttempts.delete(key);
+  const token = jwt.sign(
+    { id: admin.id, email: admin.email, role: admin.role },
+    JWT_SECRET,
+    { expiresIn: '12h', issuer: 'adzkiya-api' }
+  );
   res.json({ token, user: { id: admin.id, email: admin.email, name: admin.name, role: admin.role } });
 });
 
@@ -616,11 +777,8 @@ app.get('/api/admin/recap', auth, (req, res) => {
 });
 
 // XLSX export — professional formatting
-app.get('/api/admin/recap.xlsx', async (req, res) => {
+app.get('/api/admin/recap.xlsx', auth, async (req, res) => {
   try {
-    // Allow token in query for download
-    const token = req.query.token || (req.headers.authorization || '').replace('Bearer ', '');
-    try { jwt.verify(token, JWT_SECRET); } catch { return res.status(401).send('Unauthorized'); }
     const month = req.query.month || new Date().toISOString().slice(0, 7);
     const monthRows = DB.reservations.filter(r => (r.reservation_date || '').slice(0, 7) === month)
       .sort((a, b) => a.reservation_date.localeCompare(b.reservation_date));
@@ -837,9 +995,12 @@ app.put('/api/admin/settings', auth, (req, res) => {
 });
 
 app.post('/api/admin/settings/upload', auth, upload.single('file'), (req, res) => {
-  const kind = req.body.kind; // 'logo' | 'hero' | 'qris'
+  const kind = req.body.kind;
   if (!['logo', 'hero', 'qris'].includes(kind)) return res.status(400).json({ error: 'kind invalid' });
   if (!req.file) return res.status(400).json({ error: 'file missing' });
+  if (!req.file.mimetype.startsWith('image/') || !validFileSignature(req.file)) {
+    return res.status(400).json({ error: 'File harus berupa PNG, JPEG, atau WebP yang valid' });
+  }
   DB.settings[`${kind}_b64`] = req.file.buffer.toString('base64');
   DB.settings[`${kind}_mime`] = req.file.mimetype;
   save();
@@ -865,7 +1026,7 @@ app.get('/api/admin/backup', auth, (req, res) => {
   });
 });
 
-app.post('/api/admin/restore', auth, (req, res) => {
+app.post('/api/admin/restore', auth, restoreJsonParser, (req, res) => {
   const { reservations = [], receipts = [], settings, mode = 'append' } = req.body;
   if (mode === 'replace') {
     DB.reservations = []; DB.receipts = [];
@@ -882,4 +1043,15 @@ app.post('/api/admin/restore', auth, (req, res) => {
 });
 
 app.get('/admin', (req, res) => res.sendFile(path.join(__dirname, 'public', 'admin.html')));
+
+app.use((error, req, res, next) => {
+  if (error instanceof multer.MulterError) {
+    const message = error.code === 'LIMIT_FILE_SIZE'
+      ? 'Ukuran file maksimal 5 MB'
+      : 'File tidak didukung atau jumlah file berlebih';
+    return res.status(400).json({ error: message });
+  }
+  console.error(error);
+  res.status(500).json({ error: 'Terjadi kesalahan pada server' });
+});
 
