@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="id" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kalender Treatment — Adzkiya Mom Baby Care</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/style.css">
+<link rel="icon" href="img/logo.png" type="image/png">
+</head>
+<body>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a href="index.html" class="brand">
+      <div class="brand-logo">🌸</div>
+      <div class="brand-text">Adzkiya Mom Baby Care<small>Mom & Baby Care</small></div>
+    </a>
+    <button class="mobile-toggle" onclick="document.getElementById('navLinks').classList.toggle('open')">☰</button>
+    <div class="nav-links" id="navLinks">
+      <a href="index.html">Beranda</a>
+      <a href="index.html#layanan">Layanan</a>
+      <a href="kalender.html" class="active">Kalender</a>
+      <a href="index.html#kontak">Kontak</a>
+      <button class="theme-toggle" id="themeToggle">🌙</button>
+      <a href="reservasi.html" class="btn-nav">Reservasi</a>
+    </div>
+  </div>
+</nav>
+
+<section class="section" style="padding-top: 50px;">
+  <div class="container">
+    <div class="section-head" style="margin-bottom: 28px;">
+      <span class="section-eyebrow">Jadwal Treatment</span>
+      <h2>📅 Kalender Reservasi</h2>
+      <p>Cek jadwal yang sudah dikonfirmasi sebelum melakukan reservasi.</p>
+    </div>
+
+    <div class="calendar-wrap">
+      <div class="cal-header">
+        <h3 id="calLabel">—</h3>
+        <div class="cal-nav">
+          <button onclick="prevMonth()">‹</button>
+          <button onclick="todayBtn()">Hari ini</button>
+          <button onclick="nextMonth()">›</button>
+        </div>
+      </div>
+      <div class="cal-grid" id="calGrid"></div>
+      <div style="margin-top: 24px; display: flex; gap: 24px; justify-content: center; flex-wrap: wrap; font-size: 0.85rem; color: var(--text-soft);">
+        <div><span class="dot" style="display:inline-block;width:10px;height:10px;border-radius:50%;background:var(--primary);margin-right:6px;"></span>Ada treatment terjadwal</div>
+        <div>Hover ke tanggal untuk melihat detail</div>
+      </div>
+    </div>
+
+    <div style="text-align: center; margin-top: 30px;">
+      <a href="reservasi.html" class="btn btn-primary">📅 Buat Reservasi Baru</a>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="footer-inner">
+    <div>© 2026 Adzkiya Mom Baby Care</div>
+  </div>
+</footer>
+
+<script src="js/main.js"></script>
+<script>
+var viewDate = new Date();
+var events = [];
+
+// In the static version, the calendar is empty.
+// Events would be managed through the admin panel (server.js).
+function loadEvents() {
+  // Try loading from local data file if available
+  fetch('data/calendar.json')
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      events = data;
+      renderCalendar();
+    })
+    .catch(function() {
+      // If no data file, show empty calendar
+      renderCalendar();
+    });
+}
+
+function renderCalendar() {
+  var y = viewDate.getFullYear();
+  var m = viewDate.getMonth();
+  var monthNames = ['Januari','Februari','Maret','April','Mei','Juni','Juli','Agustus','September','Oktober','November','Desember'];
+  document.getElementById('calLabel').textContent = monthNames[m] + ' ' + y;
+  var grid = document.getElementById('calGrid');
+  grid.innerHTML = '';
+  var dayNames = ['Min','Sen','Sel','Rab','Kam','Jum','Sab'];
+  dayNames.forEach(function(d) {
+    var h = document.createElement('div');
+    h.className = 'cal-cell head'; h.textContent = d;
+    grid.appendChild(h);
+  });
+  var firstDay = new Date(y, m, 1).getDay();
+  var daysInMonth = new Date(y, m + 1, 0).getDate();
+  var prevDays = new Date(y, m, 0).getDate();
+  var todayStr = new Date().toISOString().slice(0, 10);
+
+  for (var i = firstDay - 1; i >= 0; i--) {
+    var c = document.createElement('div');
+    c.className = 'cal-cell muted';
+    c.innerHTML = '<span class="day-num">' + (prevDays - i) + '</span>';
+    grid.appendChild(c);
+  }
+  for (var d = 1; d <= daysInMonth; d++) {
+    var dateStr = y + '-' + String(m + 1).padStart(2, '0') + '-' + String(d).padStart(2, '0');
+    var dayEvents = events.filter(function(e) { return e.reservation_date === dateStr; });
+    var c2 = document.createElement('div');
+    c2.className = 'cal-cell' + (dateStr === todayStr ? ' today' : '');
+    c2.innerHTML = '<span class="day-num">' + d + '</span>';
+    dayEvents.slice(0, 2).forEach(function(e) {
+      var ev = document.createElement('div');
+      ev.className = 'ev';
+      ev.title = e.reservation_time + ' — ' + e.service_name;
+      ev.textContent = e.reservation_time.slice(0,5) + ' ' + e.service_name;
+      c2.appendChild(ev);
+    });
+    if (dayEvents.length > 2) {
+      var more = document.createElement('div');
+      more.className = 'ev';
+      more.textContent = '+' + (dayEvents.length - 2) + ' lainnya';
+      c2.appendChild(more);
+    }
+    grid.appendChild(c2);
+  }
+  var cells = firstDay + daysInMonth;
+  var trail = (7 - (cells % 7)) % 7;
+  for (var j = 1; j <= trail; j++) {
+    var c3 = document.createElement('div');
+    c3.className = 'cal-cell muted';
+    c3.innerHTML = '<span class="day-num">' + j + '</span>';
+    grid.appendChild(c3);
+  }
+}
+function prevMonth() { viewDate.setMonth(viewDate.getMonth() - 1); renderCalendar(); }
+function nextMonth() { viewDate.setMonth(viewDate.getMonth() + 1); renderCalendar(); }
+function todayBtn() { viewDate = new Date(); renderCalendar(); }
+loadEvents();
+</script>
+</body>
+</html>

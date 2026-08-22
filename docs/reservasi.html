@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="id" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Reservasi — Adzkiya Mom Baby Care</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/style.css">
+<link rel="icon" href="img/logo.png" type="image/png">
+</head>
+<body>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a href="index.html" class="brand">
+      <div class="brand-logo"><img src="img/logo.png" alt="" onerror="this.parentElement.innerHTML='🌸';this.parentElement.classList.add('fallback');" style="width:100%;height:100%;object-fit:contain;"></div>
+      <div class="brand-text"><span id="brandName">Adzkiya Mom Baby Care</span><small>Mom & Baby Care</small></div>
+    </a>
+    <button class="mobile-toggle" onclick="document.getElementById('navLinks').classList.toggle('open')">☰</button>
+    <div class="nav-links" id="navLinks">
+      <a href="index.html">Beranda</a>
+      <a href="index.html#layanan">Layanan</a>
+      <a href="kalender.html">Kalender</a>
+      <a href="index.html#kontak">Kontak</a>
+      <button class="theme-toggle" id="themeToggle">🌙</button>
+    </div>
+  </div>
+</nav>
+
+<section class="section" style="padding-top: 50px;">
+  <div class="container">
+    <div class="section-head" style="margin-bottom: 30px;">
+      <span class="section-eyebrow">Formulir Reservasi</span>
+      <h2>📅 Booking Layanan</h2>
+      <p>Pilih beberapa layanan & tentukan beberapa jadwal sekaligus. Reservasi akan dikirim via WhatsApp.</p>
+    </div>
+
+    <div class="form-wrap">
+      <div id="alertBox"></div>
+
+      <form id="reservasiForm">
+        <div class="form-group">
+          <label>👤 Nama Pasien <span style="color:var(--danger)">*</span></label>
+          <input type="text" name="patient_name" required placeholder="Nama lengkap Bunda / Bayi">
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label>📱 Nomor WhatsApp <span style="color:var(--danger)">*</span></label>
+            <input type="tel" name="whatsapp" required placeholder="08xxxxxxxxxx" pattern="[0-9+ -]{8,16}">
+          </div>
+          <div class="form-group">
+            <label>📍 Alamat Lengkap <span style="color:var(--danger)">*</span></label>
+            <input type="text" name="address" required placeholder="Dusun, RT/RW, Desa">
+          </div>
+        </div>
+
+        <!-- CART: multi-services -->
+        <div class="cart-section">
+          <h4>💆 Pilih Layanan <small style="color:var(--text-soft);font-weight:500;">— bisa lebih dari satu, atur qty masing-masing</small></h4>
+          <div id="cartItems"></div>
+          <button type="button" class="add-btn" onclick="addCartItem()">+ Tambah Layanan</button>
+        </div>
+
+        <!-- SLOTS: multi-date/time -->
+        <div class="cart-section">
+          <h4>📅 Jadwal <small style="color:var(--text-soft);font-weight:500;">— tambah berapapun tanggal & jam yang dibutuhkan</small></h4>
+          <div id="slotsList"></div>
+          <button type="button" class="add-btn" onclick="addSlot()">+ Tambah Jadwal</button>
+        </div>
+
+        <div class="form-group">
+          <label>💳 Metode Pembayaran <span style="color:var(--danger)">*</span></label>
+          <div class="pay-options" id="payOptions">
+            <div class="pay-option" data-method="COD"><span class="icn">💵</span>COD<br><small>Bayar di Tempat</small></div>
+            <div class="pay-option" data-method="Transfer"><span class="icn">🏦</span>Transfer<br><small>Bank</small></div>
+            <div class="pay-option" data-method="QRIS"><span class="icn">📱</span>QRIS<br><small>Scan QR</small></div>
+          </div>
+          <input type="hidden" name="payment_method" id="payMethod" required>
+        </div>
+
+        <!-- Bank info area -->
+        <div id="paymentInfo" style="display:none;"></div>
+
+        <div class="form-group">
+          <label>📝 Catatan Tambahan (opsional)</label>
+          <textarea name="notes" rows="2" placeholder="Mis. usia bayi, keluhan, patokan rumah, dll"></textarea>
+        </div>
+
+        <div class="summary-card" id="summary">
+          <div class="row"><span>Layanan terpilih:</span><span id="sumItemCount">0</span></div>
+          <div class="row"><span>Subtotal per sesi:</span><span id="sumItemTotal">Rp 0</span></div>
+          <div class="row"><span>Jumlah sesi:</span><span id="sumSlotCount">0</span></div>
+          <div class="row total"><span>Total Estimasi:</span><span id="sumGrand">Rp 0</span></div>
+        </div>
+
+        <button type="submit" class="btn btn-primary" style="width:100%;justify-content:center;" id="submitBtn">
+          💬 Kirim Reservasi via WhatsApp
+        </button>
+        <p class="help-text" style="text-align:center;margin-top:14px;">
+          Setelah form diisi, Anda akan diarahkan ke WhatsApp untuk mengirim reservasi.
+        </p>
+      </form>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="footer-inner">
+    <div>© 2026 Adzkiya Mom Baby Care</div>
+  </div>
+</footer>
+
+<script src="js/main.js"></script>
+<script>
+var SERVICES = SERVICES_DATA;
+var SETTINGS = SETTINGS_DATA;
+var cart = []; // {name, price, qty}
+var slots = []; // {date, time}
+
+function bootstrap() {
+  if (SETTINGS.business_name) document.getElementById('brandName').textContent = SETTINGS.business_name;
+
+  // Prefill from query
+  var q = new URLSearchParams(location.search);
+  var preService = q.get('service');
+  var prePrice = parseInt(q.get('price')) || 0;
+  if (preService && prePrice) cart.push({ name: preService, price: prePrice, qty: 1 });
+  if (!cart.length) cart.push({ name: '', price: 0, qty: 1 });
+  // Default 1 slot today 09:00
+  var today = new Date().toISOString().slice(0, 10);
+  slots.push({ date: today, time: '09:00' });
+  renderCart(); renderSlots(); updateSummary();
+}
+
+function svcOptions(selected) {
+  var html = '<option value="">— pilih layanan —</option>';
+  SERVICES.forEach(function(c) {
+    html += '<optgroup label="' + c.cat + '">';
+    c.items.forEach(function(it) {
+      html += '<option value="' + it.name + '" data-price="' + it.price + '" ' + (selected===it.name?'selected':'') + '>' + it.name + ' — Rp ' + it.price.toLocaleString('id-ID') + '</option>';
+    });
+    html += '</optgroup>';
+  });
+  return html;
+}
+
+function renderCart() {
+  var el = document.getElementById('cartItems');
+  el.innerHTML = '';
+  cart.forEach(function(it, i) {
+    var row = document.createElement('div');
+    row.className = 'cart-row';
+    row.innerHTML =
+      '<select onchange="cart[' + i + '].name=this.value;cart[' + i + '].price=parseInt(this.options[this.selectedIndex].dataset.price)||0;updateSummary();">' + svcOptions(it.name) + '</select>' +
+      '<input type="number" placeholder="Harga" value="' + (it.price || '') + '" min="0" oninput="cart[' + i + '].price=parseInt(this.value)||0;updateSummary();">' +
+      '<input type="number" placeholder="Qty" value="' + it.qty + '" min="1" max="50" oninput="cart[' + i + '].qty=parseInt(this.value)||1;updateSummary();">' +
+      '<button type="button" class="rm-btn" onclick="cart.splice(' + i + ',1);renderCart();updateSummary();">×</button>';
+    el.appendChild(row);
+  });
+}
+function addCartItem() { cart.push({ name: '', price: 0, qty: 1 }); renderCart(); updateSummary(); }
+
+function renderSlots() {
+  var el = document.getElementById('slotsList');
+  el.innerHTML = '';
+  var today = new Date().toISOString().slice(0, 10);
+  slots.forEach(function(s, i) {
+    var row = document.createElement('div');
+    row.className = 'slot-row';
+    row.innerHTML =
+      '<input type="date" value="' + s.date + '" min="' + today + '" oninput="slots[' + i + '].date=this.value;updateSummary();">' +
+      '<input type="time" value="' + s.time + '" oninput="slots[' + i + '].time=this.value;updateSummary();">' +
+      '<button type="button" class="rm-btn" onclick="slots.splice(' + i + ',1);renderSlots();updateSummary();">×</button>';
+    el.appendChild(row);
+  });
+}
+function addSlot() {
+  var last = slots[slots.length - 1];
+  var next = last ? { date: last.date, time: last.time } : { date: new Date().toISOString().slice(0,10), time: '09:00' };
+  if (slots.length >= 1) {
+    var d = new Date(next.date); d.setDate(d.getDate() + 1);
+    next.date = d.toISOString().slice(0, 10);
+  }
+  slots.push(next);
+  renderSlots(); updateSummary();
+}
+
+function updateSummary() {
+  var validItems = cart.filter(function(it) { return it.name && it.price > 0; });
+  var validSlots = slots.filter(function(s) { return s.date && s.time; });
+  var itemSum = validItems.reduce(function(s, it) { return s + it.price * it.qty; }, 0);
+  var total = itemSum * validSlots.length;
+  document.getElementById('sumItemCount').textContent = validItems.length;
+  document.getElementById('sumItemTotal').textContent = fmtRp(itemSum);
+  document.getElementById('sumSlotCount').textContent = validSlots.length;
+  document.getElementById('sumGrand').textContent = fmtRp(total);
+}
+
+// Payment options
+document.querySelectorAll('.pay-option').forEach(function(el) {
+  el.onclick = function() {
+    document.querySelectorAll('.pay-option').forEach(function(x) { x.classList.remove('selected'); });
+    el.classList.add('selected');
+    var m = el.dataset.method;
+    document.getElementById('payMethod').value = m;
+    var info = document.getElementById('paymentInfo');
+    if (m === 'Transfer' && SETTINGS.bank_accounts && SETTINGS.bank_accounts.length) {
+      info.style.display = 'block';
+      info.innerHTML = '<div class="summary-card"><strong>🏦 Transfer ke rekening berikut:</strong>' + SETTINGS.bank_accounts.map(function(b) { return '<div class="row"><span>' + b.bank + '</span><span><strong>' + b.number + '</strong> a.n. ' + b.name + '</span></div>'; }).join('') + '</div>';
+    } else if (m === 'QRIS') {
+      info.style.display = 'block';
+      info.innerHTML = '<div class="summary-card" style="text-align:center;"><strong>📱 QRIS tersedia</strong><br><small>Hubungi admin untuk informasi QRIS</small></div>';
+    } else {
+      info.style.display = 'none';
+      info.innerHTML = '';
+    }
+  };
+});
+
+document.getElementById('reservasiForm').addEventListener('submit', function(e) {
+  e.preventDefault();
+  var alertBox = document.getElementById('alertBox');
+  alertBox.innerHTML = '';
+  var validItems = cart.filter(function(it) { return it.name && it.price > 0; });
+  var validSlots = slots.filter(function(s) { return s.date && s.time; });
+  if (!validItems.length) { alertBox.innerHTML = '<div class="alert alert-error">Pilih minimal 1 layanan</div>'; return; }
+  if (!validSlots.length) { alertBox.innerHTML = '<div class="alert alert-error">Tambah minimal 1 jadwal</div>'; return; }
+  if (!document.getElementById('payMethod').value) { alertBox.innerHTML = '<div class="alert alert-error">Pilih metode pembayaran</div>'; return; }
+
+  var fd = new FormData(e.target);
+  var patientName = fd.get('patient_name');
+  var whatsapp = fd.get('whatsapp');
+  var address = fd.get('address');
+  var paymentMethod = fd.get('payment_method');
+  var notes = fd.get('notes') || '-';
+
+  var itemSum = validItems.reduce(function(s, it) { return s + it.price * it.qty; }, 0);
+  var total = itemSum * validSlots.length;
+
+  // Build WhatsApp message
+  var msg = '🌸 *RESERVASI ADZKIYA MOM BABY CARE*\n\n';
+  msg += '👤 *Nama:* ' + patientName + '\n';
+  msg += '📱 *WA:* ' + whatsapp + '\n';
+  msg += '📍 *Alamat:* ' + address + '\n\n';
+  msg += '💆 *Layanan:*\n';
+  validItems.forEach(function(it) {
+    msg += '  • ' + it.name + ' (x' + it.qty + ') — Rp ' + it.price.toLocaleString('id-ID') + '\n';
+  });
+  msg += '\n📅 *Jadwal:*\n';
+  validSlots.forEach(function(s) {
+    msg += '  • ' + s.date + ' ' + s.time + '\n';
+  });
+  msg += '\n💳 *Pembayaran:* ' + paymentMethod + '\n';
+  msg += '💰 *Subtotal:* Rp ' + itemSum.toLocaleString('id-ID') + '\n';
+  msg += '📆 *Jumlah sesi:* ' + validSlots.length + '\n';
+  msg += '🧾 *Total Estimasi:* Rp ' + total.toLocaleString('id-ID') + '\n';
+  if (notes !== '-') msg += '\n📝 *Catatan:* ' + notes + '\n';
+  msg += '\nMohon konfirmasi reservasi ini. Terima kasih! 🙏';
+
+  var phone = (SETTINGS.phone || '085887018194').replace(/\D/g, '').replace(/^0/, '62');
+  var waUrl = 'https://wa.me/' + phone + '?text=' + encodeURIComponent(msg);
+
+  alertBox.innerHTML = '<div class="alert alert-success">✅ Reservasi siap dikirim! Anda akan diarahkan ke WhatsApp...</div>';
+
+  setTimeout(function() {
+    window.open(waUrl, '_blank');
+  }, 800);
+});
+
+bootstrap();
+</script>
+</body>
+</html>
