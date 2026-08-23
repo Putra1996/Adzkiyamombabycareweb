@@ -10,6 +10,8 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const ExcelJS = require('exceljs');
 const mysql = require('mysql2/promise');
+const compression = require('compression');
+const rateLimit = require('express-rate-limit');
 const { Pool: PostgresPool } = require('pg');
 
 const app = express();
@@ -49,9 +51,15 @@ function normalizeState() {
 
 async function initStorage() {
   if (DATABASE_KIND === 'postgres') {
+    // Cap the pool at 5 connections. Neon Free plan allows 10k via
+    // the pooler, but each connection holds RAM on the Railway side.
+    // 5 is enough for ~50 concurrent users (queueing) on this app.
     pool = new PostgresPool({
       connectionString: DATABASE_URL,
-      ssl: IS_PRODUCTION ? { rejectUnauthorized: false } : undefined
+      ssl: IS_PRODUCTION ? { rejectUnauthorized: false } : undefined,
+      max: 5,
+      idleTimeoutMillis: 30000,
+      connectionTimeoutMillis: 10000
     });
     await pool.query(`
       CREATE TABLE IF NOT EXISTS app_state (
@@ -334,6 +342,27 @@ const SERVICE_PRICE_BY_NAME = new Map(
 
 // ---- MIDDLEWARE ----
 app.disable('x-powered-by');
+// gzip all responses >=1 KB. Saves ~70% bandwidth on the public HTML
+// pages and JSON APIs, which directly reduces Railway egress costs.
+app.use(compression({ threshold: 1024 }));
+// Light, IP-based rate limit on auth endpoints. Without this, a
+// scripted attacker can keep slamming /api/auth/login to consume
+// bcrypt CPU (which is the single most expensive thing this app does).
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 20,                   // 20 attempts per IP per window
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Terlalu banyak percobaan login. Coba lagi 15 menit lagi.' }
+});
+// General API rate limit (looser): keeps a single client from issuing
+// hundreds of requests/second and starving other users.
+const apiLimiter = rateLimit({
+  windowMs: 60 * 1000,       // 1 minute
+  max: 240,                  // 240 requests/min/IP ≈ 4 req/s sustained
+  standardHeaders: true,
+  legacyHeaders: false
+});
 app.use((req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
@@ -391,10 +420,22 @@ app.use(express.urlencoded({ extended: true, limit: '2mb' }));
 // directory exists (e.g. from `npm run build:pages`), it is also served
 // as a fallback for any file public/ doesn't have, so the GitHub Pages
 // build can be dropped into the same image.
-app.use(express.static(path.join(__dirname, 'public')));
+// Cache static assets for 1 day at the CDN/browser, but never cache
+// index.html (so deploys take effect immediately) or any /api path.
+const staticOptions = {
+  maxAge: '1d',
+  setHeaders: (res, path) => {
+    if (path.endsWith('.html') || path.endsWith('/')) {
+      res.setHeader('Cache-Control', 'no-cache');
+    } else {
+      res.setHeader('Cache-Control', 'public, max-age=86400');
+    }
+  }
+};
+app.use(express.static(path.join(__dirname, 'public'), staticOptions));
 const docsDir = path.join(__dirname, 'docs');
 if (fs.existsSync(docsDir)) {
-  app.use(express.static(docsDir));
+  app.use(express.static(docsDir, staticOptions));
 }
 
 const ALLOWED_UPLOAD_MIMES = new Set(['image/jpeg', 'image/png', 'image/webp', 'application/pdf']);
@@ -443,6 +484,10 @@ function calcReservationTotal(r) {
 // Admin receipts
 // Admin settings get/put + upload
 // Admin backup/restore
+
+// Apply the general API rate limit to every /api/* route. Public
+// HTML/static are served above and are not affected.
+app.use('/api/', apiLimiter);
 
 // ===== PUBLIC =====
 app.get('/health', (req, res) => res.json({ ok: true, storage: DATABASE_KIND }));
@@ -627,7 +672,7 @@ app.get('/api/proof/:id', auth, (req, res) => {
 
 // ===== AUTH =====
 const loginAttempts = new Map();
-app.post('/api/auth/login', (req, res) => {
+app.post('/api/auth/login', authLimiter, (req, res) => {
   const key = req.ip;
   const now = Date.now();
   const current = loginAttempts.get(key) || { count: 0, resetAt: now + 15 * 60 * 1000 };
