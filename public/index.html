@@ -278,9 +278,12 @@ fetch('/api/public-settings').then(r => r.json()).then(s => {
   const contactCard = document.getElementById('socialContactCard');
   if (socials.length) {
     const html = socials.map(soc => {
-      const icon = soc.icon || '🌐';
       const url = soc.url.startsWith('http') ? soc.url : 'https://' + soc.url;
-      return `<a href="${url}" target="_blank" rel="noopener" title="${soc.platform}" style="display:inline-flex;align-items:center;gap:6px;padding:8px 14px;background:var(--pink-100);color:var(--pink-700);border-radius:999px;text-decoration:none;font-weight:700;font-size:0.88rem;transition:all .15s;">${icon} ${soc.platform}</a>`;
+      // Prefer the uploaded profile picture (icon_url) over the emoji.
+      const avatar = soc.icon_url
+        ? `<img src="${soc.icon_url}" alt="" style="width:22px;height:22px;border-radius:50%;object-fit:cover;flex-shrink:0;background:var(--pink-100);">`
+        : `<span style="font-size:1rem;line-height:1;">${soc.icon || '🌐'}</span>`;
+      return `<a href="${url}" target="_blank" rel="noopener" title="${soc.platform}" style="display:inline-flex;align-items:center;gap:8px;padding:6px 14px 6px 6px;background:var(--pink-100);color:var(--pink-700);border-radius:999px;text-decoration:none;font-weight:700;font-size:0.88rem;transition:all .15s;">${avatar}<span>${soc.platform}</span></a>`;
     }).join('');
     if (footerSocial) footerSocial.innerHTML = html;
     if (contactSocial) contactSocial.innerHTML = html;

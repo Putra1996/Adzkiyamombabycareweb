@@ -1,5 +1,7 @@
 // Adzkiya Mom Baby Care - Backend v2.2
-// Split deployment: GitHub Pages frontend + Express API + PostgreSQL/MySQL persistence.
+// Single-host deployment: Express serves both the public/admin frontend
+// (from public/ or docs/) and the API (/api/*), backed by PostgreSQL
+// (Neon) or MySQL. Same-origin, so no CORS, no separate API hostname.
 const express = require('express');
 const multer = require('multer');
 const path = require('path');
@@ -25,7 +27,8 @@ if (IS_PRODUCTION && (!process.env.JWT_SECRET || process.env.JWT_SECRET.length <
 }
 
 // ---- DATA LAYER ----
-// Production supports PostgreSQL (Render) and MySQL/TiDB. Local development uses JSON.
+// Production supports PostgreSQL (Neon, Railway Postgres, etc.) and MySQL/TiDB.
+// Local development uses JSON.
 const DATA_FILE = process.env.DATA_FILE || path.join(__dirname, 'data.json');
 let DB = {
   admins: [],
@@ -343,25 +346,37 @@ app.use((req, res, next) => {
   next();
 });
 
-const allowedOrigins = new Set(
-  (process.env.ALLOWED_ORIGINS || 'https://putra1996.github.io')
-    .split(',')
-    .map((origin) => origin.trim().replace(/\/$/, ''))
-    .filter(Boolean)
-);
+// ALLOWED_ORIGINS is optional. If unset, the API allows any origin (fine
+// for single-host where the frontend and API share the same URL — no
+// cross-origin requests happen at all). Set it to a comma-separated list
+// of origins only if you actually serve the frontend from a different
+// host (e.g. GitHub Pages) and want to lock the API down.
+const allowedOrigins = process.env.ALLOWED_ORIGINS
+  ? new Set(
+      process.env.ALLOWED_ORIGINS
+        .split(',')
+        .map((origin) => origin.trim().replace(/\/$/, ''))
+        .filter(Boolean)
+    )
+  : null;
 app.use((req, res, next) => {
   const origin = req.headers.origin;
-  if (!origin) return next();
-  const normalized = origin.replace(/\/$/, '');
-  const localOrigin = !IS_PRODUCTION && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(normalized);
-  if (!allowedOrigins.has(normalized) && !localOrigin) {
-    return res.status(403).json({ error: 'Origin tidak diizinkan' });
+  if (allowedOrigins) {
+    if (!origin) {
+      // Same-origin / no Origin header: allow.
+      return next();
+    }
+    const normalized = origin.replace(/\/$/, '');
+    const localOrigin = !IS_PRODUCTION && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(normalized);
+    if (!allowedOrigins.has(normalized) && !localOrigin) {
+      return res.status(403).json({ error: 'Origin tidak diizinkan' });
+    }
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Vary', 'Origin');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+    if (req.method === 'OPTIONS') return res.sendStatus(204);
   }
-  res.setHeader('Access-Control-Allow-Origin', origin);
-  res.setHeader('Vary', 'Origin');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
-  if (req.method === 'OPTIONS') return res.sendStatus(204);
   next();
 });
 
@@ -372,7 +387,15 @@ app.use((req, res, next) => {
   standardJsonParser(req, res, next);
 });
 app.use(express.urlencoded({ extended: true, limit: '2mb' }));
+// Serve the frontend from public/ (single-host deployment). If a docs/
+// directory exists (e.g. from `npm run build:pages`), it is also served
+// as a fallback for any file public/ doesn't have, so the GitHub Pages
+// build can be dropped into the same image.
 app.use(express.static(path.join(__dirname, 'public')));
+const docsDir = path.join(__dirname, 'docs');
+if (fs.existsSync(docsDir)) {
+  app.use(express.static(docsDir));
+}
 
 const ALLOWED_UPLOAD_MIMES = new Set(['image/jpeg', 'image/png', 'image/webp', 'application/pdf']);
 const upload = multer({
@@ -435,6 +458,15 @@ app.get('/api/business', (req, res) => {
 
 app.get('/api/public-settings', (req, res) => {
   const s = DB.settings || {};
+  // Strip huge base64 blobs from socials; the frontend will fetch each
+  // social's icon image from /api/social-icon/:idx if it has one.
+  const socialsPublic = (s.socials || []).filter(x => x && x.url).map((x, i) => ({
+    platform: x.platform,
+    icon: x.icon,
+    url: x.url,
+    has_icon: !!x.icon_b64,
+    icon_url: x.icon_b64 ? `/api/social-icon/${i}` : null
+  }));
   res.json({
     business_name: s.business_name, tagline: s.tagline, address: s.address, phone: s.phone,
     area: s.area, type: s.type, practitioner: s.practitioner, instagram: s.instagram,
@@ -446,8 +478,23 @@ app.get('/api/public-settings', (req, res) => {
     gmaps_embed: s.gmaps_embed || '',
     hours: s.hours || [],
     testimonials: s.testimonials || [],
-    socials: (s.socials || []).filter(x => x && x.url)
+    socials: socialsPublic
   });
+});
+
+// Public social icon image (no auth — used by the public site to render
+// the IG/TT/FB avatar next to the platform name). The index is the
+// position of the social in DB.settings.socials after filtering for
+// having a URL; we re-derive it the same way public-settings does.
+app.get('/api/social-icon/:idx', (req, res) => {
+  const target = parseInt(req.params.idx, 10);
+  if (isNaN(target) || target < 0) return res.status(400).end();
+  const visible = (DB.settings?.socials || []).filter(x => x && x.url);
+  const item = visible[target];
+  if (!item || !item.icon_b64) return res.status(404).end();
+  res.setHeader('Content-Type', item.icon_mime || 'image/png');
+  res.setHeader('Cache-Control', 'public, max-age=3600');
+  res.send(Buffer.from(item.icon_b64, 'base64'));
 });
 
 app.get('/api/logo', (req, res) => {
@@ -1012,6 +1059,40 @@ app.delete('/api/admin/settings/:kind', auth, (req, res) => {
   if (!['logo', 'hero', 'qris'].includes(k)) return res.status(400).json({ error: 'kind invalid' });
   DB.settings[`${k}_b64`] = null;
   DB.settings[`${k}_mime`] = null;
+  save();
+  res.json({ ok: true });
+});
+
+// Upload an icon image for one social media entry (Instagram, TikTok, etc.).
+// Body: kind=social-icon, idx=<position in SETTINGS.socials>, file=<image>
+app.post('/api/admin/socials/icon', auth, upload.single('file'), (req, res) => {
+  const idx = parseInt(req.body.idx, 10);
+  DB.settings.socials = DB.settings.socials || [];
+  if (isNaN(idx) || idx < 0 || idx >= DB.settings.socials.length) {
+    return res.status(400).json({ error: 'idx invalid' });
+  }
+  if (!req.file) return res.status(400).json({ error: 'file missing' });
+  if (!req.file.mimetype.startsWith('image/') || !validFileSignature(req.file)) {
+    return res.status(400).json({ error: 'File harus berupa PNG, JPEG, atau WebP yang valid' });
+  }
+  // Cap icon size at 500 KB after base64 encode to keep the JSON state small.
+  if (req.file.size > 500 * 1024) {
+    return res.status(400).json({ error: 'Ukuran foto profil maksimal 500 KB. Kompres dulu atau crop jadi kecil.' });
+  }
+  DB.settings.socials[idx].icon_b64 = req.file.buffer.toString('base64');
+  DB.settings.socials[idx].icon_mime = req.file.mimetype;
+  save();
+  res.json({ ok: true });
+});
+
+app.delete('/api/admin/socials/icon/:idx', auth, (req, res) => {
+  const idx = parseInt(req.params.idx, 10);
+  DB.settings.socials = DB.settings.socials || [];
+  if (isNaN(idx) || idx < 0 || idx >= DB.settings.socials.length) {
+    return res.status(400).json({ error: 'idx invalid' });
+  }
+  delete DB.settings.socials[idx].icon_b64;
+  delete DB.settings.socials[idx].icon_mime;
   save();
   res.json({ ok: true });
 });

@@ -1055,13 +1055,19 @@ function renderSocials() {
   const icons = { 'Instagram':'📷','TikTok':'🎵','Facebook':'📘','YouTube':'▶️','Twitter/X':'🐦','WhatsApp':'💬','Telegram':'✈️','LinkedIn':'💼','Threads':'@','Lainnya':'🌐' };
   SETTINGS.socials.forEach((sc, i) => {
     const row = document.createElement('div');
-    row.style.cssText = 'display:grid;grid-template-columns:140px 50px 1fr 36px;gap:8px;margin-bottom:8px;align-items:center;';
+    row.style.cssText = 'display:grid;grid-template-columns:140px 50px 1fr 70px 70px 36px;gap:8px;margin-bottom:8px;align-items:center;';
+    const hasIcon = !!sc.icon_b64;
     row.innerHTML = `
       <select onchange="onSocialPlatformChange(${i}, this)" style="padding:8px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);">
         ${platforms.map(p => `<option value="${p}" data-icon="${icons[p]}" ${sc.platform===p?'selected':''}>${icons[p]} ${p}</option>`).join('')}
       </select>
-      <input type="text" value="${esc(sc.icon || icons[sc.platform] || '🌐')}" oninput="SETTINGS.socials[${i}].icon=this.value" style="padding:8px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);text-align:center;font-size:1.1rem;">
+      <div style="width:42px;height:42px;border-radius:50%;background:${hasIcon ? `url(data:${sc.icon_mime||'image/png'};base64,${sc.icon_b64}) center/cover` : 'var(--pink-100)'};display:flex;align-items:center;justify-content:center;font-size:1.2rem;flex-shrink:0;">${hasIcon ? '' : esc(sc.icon || icons[sc.platform] || '🌐')}</div>
       <input type="url" placeholder="https://instagram.com/username" value="${esc(sc.url || '')}" oninput="SETTINGS.socials[${i}].url=this.value" style="padding:8px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);">
+      <label class="btn-sm btn-approve" style="cursor:pointer;display:inline-flex;align-items:center;justify-content:center;padding:8px;margin:0;">
+        📷
+        <input type="file" accept="image/*" onchange="uploadSocialIcon(${i}, this)" style="display:none;">
+      </label>
+      ${hasIcon ? `<button class="btn-sm btn-del" onclick="deleteSocialIcon(${i})" style="padding:8px;">🗑️</button>` : `<span style="display:inline-block;width:36px;"></span>`}
       <button class="rm-btn" onclick="SETTINGS.socials.splice(${i},1);renderSocials();" style="height:38px;background:#fde0e4;color:#c43050;border:none;border-radius:8px;cursor:pointer;">×</button>
     `;
     el.appendChild(row);
@@ -1079,6 +1085,49 @@ function addSocial() {
   SETTINGS.socials = SETTINGS.socials || [];
   SETTINGS.socials.push({ platform: 'Instagram', icon: '📷', url: '' });
   renderSocials();
+}
+
+async function uploadSocialIcon(idx, fileInput) {
+  const file = fileInput.files && fileInput.files[0];
+  if (!file) return;
+  if (file.size > 500 * 1024) {
+    alert('Ukuran foto profil maksimal 500 KB. Crop jadi kecil atau kompres dulu, lalu coba lagi.');
+    fileInput.value = '';
+    return;
+  }
+  const fd = new FormData();
+  fd.append('file', file);
+  fd.append('idx', String(idx));
+  try {
+    const res = await fetch(apiUrl('/api/admin/socials/icon'), {
+      method: 'POST',
+      headers: { Authorization: 'Bearer ' + TOKEN },
+      body: fd
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) { alert('Gagal upload: ' + (data.error || res.statusText)); fileInput.value = ''; return; }
+    // Update the local SETTINGS so the preview is correct without a refetch.
+    if (SETTINGS.socials && SETTINGS.socials[idx]) {
+      // Re-fetch settings to get the saved base64 (the server is the source of truth).
+      SETTINGS = await api('/api/admin/settings');
+    }
+    renderSocials();
+    fileInput.value = '';
+  } catch (e) {
+    alert('Error: ' + e.message);
+    fileInput.value = '';
+  }
+}
+
+async function deleteSocialIcon(idx) {
+  if (!confirm('Hapus foto profil untuk media sosial ini?')) return;
+  try {
+    await api('/api/admin/socials/icon/' + idx, { method: 'DELETE' });
+    SETTINGS = await api('/api/admin/settings');
+    renderSocials();
+  } catch (e) {
+    alert('Gagal: ' + e.message);
+  }
 }
 
 // ---------- NOTIFICATIONS (realtime polling) ----------
