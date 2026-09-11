@@ -176,6 +176,63 @@ process.on('SIGINT', shutdown);
 
 function nextId(t) { DB._seq[t] = (DB._seq[t] || 0) + 1; return DB._seq[t]; }
 
+// Mirror a kwitansi (receipt) into a corresponding reservation so that
+// the receipt's amount counts toward the monthly Rekap Bulanan
+// totalOmzet (which only sums reservations with payment_status='lunas').
+//
+// The reservation is created with:
+//   • status='approved' (the service was rendered — that's why a
+//     receipt exists)
+//   • payment_status='lunas' (paid in full — that's why a receipt
+//     exists with a total > 0)
+//   • reservation_date = service_date (the kwitansi's service date)
+//   • reservation_time = '09:00' by default (kwitansi doesn't carry a
+//     time; admin can edit the reservation later to set the real
+//     session time)
+//   • items copied as-is
+//
+// De-duplication: if a matching reservation already exists for the
+// same patient + service_date + total (within 1 rupiah), we skip
+// creating a duplicate. This protects against the same PDF being
+// imported twice.
+function syncReceiptToReservation(receipt) {
+  if (!receipt || !receipt.patient_name || !receipt.service_date) return null;
+  // Skip if a matching reservation already exists.
+  const existing = DB.reservations.find((r) =>
+    r.patient_name === receipt.patient_name &&
+    r.reservation_date === receipt.service_date &&
+    Math.abs((r.total || 0) - (receipt.total || 0)) <= 1
+  );
+  if (existing) return null;
+  const items = Array.isArray(receipt.items) ? receipt.items : [];
+  if (!items.length) return null;
+  const id = nextId('reservations');
+  const rec = {
+    id,
+    patient_name: receipt.patient_name,
+    whatsapp: receipt.whatsapp || '',
+    address: receipt.address || '',
+    items,
+    slots: [{ date: receipt.service_date, time: '09:00' }],
+    item_total: receipt.subtotal || items.reduce((s, it) => s + (it.price || 0) * (it.qty || 1), 0),
+    total: receipt.total,
+    service_name: items.map((it) => it.name).join(', '),
+    service_price: receipt.subtotal || items.reduce((s, it) => s + (it.price || 0) * (it.qty || 1), 0),
+    qty: items.reduce((s, it) => s + (it.qty || 1), 0),
+    reservation_date: receipt.service_date,
+    reservation_time: '09:00',
+    payment_method: 'Transfer',           // kwitansi implies non-COD
+    proof_mime: null,
+    proof_b64: null,
+    notes: `Auto-generated from kwitansi ${receipt.invoice_no || ''}`.trim(),
+    status: 'approved',
+    payment_status: 'lunas',
+    created_at: receipt.created_at || new Date().toISOString()
+  };
+  DB.reservations.push(rec);
+  return rec;
+}
+
 function seedAdmin() {
   const configuredEmail = (process.env.ADMIN_EMAIL || '').trim().toLowerCase();
   const configuredPassword = process.env.ADMIN_PASSWORD || '';
@@ -1240,6 +1297,12 @@ app.post('/api/admin/receipts/import', auth, restoreJsonParser, (req, res) => {
       };
       DB.receipts.push(rec);
       imported.push(rec);
+      // Mirror into a reservation so this kwitansi counts toward the
+      // monthly totalOmzet on the Rekap Bulanan page. Skip when the
+      // caller explicitly opts out via ?sync_reservations=0.
+      if (req.query.sync_reservations !== '0') {
+        syncReceiptToReservation(rec);
+      }
     }
 
     if (imported.length) {

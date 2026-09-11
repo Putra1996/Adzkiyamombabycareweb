@@ -1004,6 +1004,9 @@ function openImportKwitansiModal() {
         <label style="display:flex;gap:6px;align-items:center;cursor:pointer;">
           <input type="checkbox" id="impKwSkipDups" checked> Lewati duplikat (invoice_no / pasien+tanggal sama)
         </label>
+        <label style="display:flex;gap:6px;align-items:center;cursor:pointer;">
+          <input type="checkbox" id="impKwSyncRes" checked> 🔗 Auto-sinkron ke Reservasi (supaya masuk Rekap Bulanan)
+        </label>
         <a href="javascript:void(0)" onclick="downloadKwitansiTemplate()" style="color:var(--primary);text-decoration:underline;font-size:0.85rem;">📄 Download Template</a>
       </div>
     </div>
@@ -1020,6 +1023,7 @@ async function doImportKwitansi() {
   const fileEl = document.getElementById('impKwFile');
   const textEl = document.getElementById('impKwText');
   const skipDups = document.getElementById('impKwSkipDups').checked;
+  const syncRes = document.getElementById('impKwSyncRes').checked;
 
   let payload;
   if (fileEl.files && fileEl.files[0]) {
@@ -1037,7 +1041,11 @@ async function doImportKwitansi() {
 
   resultEl.innerHTML = `<div style="padding:10px;background:var(--pink-50);border-radius:8px;">⏳ Mengimport...</div>`;
   try {
-    const res = await fetch(apiUrl('/api/admin/receipts/import' + (skipDups ? '' : '?skip=0')), {
+    const params = new URLSearchParams();
+    if (!skipDups) params.set('skip', '0');
+    if (!syncRes) params.set('sync_reservations', '0');
+    const qs = params.toString();
+    const res = await fetch(apiUrl('/api/admin/receipts/import' + (qs ? '?' + qs : '')), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + TOKEN },
       body: JSON.stringify(parsed)
@@ -1047,7 +1055,8 @@ async function doImportKwitansi() {
 
     let html = `<div style="padding:12px;border-radius:8px;background:${data.imported ? '#d9efe1' : '#fff3d6'};">
       <strong>✅ Import selesai</strong><br>
-      Berhasil: <strong>${data.imported}</strong> · Lewati (duplikat): <strong>${data.skipped}</strong> · Gagal: <strong>${data.failed}</strong>
+      Berhasil: <strong>${data.imported}</strong> kwitansi · Lewati (duplikat): <strong>${data.skipped}</strong> · Gagal: <strong>${data.failed}</strong>
+      ${syncRes && data.imported ? `<br><small style="color:#1e8957;">🔗 ${data.imported} kwitansi otomatis dibuatkan reservasi mirror (status=approved, payment_status=lunas) supaya muncul di Rekap Bulanan.</small>` : ''}
     </div>`;
     if (data.failed_items && data.failed_items.length) {
       html += `<details style="margin-top:8px;"><summary style="cursor:pointer;color:var(--text-soft);">Lihat ${data.failed_items.length} baris gagal</summary>
@@ -1057,6 +1066,11 @@ async function doImportKwitansi() {
     resultEl.innerHTML = html;
     loadReceipts();
     loadKwitansiStats();
+    // Also refresh reservations view if the user is currently looking
+    // at it, so the newly created mirrors show up immediately.
+    if (syncRes && data.imported && CURRENT_PAGE === 'reservations') {
+      try { await loadReservations(); } catch {}
+    }
   } catch (e) {
     resultEl.innerHTML = `<div class="alert alert-error">${esc(e.message)}</div>`;
   }
@@ -1113,9 +1127,12 @@ function openImportPdfKwitansiModal() {
     <div id="impPdfStep1">
       <label style="font-weight:600;">📁 Pilih file PDF (boleh lebih dari satu)</label>
       <input type="file" id="impPdfFiles" accept="application/pdf,.pdf" multiple style="margin-top:6px;width:100%;">
-      <div style="margin-top:10px;display:flex;gap:8px;align-items:center;font-size:0.88rem;">
+      <div style="margin-top:10px;display:flex;gap:8px;align-items:center;font-size:0.88rem;flex-wrap:wrap;">
         <label style="display:flex;gap:6px;align-items:center;cursor:pointer;">
           <input type="checkbox" id="impPdfSkipDups" checked> Lewati duplikat
+        </label>
+        <label style="display:flex;gap:6px;align-items:center;cursor:pointer;">
+          <input type="checkbox" id="impPdfSyncRes" checked> 🔗 Auto-sinkron ke Reservasi
         </label>
       </div>
       <div id="impPdfStatus" style="margin-top:10px;"></div>
@@ -1232,18 +1249,30 @@ async function impPdfConfirmImport() {
   if (!toImport.length) return alert('Tidak ada kwitansi dipilih untuk di-import.');
 
   const skipDups = document.getElementById('impPdfSkipDups').checked;
+  const syncRes = document.getElementById('impPdfSyncRes') ? document.getElementById('impPdfSyncRes').checked : true;
   try {
-    const res = await fetch(apiUrl('/api/admin/receipts/import' + (skipDups ? '' : '?skip=0')), {
+    const params = new URLSearchParams();
+    if (!skipDups) params.set('skip', '0');
+    if (!syncRes) params.set('sync_reservations', '0');
+    const qs = params.toString();
+    const res = await fetch(apiUrl('/api/admin/receipts/import' + (qs ? '?' + qs : '')), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + TOKEN },
       body: JSON.stringify(toImport)
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || res.statusText);
-    alert(`✅ Import selesai: ${data.imported} kwitansi ditambahkan, ${data.skipped} dilewati (duplikat), ${data.failed} gagal.`);
+    let msg = 'Import selesai: ' + data.imported + ' kwitansi, ' + data.skipped + ' dilewati, ' + data.failed + ' gagal.';
+    if (syncRes && data.imported) {
+      msg += '\n\n' + data.imported + ' reservasi mirror otomatis dibuat (status=approved, payment_status=lunas) supaya muncul di Rekap Bulanan. Cek menu Reservasi.';
+    }
+    alert(msg);
     closeModal();
     loadReceipts();
     loadKwitansiStats();
+    if (syncRes && data.imported && CURRENT_PAGE === 'reservations') {
+      try { await loadReservations(); } catch {}
+    }
   } catch (e) {
     alert('Gagal import: ' + e.message);
   }
