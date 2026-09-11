@@ -455,7 +455,8 @@ async function renderReceipts() {
           <h3 style="margin:0;">Riwayat Kwitansi</h3>
           <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
             <input type="search" id="kwSearch" placeholder="Cari nama / invoice..." oninput="filterKwList()" style="padding:8px 12px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);min-width:180px;">
-            <button onclick="openImportKwitansiModal()" class="btn-sm btn-approve" title="Import banyak kwitansi dari JSON / spreadsheet">📥 Import</button>
+            <button onclick="openImportKwitansiModal()" class="btn-sm btn-approve" title="Import dari JSON / spreadsheet">📥 Import JSON</button>
+            <button onclick="openImportPdfKwitansiModal()" class="btn-sm btn-view" title="Restore kwitansi dari file PDF" style="background:#7c3aed;color:white;">📄 Import PDF</button>
           </div>
         </div>
         <div id="kwList">Loading...</div>
@@ -1077,6 +1078,160 @@ function downloadKwitansiTemplate() {
   a.href = URL.createObjectURL(blob);
   a.download = 'template-import-kwitansi.json';
   a.click();
+}
+
+// ===== IMPORT KWITANSI DARI PDF =====
+// Upload one or more kwitansi PDFs (the ones printed from this admin
+// panel). Server extracts text and parses invoice/patient/items/totals.
+// User reviews parsed data in a table, can edit fields, then submits to
+// the existing /api/admin/receipts/import for insertion.
+let _impPdfParsed = []; // last batch of parsed receipts (after upload, before confirm)
+function openImportPdfKwitansiModal() {
+  _impPdfParsed = [];
+  openModal(`
+    <h3>📄 Restore Kwitansi dari PDF</h3>
+    <p style="color:var(--text-soft);font-size:0.88rem;margin:6px 0 14px;line-height:1.5;">
+      Upload satu atau banyak file PDF kwitansi Adzkiya (PDF yang dicetak dari menu <strong>🖨️ Cetak PDF</strong>).
+      Server akan otomatis mengekstrak data dari setiap PDF. Anda bisa cek & edit hasilnya sebelum import.
+      <br><small style="color:var(--text-soft);">⚠️ PDF hasil scan/foto tidak didukung (butuh OCR). Hanya PDF yang di-generate oleh sistem ini.</small>
+    </p>
+    <div id="impPdfStep1">
+      <label style="font-weight:600;">📁 Pilih file PDF (boleh lebih dari satu)</label>
+      <input type="file" id="impPdfFiles" accept="application/pdf,.pdf" multiple style="margin-top:6px;width:100%;">
+      <div style="margin-top:10px;display:flex;gap:8px;align-items:center;font-size:0.88rem;">
+        <label style="display:flex;gap:6px;align-items:center;cursor:pointer;">
+          <input type="checkbox" id="impPdfSkipDups" checked> Lewati duplikat
+        </label>
+      </div>
+      <div id="impPdfStatus" style="margin-top:10px;"></div>
+      <div style="margin-top:14px;display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;">
+        <button class="btn-sm btn-view" onclick="closeModal()">Batal</button>
+        <button onclick="impPdfUpload()" class="btn btn-primary">🔍 Ekstrak Data</button>
+      </div>
+    </div>
+    <div id="impPdfStep2" style="display:none;">
+      <div id="impPdfSummary" style="margin-bottom:12px;"></div>
+      <div style="max-height:340px;overflow:auto;border:1px solid var(--border);border-radius:10px;">
+        <table class="data-table" id="impPdfTable">
+          <thead><tr>
+            <th style="width:32px;">✓</th>
+            <th>File</th>
+            <th>Invoice</th>
+            <th>Pasien</th>
+            <th>Tanggal</th>
+            <th>Item</th>
+            <th>Total</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div id="impPdfFailed" style="margin-top:10px;"></div>
+      <div style="margin-top:14px;display:flex;gap:8px;justify-content:space-between;flex-wrap:wrap;">
+        <button class="btn-sm btn-view" onclick="document.getElementById('impPdfStep1').style.display='';document.getElementById('impPdfStep2').style.display='none';">⬅️ Upload Lagi</button>
+        <div style="display:flex;gap:8px;">
+          <button class="btn-sm btn-view" onclick="closeModal()">Batal</button>
+          <button onclick="impPdfConfirmImport()" class="btn btn-primary">📥 Import ke Database</button>
+        </div>
+      </div>
+    </div>
+  `);
+}
+
+async function impPdfUpload() {
+  const filesEl = document.getElementById('impPdfFiles');
+  const statusEl = document.getElementById('impPdfStatus');
+  const files = filesEl.files;
+  if (!files || !files.length) return statusEl.innerHTML = `<div class="alert alert-error">Pilih minimal 1 file PDF.</div>`;
+
+  statusEl.innerHTML = `<div style="padding:10px;background:var(--pink-50);border-radius:8px;">⏳ Mengekstrak ${files.length} file...</div>`;
+  const fd = new FormData();
+  for (const f of files) fd.append('files', f);
+
+  try {
+    const res = await fetch(apiUrl('/api/admin/receipts/import-pdf'), {
+      method: 'POST',
+      headers: { Authorization: 'Bearer ' + TOKEN },
+      body: fd
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || res.statusText);
+
+    _impPdfParsed = (data.results || []).map((r, idx) => ({
+      filename: r.filename,
+      ok: r.ok,
+      error: r.error || null,
+      receipt: r.receipt || null,
+      selected: r.ok,
+    }));
+
+    // Show step 2 with parsed table
+    document.getElementById('impPdfStep1').style.display = 'none';
+    document.getElementById('impPdfStep2').style.display = '';
+
+    // Summary
+    const ok = _impPdfParsed.filter((r) => r.ok);
+    const fail = _impPdfParsed.filter((r) => !r.ok);
+    document.getElementById('impPdfSummary').innerHTML = `
+      <div style="padding:12px;border-radius:8px;background:${ok.length ? '#d9efe1' : '#fff3d6'};">
+        <strong>${ok.length}</strong> kwitansi berhasil diekstrak${fail.length ? `, <strong style="color:#c43050;">${fail.length}</strong> gagal` : ''}.
+      </div>
+    `;
+
+    // Table
+    const tbody = document.querySelector('#impPdfTable tbody');
+    tbody.innerHTML = _impPdfParsed.map((r, idx) => {
+      if (!r.ok) {
+        return `<tr style="background:#fde0e4;">
+          <td colspan="7"><strong>❌ ${esc(r.filename)}</strong> — ${esc(r.error || 'gagal')}</td>
+        </tr>`;
+      }
+      const rec = r.receipt;
+      const itemsText = (rec.items || []).map((it) => `${esc(it.name)} ×${it.qty}`).join(', ');
+      return `<tr data-idx="${idx}">
+        <td><input type="checkbox" class="imp-pdf-chk" ${r.selected ? 'checked' : ''} onchange="_impPdfParsed[${idx}].selected=this.checked"></td>
+        <td><small>${esc(r.filename)}</small></td>
+        <td>${esc(rec.invoice_no || '—')}</td>
+        <td>${esc(rec.patient_name || '—')}</td>
+        <td>${esc(rec.service_date || '—')}</td>
+        <td><small>${itemsText}</small></td>
+        <td><strong>${fmtRp(rec.total)}</strong></td>
+      </tr>`;
+    }).join('');
+
+    if (fail.length) {
+      document.getElementById('impPdfFailed').innerHTML = `<details><summary style="cursor:pointer;color:var(--text-soft);">${fail.length} file gagal diekstrak</summary>
+        <ul style="margin-top:6px;font-size:0.85rem;">${fail.map((f) => `<li><strong>${esc(f.filename)}</strong>: ${esc(f.error || 'unknown')}</li>`).join('')}</ul>
+      </details>`;
+    }
+  } catch (e) {
+    statusEl.innerHTML = `<div class="alert alert-error">${esc(e.message)}</div>`;
+  }
+}
+
+async function impPdfConfirmImport() {
+  const toImport = _impPdfParsed.filter((r) => r.ok && r.selected).map((r) => {
+    // Strip _confidence fields (server doesn't need them)
+    const { _confidence, ...rest } = r.receipt;
+    return rest;
+  });
+  if (!toImport.length) return alert('Tidak ada kwitansi dipilih untuk di-import.');
+
+  const skipDups = document.getElementById('impPdfSkipDups').checked;
+  try {
+    const res = await fetch(apiUrl('/api/admin/receipts/import' + (skipDups ? '' : '?skip=0')), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + TOKEN },
+      body: JSON.stringify(toImport)
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || res.statusText);
+    alert(`✅ Import selesai: ${data.imported} kwitansi ditambahkan, ${data.skipped} dilewati (duplikat), ${data.failed} gagal.`);
+    closeModal();
+    loadReceipts();
+    loadKwitansiStats();
+  } catch (e) {
+    alert('Gagal import: ' + e.message);
+  }
 }
 
 // Refresh total kwitansi stat card on Rekap Bulanan (called after import)
