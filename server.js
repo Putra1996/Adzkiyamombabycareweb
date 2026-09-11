@@ -65,22 +65,40 @@ async function initStorage() {
     // Cap the pool at 5 connections. Neon Free plan allows 10k via
     // the pooler, but each connection holds RAM on the Railway side.
     // 5 is enough for ~50 concurrent users (queueing) on this app.
-    pool = new PostgresPool({
-      connectionString: DATABASE_URL,
-      ssl: IS_PRODUCTION ? { rejectUnauthorized: false } : undefined,
-      max: 5,
-      idleTimeoutMillis: 30000,
-      connectionTimeoutMillis: 10000
-    });
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS app_state (
-        id INTEGER PRIMARY KEY,
-        data JSONB NOT NULL,
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-    const result = await pool.query('SELECT data FROM app_state WHERE id = 1');
-    if (result.rows.length) DB = result.rows[0].data;
+    let pgOk = false;
+    try {
+      pool = new PostgresPool({
+        connectionString: DATABASE_URL,
+        ssl: IS_PRODUCTION ? { rejectUnauthorized: false } : undefined,
+        max: 5,
+        idleTimeoutMillis: 30000,
+        connectionTimeoutMillis: 10000
+      });
+      // Verify the connection up front. If Neon is unreachable (cold
+      // start, network glitch, expired credentials, wrong URL) we fall
+      // back to file storage instead of crashing the process. File
+      // mode loses data on every redeploy but keeps the service
+      // reachable so the admin can still log in and fix DATABASE_URL.
+      await pool.query('SELECT 1');
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS app_state (
+          id INTEGER PRIMARY KEY,
+          data JSONB NOT NULL,
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+      `);
+      const result = await pool.query('SELECT data FROM app_state WHERE id = 1');
+      if (result.rows.length) DB = result.rows[0].data;
+      pgOk = true;
+    } catch (err) {
+      console.error('[storage] Postgres unreachable, falling back to file mode: ' + err.message);
+      pool = null;
+    }
+    if (!pgOk) {
+      try {
+        if (fs.existsSync(DATA_FILE)) DB = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
+      } catch (e) { /* ignore */ }
+    }
   } else if (DATABASE_KIND === 'mysql') {
     pool = mysql.createPool(DATABASE_URL);
     await pool.execute(`
@@ -277,7 +295,7 @@ function ensureNewSettings() {
     ensureNewSettings();
     await queueSave();
     server = app.listen(PORT, '0.0.0.0', () => {
-      console.log(`Adzkiya Mom Baby Care v2.2 on 0.0.0.0:${PORT} (storage: ${DATABASE_KIND})`);
+      console.log(`Adzkiya Mom Baby Care v2.2 on 0.0.0.0:${PORT} (storage: ${pool ? DATABASE_KIND : 'file'})`);
     });
   } catch (error) {
     console.error('FATAL boot:', error);
@@ -512,7 +530,7 @@ function calcReservationTotal(r) {
 app.use('/api/', apiLimiter);
 
 // ===== PUBLIC =====
-app.get('/health', (req, res) => res.json({ ok: true, storage: DATABASE_KIND }));
+app.get('/health', (req, res) => res.json({ ok: true, storage: pool ? DATABASE_KIND : 'file' }));
 app.get('/api/services', (req, res) => res.json(SERVICES));
 
 app.get('/api/business', (req, res) => {
