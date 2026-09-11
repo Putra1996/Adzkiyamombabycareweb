@@ -206,6 +206,12 @@ function syncReceiptToReservation(receipt) {
   if (existing) return null;
   const items = Array.isArray(receipt.items) ? receipt.items : [];
   if (!items.length) return null;
+  // Use the receipt's service_time if it's a valid HH:MM, otherwise
+  // default to 09:00. PDFs from "Buat Kwitansi Baru" already carry the
+  // time, and the ARINA e-receipt layout has a "Waktu/Jam :" field.
+  const time = (receipt.service_time && /^\d{1,2}:\d{2}$/.test(receipt.service_time))
+    ? receipt.service_time
+    : '09:00';
   const id = nextId('reservations');
   const rec = {
     id,
@@ -213,14 +219,14 @@ function syncReceiptToReservation(receipt) {
     whatsapp: receipt.whatsapp || '',
     address: receipt.address || '',
     items,
-    slots: [{ date: receipt.service_date, time: '09:00' }],
+    slots: [{ date: receipt.service_date, time }],
     item_total: receipt.subtotal || items.reduce((s, it) => s + (it.price || 0) * (it.qty || 1), 0),
     total: receipt.total,
     service_name: items.map((it) => it.name).join(', '),
     service_price: receipt.subtotal || items.reduce((s, it) => s + (it.price || 0) * (it.qty || 1), 0),
     qty: items.reduce((s, it) => s + (it.qty || 1), 0),
     reservation_date: receipt.service_date,
-    reservation_time: '09:00',
+    reservation_time: time,
     payment_method: 'Transfer',           // kwitansi implies non-COD
     proof_mime: null,
     proof_b64: null,
@@ -1119,7 +1125,7 @@ app.get('/api/admin/recap.xlsx', auth, async (req, res) => {
 
 // ===== ADMIN — RECEIPTS =====
 app.post('/api/admin/receipts', auth, (req, res) => {
-  const { patient_name, whatsapp, address, service_date, items, transport_fee, discount } = req.body;
+  const { patient_name, whatsapp, address, service_date, service_time, items, transport_fee, discount } = req.body;
   if (!items || !items.length) return res.status(400).json({ error: 'Items kosong' });
   const subtotal = items.reduce((s, it) => s + (it.price * it.qty), 0);
   const total = subtotal + (parseInt(transport_fee) || 0) - (parseInt(discount) || 0);
@@ -1129,6 +1135,7 @@ app.post('/api/admin/receipts', auth, (req, res) => {
   const id = nextId('receipts');
   DB.receipts.push({
     id, invoice_no, patient_name, whatsapp, address, service_date,
+    service_time: (service_time && /^\d{1,2}:\d{2}$/.test(service_time)) ? service_time : '09:00',
     items, transport_fee: parseInt(transport_fee) || 0,
     discount: parseInt(discount) || 0, subtotal, total,
     created_at: new Date().toISOString()
@@ -1271,6 +1278,9 @@ app.post('/api/admin/receipts/import', auth, restoreJsonParser, (req, res) => {
 
       const transport_fee = parseInt(get('transport_fee', 'transport', 'ongkir', 'fee') || 0, 10) || 0;
       const discount      = parseInt(get('discount', 'diskon', 'potongan') || 0, 10) || 0;
+      // service_time: HH:MM, accepts Indonesian "Waktu/Jam" / "Jam" / "Time"
+      const rawTime = String(get('service_time', 'waktu', 'jam', 'time', 'waktu_jam') || '').trim();
+      const service_time = /^\d{1,2}:\d{2}$/.test(rawTime) ? rawTime : '09:00';
 
       // Recompute totals server-side (never trust input numbers).
       const subtotal = items.reduce((s, it) => s + it.price * it.qty, 0);
@@ -1292,6 +1302,7 @@ app.post('/api/admin/receipts/import', auth, restoreJsonParser, (req, res) => {
       const id = nextId('receipts');
       const rec = {
         id, invoice_no, patient_name, whatsapp, address, service_date,
+        service_time,
         items, transport_fee, discount, subtotal, total,
         created_at: get('created_at', 'tanggal_buat') || new Date().toISOString()
       };
@@ -1490,6 +1501,24 @@ function parseAdzkiyaKwitansi(text) {
     const m = line.match(LABEL_VALUE_RE);
     if (m) labelValues.push({ raw: line, label: m[1], value: m[2].trim() });
   }
+  // Time (HH:MM) — read from "Waktu/Jam :", "Jam :", "Time :", or any
+  // HH:MM token on the patient block. Many Adzkiya PDFs (e.g. the
+  // ARINA e-receipt layout) include this so the mirror reservation
+  // gets the real session time instead of the 09:00 default.
+  let service_time = null;
+  function normalizeTime(str) {
+    if (!str) return null;
+    const s = String(str).trim();
+    // "09.00" or "09:00" or "9:00" — all OK
+    let m = s.match(/^(\d{1,2})[:.](\d{2})$/);
+    if (m) {
+      const h = parseInt(m[1], 10), mm = parseInt(m[2], 10);
+      if (h >= 0 && h < 24 && mm >= 0 && mm < 60) {
+        return `${String(h).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
+      }
+    }
+    return null;
+  }
   if (labelValues.length) {
     for (const lv of labelValues) {
       const val = lv.value;
@@ -1500,6 +1529,10 @@ function parseAdzkiyaKwitansi(text) {
         if (ph) whatsapp = ph[1].replace(/[\s\-]/g, '');
       }
       else if (/alamat/i.test(lv.label)) address = val;
+      else if (/waktu|jam|^time$/i.test(lv.label)) {
+        const t = normalizeTime(val);
+        if (t) service_time = t;
+      }
     }
   } else {
     // Layout A: block after the patient label
@@ -1578,6 +1611,18 @@ function parseAdzkiyaKwitansi(text) {
     if (printed) {
       const [, d, m, y] = printed;
       service_date = `${y}-${m.padStart(2,'0')}-${d.padStart(2,'0')}`;
+    }
+  }
+  // Fallback for service_time: scan for any HH:MM token in the text
+  // (after the first 8 lines, which usually contain the business
+  // header without a time).
+  if (!service_time) {
+    const candidates = lines.slice(8);
+    for (const l of candidates) {
+      // Skip if it looks like a date (e.g. "11 September 2026")
+      if (/\d{4}/.test(l) && /(januari|februari|maret|april|mei|juni|juli|agustus|september|oktober|november|desember)/i.test(l)) continue;
+      const t = normalizeTime(l.match(/\b(\d{1,2}[:.]\d{2})\b/)?.[1]);
+      if (t) { service_time = t; break; }
     }
   }
 
@@ -1764,6 +1809,7 @@ function parseAdzkiyaKwitansi(text) {
     whatsapp: whatsapp ? whatsapp.replace(/[\s\-]/g, '') : null,
     address,
     service_date,
+    service_time,
     items,
     subtotal,
     transport_fee,
@@ -1915,19 +1961,74 @@ app.get('/api/admin/backup', auth, (req, res) => {
 });
 
 app.post('/api/admin/restore', auth, restoreJsonParser, (req, res) => {
-  const { reservations = [], receipts = [], settings, mode = 'append' } = req.body;
-  if (mode === 'replace') {
-    DB.reservations = []; DB.receipts = [];
-    DB._seq.reservations = 0; DB._seq.receipts = 0;
+  try {
+    const { reservations = [], receipts = [], settings, mode = 'append', sync_reservations } = req.body;
+    const errors = [];
+    if (mode === 'replace') {
+      DB.reservations = []; DB.receipts = [];
+      DB._seq.reservations = 0; DB._seq.receipts = 0;
+    }
+    let reservationsImported = 0, reservationsSkipped = 0;
+    for (const r of reservations) {
+      if (!r || !r.patient_name || !r.reservation_date) {
+        reservationsSkipped++;
+        continue;
+      }
+      // Dedup: skip if same patient + same date + same total already
+      // exists in DB. Prevents double-restoring the same backup.
+      const dupe = DB.reservations.find((x) =>
+        x.patient_name === r.patient_name &&
+        x.reservation_date === r.reservation_date &&
+        Math.abs((x.total || 0) - (r.total || 0)) <= 1
+      );
+      if (dupe) { reservationsSkipped++; continue; }
+      DB.reservations.push({ ...r, id: nextId('reservations') });
+      reservationsImported++;
+    }
+    let receiptsImported = 0, receiptsSkipped = 0;
+    for (const k of receipts) {
+      if (!k || !k.patient_name) { receiptsSkipped++; continue; }
+      if (DB.receipts.find(x => x.invoice_no && x.invoice_no === k.invoice_no)) {
+        receiptsSkipped++;
+        continue;
+      }
+      DB.receipts.push({ ...k, id: nextId('receipts') });
+      receiptsImported++;
+      // Auto-sync restored receipts to reservations so the Rekap
+      // Bulanan page picks them up. Default ON. Pass
+      // sync_reservations=false to opt out.
+      if (sync_reservations !== false) {
+        syncReceiptToReservation(k);
+      }
+    }
+    // Bump the receipt counter so the next auto-generated invoice
+    // number doesn't collide with the ones we just restored.
+    const maxReceiptId = receipts.reduce((m, r) => Math.max(m, r.id || 0), 0);
+    if (maxReceiptId > (DB._seq.receipts || 0)) DB._seq.receipts = maxReceiptId;
+    const maxResvId = reservations.reduce((m, r) => Math.max(m, r.id || 0), 0);
+    if (maxResvId > (DB._seq.reservations || 0)) DB._seq.reservations = maxResvId;
+    if (settings && mode === 'replace') {
+      // Don't blindly replace — merge: keep the settings the user
+      // currently has for sensitive fields (admins, etc) but apply
+      // restored values for business_name, address, bank_accounts,
+      // etc. To fully replace, use a separate "Reset all" action.
+      DB.settings = { ...DB.settings, ...settings };
+    }
+    save();
+    res.json({
+      ok: true,
+      imported: {
+        reservations: reservationsImported,
+        receipts: receiptsImported,
+        reservations_skipped: reservationsSkipped,
+        receipts_skipped: receiptsSkipped
+      },
+      mode
+    });
+  } catch (e) {
+    console.error('restore error:', e);
+    res.status(500).json({ error: 'Gagal restore: ' + e.message });
   }
-  for (const r of reservations) DB.reservations.push({ ...r, id: nextId('reservations') });
-  for (const k of receipts) {
-    if (DB.receipts.find(x => x.invoice_no === k.invoice_no)) continue;
-    DB.receipts.push({ ...k, id: nextId('receipts') });
-  }
-  if (settings && mode === 'replace') DB.settings = settings;
-  save();
-  res.json({ ok: true, imported: { reservations: reservations.length, receipts: receipts.length } });
 });
 
 app.get('/admin', (req, res) => res.sendFile(path.join(__dirname, 'public', 'admin.html')));

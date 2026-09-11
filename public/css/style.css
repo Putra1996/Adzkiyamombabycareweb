@@ -315,23 +315,35 @@ footer { padding: 40px 24px; background: var(--card); border-top: 1px solid var(
   background: white; color: #2a1822; padding: 40px; max-width: 760px; margin: 0 auto;
   font-family: 'Plus Jakarta Sans', sans-serif; border-radius: 12px; box-shadow: var(--shadow-lg);
 }
-.invoice-header { display: flex; justify-content: space-between; align-items: start; margin-bottom: 30px; padding-bottom: 20px; border-bottom: 2px solid var(--pink-200); }
+.invoice-header { display: flex; justify-content: space-between; align-items: start; margin-bottom: 30px; padding-bottom: 20px; border-bottom: 2px solid var(--pink-200); gap: 16px; }
 .invoice-header h2 { font-size: 1.4rem; color: var(--primary); }
-.invoice-header .meta { text-align: right; font-size: 0.85rem; }
+.invoice-header .meta { text-align: right; font-size: 0.85rem; min-width: 0; }
+/* Keep the invoice number on a single line so it never breaks mid-token.
+   Without this, long invoice numbers like "INV-20260911-001" wrap to a
+   second line in narrow right columns, making them look like the
+   trailing "001" repeats. */
+.invoice-header .meta > span { display: inline-block; white-space: nowrap; word-break: keep-all; max-width: 100%; font-weight: 700; font-size: 1.05rem; color: var(--primary); }
 .invoice-block { margin-bottom: 24px; }
 .invoice-block h4 { font-size: 0.78rem; text-transform: uppercase; color: #8b6878; letter-spacing: 1px; margin-bottom: 6px; }
 .invoice table { width: 100%; border-collapse: collapse; margin: 16px 0; }
-.invoice table th { background: #ffeef3; padding: 10px; text-align: left; font-size: 0.82rem; }
+.invoice table th { background: linear-gradient(180deg, #ffeef3 0%, #ffe0e9 100%); padding: 10px; text-align: left; font-size: 0.82rem; color: #6b1f3a; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 2px solid #ee5a8a; }
 .invoice table td { padding: 10px; border-bottom: 1px solid #ffeaef; font-size: 0.9rem; }
-.invoice .totals { margin-left: auto; max-width: 260px; }
-.invoice .totals .row { display: flex; justify-content: space-between; padding: 4px 0; font-size: 0.9rem; }
-.invoice .totals .row.grand { font-weight: 800; font-size: 1.1rem; color: var(--primary); border-top: 2px solid var(--pink-200); padding-top: 8px; margin-top: 8px; }
+/* Zebra striping — alternating row colors make the table easy to read */
+.invoice table tbody tr:nth-child(even) td { background: #fff8fb; }
+.invoice table tbody tr:nth-child(odd) td { background: #ffffff; }
+.invoice table tbody tr:hover td { background: #ffeef3; }
+.invoice .totals { margin-left: auto; max-width: 320px; background: #fff8fb; padding: 14px 18px; border-radius: 10px; border: 1px solid #ffe0e9; }
+.invoice .totals .row { display: flex; justify-content: space-between; padding: 6px 0; font-size: 0.9rem; }
+.invoice .totals .row.grand { font-weight: 800; font-size: 1.15rem; color: var(--primary); border-top: 2px solid var(--pink-200); padding-top: 10px; margin-top: 10px; }
 .invoice-footer { text-align: center; margin-top: 30px; padding-top: 16px; border-top: 1px dashed #ffd0dd; font-size: 0.8rem; color: #8b6878; }
 
 @media print {
   body { background: white; }
   .nav, footer, .no-print { display: none !important; }
   .invoice { box-shadow: none; max-width: none; padding: 30px; }
+  /* Keep zebra striping in print */
+  .invoice table tbody tr:nth-child(even) td { background: #f5f5f5 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .invoice table th { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 }
 
 /* ---------- UTIL ---------- */

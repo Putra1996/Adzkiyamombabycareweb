@@ -434,6 +434,7 @@ async function renderReceipts() {
             <div class="form-group"><label>HP</label><input type="tel" id="kw_hp"></div>
             <div class="form-group"><label>Tanggal Layanan</label><input type="date" id="kw_date" value="${new Date().toISOString().slice(0,10)}"></div>
           </div>
+          <div class="form-group"><label>Waktu / Jam Layanan</label><input type="time" id="kw_time" value="09:00"></div>
           <div class="form-group"><label>Alamat</label><input type="text" id="kw_addr"></div>
           <hr style="margin:16px 0;border:none;border-top:1px dashed var(--border);">
           <h4 style="margin-bottom:10px;">Layanan</h4>
@@ -570,12 +571,13 @@ async function saveReceipt() {
     whatsapp: document.getElementById('kw_hp').value,
     address: document.getElementById('kw_addr').value,
     service_date: document.getElementById('kw_date').value,
+    service_time: document.getElementById('kw_time').value || '09:00',
     items,
     transport_fee: parseInt(document.getElementById('kw_transport').value) || 0,
     discount: parseInt(document.getElementById('kw_discount').value) || 0
   };
   const res = await api('/api/admin/receipts', { method: 'POST', body: JSON.stringify(body) });
-  printReceipt({ ...body, invoice_no: res.invoice_no, subtotal: res.subtotal, total: res.total, created_at: new Date().toISOString() });
+  printReceipt({ ...body, invoice_no: res.invoice_no, subtotal: res.subtotal, total: res.total, created_at: new Date().toISOString(), service_time: body.service_time });
   loadReceipts();
 }
 
@@ -713,8 +715,9 @@ function printReceipt(r) {
           ${esc(r.address || '')}
         </div>
         <div class="invoice-block">
-          <h4>Tanggal Layanan</h4>
+          <h4>Tanggal & Waktu Layanan</h4>
           ${r.service_date ? new Date(r.service_date).toLocaleDateString('id-ID', { day:'2-digit', month:'long', year:'numeric' }) : '-'}
+          ${r.service_time ? `<br><small style="color:var(--text-soft);">⏰ ${esc(r.service_time)} WIB</small>` : ''}
         </div>
       </div>
       <table>
@@ -840,6 +843,7 @@ function openKwitansiModal() {
         <div class="form-group"><label>HP</label><input type="tel" id="mkw_hp"></div>
         <div class="form-group"><label>Tanggal Layanan</label><input type="date" id="mkw_date" value="${month}"></div>
       </div>
+      <div class="form-group"><label>Waktu / Jam Layanan</label><input type="time" id="mkw_time" value="09:00"></div>
       <div class="form-group"><label>Alamat</label><input type="text" id="mkw_addr"></div>
       <hr style="margin:14px 0;border:none;border-top:1px dashed var(--border);">
       <h4 style="margin-bottom:8px;">Layanan</h4>
@@ -927,6 +931,7 @@ async function mkwSave() {
     whatsapp: document.getElementById('mkw_hp').value,
     address: document.getElementById('mkw_addr').value,
     service_date: document.getElementById('mkw_date').value,
+    service_time: document.getElementById('mkw_time').value || '09:00',
     items,
     transport_fee: parseInt(document.getElementById('mkw_transport').value) || 0,
     discount: parseInt(document.getElementById('mkw_discount').value) || 0
@@ -1382,8 +1387,20 @@ async function doRestore() {
   const text = await f.text();
   let data;
   try { data = JSON.parse(text); } catch { return alert('File tidak valid'); }
-  const res = await api('/api/admin/restore', { method: 'POST', body: JSON.stringify({ ...data, mode }) });
-  alert(`✅ Restore selesai: ${res.imported.reservations} reservasi, ${res.imported.receipts} kwitansi`);
+  try {
+    const res = await api('/api/admin/restore', { method: 'POST', body: JSON.stringify({ ...data, mode, sync_reservations: true }) });
+    const i = res.imported || {};
+    let msg = `✅ Restore selesai (mode: ${res.mode})\n\n` +
+              `Reservasi: ${i.reservations} masuk, ${i.reservations_skipped || 0} dilewati\n` +
+              `Kwitansi: ${i.receipts} masuk, ${i.receipts_skipped || 0} dilewati\n\n` +
+              `🔗 Kwitansi yang di-restore otomatis dibuatkan reservasi mirror supaya muncul di Rekap Bulanan.`;
+    alert(msg);
+    // Refresh the relevant views so the admin sees the new data
+    if (typeof loadReceipts === 'function') loadReceipts();
+    if (typeof loadReservations === 'function') loadReservations();
+  } catch (e) {
+    alert('Gagal restore: ' + e.message);
+  }
 }
 
 // ---------- SETTINGS ----------
