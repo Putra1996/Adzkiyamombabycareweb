@@ -452,11 +452,26 @@ async function renderReceipts() {
       </div>
       <div>
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px;">
-          <h3 style="margin:0;">Riwayat Kwitansi</h3>
+          <div>
+            <h3 style="margin:0;">Riwayat Kwitansi</h3>
+            <small style="color:var(--text-soft);">💡 Butuh restore data? Pakai tombol 📥 Import JSON atau 📄 Import PDF di kanan atas.</small>
+          </div>
           <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-            <input type="search" id="kwSearch" placeholder="Cari nama / invoice..." oninput="filterKwList()" style="padding:8px 12px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);min-width:180px;">
+            <input type="search" id="kwSearch" placeholder="Cari nama / invoice..." oninput="filterKwList()" style="padding:8px 12px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);min-width:160px;">
             <button onclick="openImportKwitansiModal()" class="btn-sm btn-approve" title="Import dari JSON / spreadsheet">📥 Import JSON</button>
-            <button onclick="openImportPdfKwitansiModal()" class="btn-sm btn-view" title="Restore kwitansi dari file PDF" style="background:#7c3aed;color:white;">📄 Import PDF</button>
+            <button onclick="openImportPdfKwitansiModal()" class="btn-sm" title="Restore kwitansi dari file PDF Adzkiya" style="background:#7c3aed;color:white;border:none;">📄 Import PDF</button>
+            <details style="position:relative;display:inline-block;">
+              <summary class="btn-sm" style="background:#0f766e;color:white;list-style:none;cursor:pointer;user-select:none;border:none;padding:6px 12px;border-radius:8px;font-size:0.8rem;font-weight:700;">📂 Cara Restore Lainnya ▾</summary>
+              <div style="position:absolute;right:0;top:100%;margin-top:6px;background:var(--card);border:1px solid var(--border);border-radius:10px;padding:10px;width:280px;z-index:50;box-shadow:0 8px 24px rgba(0,0,0,0.15);font-size:0.85rem;line-height:1.5;">
+                <strong style="display:block;margin-bottom:6px;">🔄 3 cara restore kwitansi:</strong>
+                <div style="margin:4px 0;">📥 <strong>Import JSON</strong> — file backup .json dari sistem ini atau paste JSON langsung.</div>
+                <div style="margin:4px 0;">📄 <strong>Import PDF</strong> — upload PDF kwitansi Adzkiya (yang dicetak dari sistem).</div>
+                <div style="margin:4px 0;">🧾 <strong>Buat Manual</strong> — input 1 kwitansi via form di kolom kiri.</div>
+                <div style="margin-top:8px;color:var(--text-soft);font-size:0.8rem;">
+                  ⚠️ PDF hasil scan/foto tidak didukung (butuh OCR).
+                </div>
+              </div>
+            </details>
           </div>
         </div>
         <div id="kwList">Loading...</div>
