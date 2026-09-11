@@ -1365,11 +1365,14 @@ function parseAdzkiyaKwitansi(text) {
   // standalone token. The whole point of this check is to distinguish
   // "KWITANSI / TAGIHAN / INVOICE" as a *header* from these words
   // appearing in regular prose. We require:
-  //   • The line containing the word is short (< 60 chars) AND
+  //   • The line containing the word is short (< 80 chars) AND
   //   • The word itself starts with an uppercase letter
+  // Special case: "KWITANSI ELEKTRONIK" (the e-receipt variant) is
+  // accepted as a single token.
   const DOC_TYPE_WORDS = ['KWITANSI', 'TAGIHAN', 'INVOICE', 'RECEIPT'];
   const looksLikeReceipt = lines.some((line) => {
-    if (line.length > 60) return false;
+    if (line.length > 80) return false;
+    if (/^KWITANSI\s+ELEKTRONIK$/i.test(line)) return true;
     return DOC_TYPE_WORDS.some((w) => new RegExp(`\\b${w}\\b`).test(line))
       || /^BUKTI\s*PEMBAYARAN$/i.test(line)
       || /^TANDA\s*TERIMA$/i.test(line);
@@ -1377,54 +1380,100 @@ function parseAdzkiyaKwitansi(text) {
   if (!looksLikeReceipt) return null;
 
   // ===== INVOICE NUMBER =====
+  // We try several strategies, in order of reliability:
+  //   1. Look for a line that looks like "Label : INV-..." (with colon)
+  //   2. Fall back to scanning the whole text for INV-XXX
+  //   3. Long digit string as last resort
   let invoice_no = null;
-  const invRegexes = [
-    /\bINV[-_]?[\w-]+/i,
-    /\bNo\.?\s*[:#]?\s*([A-Z0-9][\w-]{4,})/i,
-    /#\s*([A-Z0-9][\w-]{4,})/i,
-    /\b(\d{10,})\b/,
-  ];
-  for (const re of invRegexes) {
-    const m = fullText.match(re);
+  // Require either an "INV-" prefix or an explicit colon (`:`/`：`)
+  // before the value. This prevents "KWITANSI ELEKTRONIK" (where
+  // KWITANSI is the doc-type label, not an invoice label) from matching
+  // and capturing "ELEKTRONIK" as the invoice number.
+  const invLineRe = /^(?:No\.?\s*)?(?:Invoice|Kwitansi\s*Elektronik|Invoice\s*Elektronik|No\.|Nomor|Inv|#)\s*[:：]\s*(INV[-_]?\S+|[A-Z0-9][\w-]{4,})/i;
+  for (const line of lines) {
+    const m = line.match(invLineRe);
     if (m) { invoice_no = (m[1] || m[0]).trim(); break; }
+  }
+  if (!invoice_no) {
+    const invRegexes = [
+      /\bINV[-_]?[\w-]+/i,
+      /\b(\d{10,})\b/,
+    ];
+    for (const re of invRegexes) {
+      const m = fullText.match(re);
+      if (m) { invoice_no = (m[1] || m[0]).trim(); break; }
+    }
   }
 
   // ===== PATIENT SECTION =====
+  // Two layouts are supported:
+  //   A. Label header + value lines (Adzkiya v1)
+  //      "Kepada" / patient name / phone / address
+  //   B. Per-field "Label : value" lines (Adzkiya e-receipt variant)
+  //      "Nama Pasien : MOM ARINA" / "No. Telp/HP : 081xxx" / etc.
+  // We unify both into a single {label, value} map then read the
+  // fields we need from it.
   const PATIENT_LABELS = /^(Kepada(?:\s*Yth\.?)?|Penerima|Bill\s*To|Pelanggan|Customer|Untuk|Yth\.?|Kepada\s*:?)/i;
-  const SECTION_BOUNDARIES = /^(Tanggal\s+(Layanan|Pelayanan)|Tanggal|Tgl|Date|Item|Layanan|Jumlah|Harga|Subtotal|Total|Grand\s*Total|Total\s*Bayar|Tagihan|Diskon|Transportasi|Biaya\s+Transportasi)/i;
+  const SECTION_BOUNDARIES = /^(Tanggal\s+(Layanan|Pelayanan)|Tanggal|Tgl|Date|Item|Layanan|Jumlah|Harga|Subtotal|Total|Grand\s*Total|Total\s*Bayar|Tagihan|Diskon|Transportasi|Biaya\s+Transportasi|No\s+Invoice|No\s+Telp|Waktu|Nama\s+Pasien|Alamat)/i;
+  const phoneRe = /(\+?\d{1,3}[- ]?\d{2,4}[- ]?\d{2,4}[- ]?\d{2,4}|\b0\d{8,12}\b)/;
+
   let patient_name = null, whatsapp = null, address = null;
-  let patientIdx = -1;
-  for (let i = 0; i < lines.length; i++) {
-    if (PATIENT_LABELS.test(lines[i])) { patientIdx = i; break; }
+  // Detect layout B: "Label : value" lines. If present, read from these
+  // directly — they're the most reliable source of patient info.
+  // The label may end with `:` (Indonesian-style) or `:` followed by space.
+  const LABEL_VALUE_RE = /^(Nama\s+Pasien|No\.?\s*Telp(?:\/HP)?|No\.?\s*HP|HP|WhatsApp|Telp|Telepon|Alamat|Waktu(?:\/Jam)?|No\.?\s*Invoice)\s*[:：]\s*(.*)$/i;
+  const labelValues = [];
+  for (const line of lines) {
+    const m = line.match(LABEL_VALUE_RE);
+    if (m) labelValues.push({ raw: line, label: m[1], value: m[2].trim() });
   }
-  if (patientIdx >= 0) {
-    const block = [];
-    for (let i = patientIdx + 1; i < lines.length; i++) {
-      const l = lines[i];
-      if (SECTION_BOUNDARIES.test(l)) break;
-      block.push(l);
+  if (labelValues.length) {
+    for (const lv of labelValues) {
+      const val = lv.value;
+      if (!val || val === '-' || val === '—') continue;
+      if (/nama\s*pasien/i.test(lv.label)) patient_name = val;
+      else if (/telp|hp|whatsapp|telepon/i.test(lv.label)) {
+        const ph = val.match(phoneRe);
+        if (ph) whatsapp = ph[1].replace(/[\s\-]/g, '');
+      }
+      else if (/alamat/i.test(lv.label)) address = val;
     }
-    // Strip prefixes like "HP:", "WhatsApp:", "No. HP:", "Alamat:"
-    const cleaned = block.map((l) => l.replace(/^(HP|WhatsApp|No\.?\s*HP|No\.?\s*WhatsApp)\s*[:：]\s*/i, '').trim());
-    patient_name = cleaned[0] || null;
-    const phoneRe = /(\+?\d{1,3}[- ]?\d{2,4}[- ]?\d{2,4}[- ]?\d{2,4}|\b0\d{8,12}\b)/;
-    for (const l of cleaned) {
-      const m = l.match(phoneRe);
-      if (m) { whatsapp = m[1].replace(/[\s\-]/g, ''); break; }
+  } else {
+    // Layout A: block after the patient label
+    let patientIdx = -1;
+    for (let i = 0; i < lines.length; i++) {
+      if (PATIENT_LABELS.test(lines[i])) { patientIdx = i; break; }
     }
-    const addrCandidates = cleaned.filter((l, idx) => {
-      if (idx === 0) return false;
-      if (whatsapp && l.includes(whatsapp)) return false;
-      if (phoneRe.test(l)) return false;
-      return l.replace(/^Alamat\s*[:：]\s*/i, '').trim();
-    }).map((l) => l.replace(/^Alamat\s*[:：]\s*/i, '').trim()).filter(Boolean);
-    if (addrCandidates.length) address = addrCandidates.join(', ');
+    if (patientIdx >= 0) {
+      const block = [];
+      for (let i = patientIdx + 1; i < lines.length; i++) {
+        const l = lines[i];
+        if (SECTION_BOUNDARIES.test(l)) break;
+        block.push(l);
+      }
+      const cleaned = block.map((l) => l.replace(/^(HP|WhatsApp|No\.?\s*HP|No\.?\s*WhatsApp)\s*[:：]\s*/i, '').trim());
+      patient_name = cleaned[0] || null;
+      for (const l of cleaned) {
+        const m = l.match(phoneRe);
+        if (m) { whatsapp = m[1].replace(/[\s\-]/g, ''); break; }
+      }
+      const addrCandidates = cleaned.filter((l, idx) => {
+        if (idx === 0) return false;
+        if (whatsapp && l.includes(whatsapp)) return false;
+        if (phoneRe.test(l)) return false;
+        return l.replace(/^Alamat\s*[:：]\s*/i, '').trim();
+      }).map((l) => l.replace(/^Alamat\s*[:：]\s*/i, '').trim()).filter(Boolean);
+      if (addrCandidates.length) address = addrCandidates.join(', ');
+    }
   }
 
   // ===== SERVICE DATE =====
+  // Try to find an explicit "Tanggal Layanan" / "Tanggal Pelayanan" /
+  // "Tanggal" / "Tgl" / "Date" line first. The value may be on the
+  // same line (after a `:`) or the next non-section line.
   let service_date = null;
-  const DATE_LABELS = /^(Tanggal\s+(Layanan|Pelayanan|Layanan\s*:?)|Tanggal\s*:?|Tgl\s+(Layanan|Pelayanan)?\s*:?|Date\s*:?|Service\s*Date\s*:?)/i;
-  for (let i = 0; i < lines.length - 1; i++) {
+  const DATE_LABELS = /^(Tanggal\s+(Layanan|Pelayanan|Layanan\s*:?|Pelayanan\s*:?)|Tanggal\s*[:：]|Tgl\s+(Layanan|Pelayanan)?\s*[:：]|Date\s*[:：]|Service\s*Date\s*[:：])/i;
+  for (let i = 0; i < lines.length; i++) {
     if (DATE_LABELS.test(lines[i])) {
       const same = lines[i].match(/[:：]\s*(.+)$/);
       if (same) { service_date = parseIdDate(same[1]); if (service_date) break; }
@@ -1435,20 +1484,45 @@ function parseAdzkiyaKwitansi(text) {
       }
     }
   }
+  // Fallback: any date-looking string anywhere in the text.
   if (!service_date) {
-    const iso = fullText.match(/\b(\d{4}-\d{2}-\d{2})\b/);
-    if (iso) service_date = iso[1];
-    else {
-      const indo = fullText.match(/\b\d{1,2}\s+(Januari|Februari|Maret|April|Mei|Juni|Juli|Agustus|September|Oktober|November|Desember)\s+\d{4}\b/i);
-      if (indo) service_date = parseIdDate(indo[0]);
+    // Prefer Indonesian long-form dates first (less likely to be a
+    // false positive like a phone or invoice number)
+    const indo = fullText.match(/\b\d{1,2}\s+(Januari|Februari|Maret|April|Mei|Juni|Juli|Agustus|September|Oktober|November|Desember)\s+\d{4}\b/i);
+    if (indo) service_date = parseIdDate(indo[0]);
+    if (!service_date) {
+      const indoShort = fullText.match(/\b\d{1,2}\s+(Jan|Feb|Februari|Mar|Apr|Mei|Jun|Jul|Agu|Agustus|Sep|Sep|Okt|Oktober|Nov|Des|Desember)\s+\d{4}\b/i);
+      if (indoShort) service_date = parseIdDate(indoShort[0]);
+    }
+    if (!service_date) {
+      const ddmmyyyy = fullText.match(/\b(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})\b/);
+      if (ddmmyyyy) {
+        const [, d, m, y] = ddmmyyyy;
+        if (parseInt(m, 10) <= 12) service_date = `${y}-${m.padStart(2,'0')}-${d.padStart(2,'0')}`;
+      }
+    }
+    if (!service_date) {
+      const iso = fullText.match(/\b(\d{4}-\d{2}-\d{2})\b/);
+      if (iso) service_date = iso[1];
+    }
+  }
+  // Last resort: "Dicetak pada: <date>" gives us the created_at. We
+  // use it as service_date so the kwitansi doesn't get pushed to
+  // today's date. Many Adzkiya receipts are filled on the same day
+  // they're printed.
+  if (!service_date) {
+    const printed = fullText.match(/Dicetak(?:\s+pada)?\s*[:：]?\s*(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/i);
+    if (printed) {
+      const [, d, m, y] = printed;
+      service_date = `${y}-${m.padStart(2,'0')}-${d.padStart(2,'0')}`;
     }
   }
 
   // ===== ITEMS TABLE =====
   const COL_NAMES = {
-    name:  /Layanan|Item|Treatment|Jasa|Paket|Pelayanan|Service|Description/i,
-    qty:   /\bQty\b|Jumlah|Quantity/i,
-    price: /Harga|Price|Biaya|Tarif/i,
+    name:  /Layanan|Item|Treatment|Jasa|Paket|Pelayanan|Service|Description|Nama\s+Layanan|Kategori/i,
+    qty:   /\bQty\b|Jumlah|Quantity|No\b/i,           // some PDFs use "No" as row number (not qty)
+    price: /Harga|Price|Biaya|Tarif|Rp/i,
     total: /Subtotal|Total|Jumlah|Nominal/i,
   };
   function headerScore(line) {
@@ -1456,11 +1530,40 @@ function parseAdzkiyaKwitansi(text) {
     for (const k of Object.keys(COL_NAMES)) if (COL_NAMES[k].test(line)) n++;
     return n;
   }
-  let itemsHeaderIdx = -1;
-  for (let i = 0; i < lines.length; i++) {
-    if (headerScore(lines[i]) >= 3) { itemsHeaderIdx = i; break; }
+  // A real table header should match name + (qty OR price OR total).
+  // Exclude lines that look like totals rows (start with "Subtotal",
+  // "Total", "Grand Total" etc.) but NOT lines where these words
+  // appear as a column header in the middle (e.g. "Layanan Qty
+  // Harga Subtotal").
+  function isPlausibleHeader(line) {
+    if (/^(Subtotal(\s+Layanan)?|Grand\s*Total|Total\s*Bayar|TOTAL\s*BAYAR|Tagihan|Total)\s*[:：]/i.test(line)) return false;
+    return true;
   }
-  const TOTAL_INLINE = /^(Subtotal|Grand\s*Total|Total\s*Bayar|Tagihan|Total)\s/i;
+  // Find the BEST header line: highest score wins. When scores are
+  // tied, prefer the LATER occurrence — table headers almost always
+  // appear after the patient/date blocks, never in the business
+  // address section above.
+  let itemsHeaderIdx = -1;
+  let bestScore = 0;
+  for (let i = 0; i < lines.length; i++) {
+    if (!isPlausibleHeader(lines[i])) continue;
+    const sc = headerScore(lines[i]);
+    if (sc >= bestScore) { bestScore = sc; itemsHeaderIdx = i; }
+  }
+  // Require a minimum confidence (3 typical, 2 for 3-col tables)
+  if (bestScore < 2) itemsHeaderIdx = -1;
+  // Anchors that signal we've left the items table.
+  // Lines starting with any totals / transport / discount label end the
+  // items block (e.g. "Subtotal Layanan :", "Fee Transportasi :",
+  // "Potongan Diskon :", "TOTAL BAYAR :").
+  const TOTAL_INLINE = /^(Subtotal(\s+Layanan)?|(Fee\s+)?Transportasi|Potongan(\s+)?Diskon|Grand\s*Total|Total\s*Bayar|TOTAL\s*BAYAR|Tagihan|Total|TOTAL)\s*[:：]?\s/i;
+  // Extract a "x<n>" or "×<n>" quantity suffix from a name and return
+  // {name, qty}. Returns null if no suffix found.
+  function extractQtySuffix(name) {
+    const m = name.match(/\s+[x×]\s*(\d{1,3})\s*$/i);
+    if (m) return { name: name.slice(0, m.index).trim(), qty: parseInt(m[1], 10) || 1 };
+    return null;
+  }
   let items = [];
   if (itemsHeaderIdx >= 0) {
     for (let i = itemsHeaderIdx + 1; i < lines.length; i++) {
@@ -1479,14 +1582,37 @@ function parseAdzkiyaKwitansi(text) {
           continue;
         }
       }
-      // Pattern B: "<name> [Rp ]<price>" (qty implicit 1)
+      // Pattern B: "<name> [Rp ]<price>" (qty implicit 1) — 3-col tables
       m = clean.match(/^(.+?)\s+(?:Rp\s*)?([\d.,]+)\s*$/i);
       if (m) {
-        const name = m[1].trim();
+        let name = m[1].trim();
         const price = parseIdNumber(m[2]);
         if (name && !COL_NAMES.name.test(name) && !COL_NAMES.price.test(name) && price > 0) {
-          items.push({ name, qty: 1, price });
+          // Try to pull qty from a "x1" / "×2" suffix in the name.
+          const split = extractQtySuffix(name);
+          const qty = split ? split.qty : 1;
+          if (split) name = split.name;
+          items.push({ name, qty, price });
+          continue;
         }
+      }
+      // Pattern C: "<name> x<n>" with no price at all (PDF text got
+      // truncated at the right margin). Capture name + qty so the row
+      // is at least visible in the import preview; price stays 0.
+      const split = extractQtySuffix(clean);
+      if (split && split.name.length > 3) {
+        // Strip leading "<rowNum> <category>" if present (e.g.
+        // "1 UMUM Mom & Newborn Care 7 Days" → "Mom & Newborn Care 7
+        // Days"). Keep at least the part after the first whitespace if
+        // it looks like a category.
+        let cleanName = split.name;
+        const leadingParts = split.name.split(/\s+/);
+        if (leadingParts.length >= 3
+            && /^\d+$/.test(leadingParts[0])
+            && /^[A-Z]{2,}$/.test(leadingParts[1])) {
+          cleanName = leadingParts.slice(2).join(' ');
+        }
+        items.push({ name: cleanName, qty: split.qty, price: 0 });
       }
     }
   }
@@ -1506,22 +1632,27 @@ function parseAdzkiyaKwitansi(text) {
     }
     return 0;
   }
-  const subtotal = findValueAfter([/Subtotal/i]);
-  const transport_fee = findValueAfter([/Transportasi|Biaya\s+Transportasi/i]);
-  const discount = findValueAfter([/Diskon|Potongan/i]);
+  // The line might also be "Subtotal Layanan :", "Fee Transportasi :",
+  // "Potongan Diskon :", "TOTAL BAYAR :" — any of these "label-with-colon"
+  // variants. The findValueAfter helper reads the value on the same
+  // line (after the colon) so the regex just needs to match the start.
+  const subtotal = findValueAfter([
+    /Subtotal(\s+Layanan)?/i,
+  ]);
+  const transport_fee = findValueAfter([
+    /(Fee\s+)?Transportasi/i,
+  ]);
+  const discount = findValueAfter([
+    /(Potongan\s+)?Diskon/i,
+  ]);
   // Total preference order:
-  //   1. Explicit "Grand Total" / "Total Bayar" / "Tagihan" line (these
-  //      already include transport + discount so they're the source of
-  //      truth when present)
+  //   1. Explicit "Grand Total" / "Total Bayar" / "Tagihan" line
   //   2. Plain "TOTAL" / "Total" line
-  //   3. If subtotal+transport-discount matches either of the above
-  //      within 5%, trust the computed value (helps when the PDF text
-  //      got truncated at the right margin, like "Rp 100.00" instead
-  //      of "Rp 100.000")
-  //   4. Compute subtotal + transport - discount as last resort
+  //   3. Compute subtotal + transport - discount as last resort
   const grandTotal = findValueAfter([
     /^Grand\s*Total/i,
     /^Total\s*Bayar/i,
+    /^TOTAL\s*BAYAR/i,
     /^Tagihan/i,
     /Total\s*Akhir|Total\s*Keseluruhan|Total\s*Tagihan/i,
   ]);
@@ -1530,11 +1661,34 @@ function parseAdzkiyaKwitansi(text) {
   let total = grandTotal;
   if (!total && plainTotal) total = plainTotal;
   if (!total) total = computed;
-  // If grand total is suspiciously small compared to computed, prefer
-  // computed (PDF text got cut off at the right margin).
-  if (total && computed > 0 && total < computed / 2 && total < 100000) {
-    total = computed;
+  // PDF text often gets truncated at the right margin (e.g. "Rp 850"
+  // instead of "Rp 850.000"). Heuristics to recover the real value:
+  //   • If grandTotal looks like a truncated version of computed, try
+  //     multiplying by 10/100/1000 and pick the one closest to computed
+  //   • Likewise for plainTotal
+  function repairTruncation(value, reference) {
+    if (!value || !reference) return value;
+    if (value >= reference) return value;
+    // value is suspiciously smaller than reference. Try multiplying.
+    const multipliers = [10, 100, 1000, 10000];
+    let best = value, bestDelta = Math.abs(reference - value);
+    for (const m of multipliers) {
+      const v = value * m;
+      const d = Math.abs(reference - v);
+      // Accept the multiplier only if it gets us much closer AND the
+      // result is in a reasonable range (not absurdly larger).
+      if (d < bestDelta && v <= reference * 1.5) { best = v; bestDelta = d; }
+    }
+    return best;
   }
+  if (total && computed > 0 && total < computed) total = repairTruncation(total, computed);
+  // If grand total is suspiciously small compared to computed AND
+  // we have no items (so computed is also wrong), prefer computed.
+  if (total && computed === 0 && total < 100000) {
+    // Nothing reliable to fall back on — keep parsed total as-is.
+  }
+  // Last resort: if grandTotal exists but items list is empty, the
+  // grandTotal value itself might be right (no need to repair).
 
   if (!service_date && invoice_no) {
     const m = invoice_no.match(/(\d{4})(\d{2})(\d{2})/);
