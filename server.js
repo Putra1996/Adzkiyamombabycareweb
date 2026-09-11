@@ -1090,6 +1090,141 @@ app.delete('/api/admin/receipts', auth, (req, res) => {
   res.json({ ok: true, deleted: n });
 });
 
+// Import kwitansi dari file JSON upload (atau JSON body).
+// Accepts many shapes so the user can paste data from anywhere:
+//   1. Bare array: [{invoice_no,patient_name,...}, ...]
+//   2. Backup shape: {receipts:[...]}  (matches /api/admin/backup output)
+//   3. Nested shape: {items:[...]}, {data:[...]}, {kwitansi:[...]}
+//   4. Newline / comma-separated rows from a copy-paste spreadsheet
+// Skips duplicates by invoice_no (or by patient_name+service_date when
+// invoice_no missing). Auto-generates invoice_no when missing and
+// resets the receipt counter so future auto-numbering doesn't collide.
+app.post('/api/admin/receipts/import', auth, restoreJsonParser, (req, res) => {
+  try {
+    let payload = req.body;
+    // Accept raw array body too (some clients send [...] directly)
+    let rows;
+    if (Array.isArray(payload)) {
+      rows = payload;
+    } else if (payload && typeof payload === 'object') {
+      rows = payload.receipts || payload.items || payload.data || payload.kwitansi || payload.kwitansi_list || [];
+      // If still nothing, try to take any nested arrays of objects
+      if (!rows.length) {
+        for (const v of Object.values(payload)) {
+          if (Array.isArray(v) && v.length && typeof v[0] === 'object') { rows = v; break; }
+        }
+      }
+    }
+    if (!Array.isArray(rows)) rows = [];
+    if (!rows.length) return res.status(400).json({ error: 'File kosong atau format tidak dikenali. Pastikan berisi array kwitansi.' });
+
+    const skip = req.query.skip !== '0' && req.body?.skip_duplicates !== false; // default: skip duplicates
+    const imported = [];
+    const skipped = [];
+    const failed = [];
+
+    for (const raw of rows) {
+      if (!raw || typeof raw !== 'object') { failed.push({ row: raw, reason: 'bukan objek' }); continue; }
+
+      // Normalize field names so users can paste from spreadsheets that
+      // use Indonesian/English column headers.
+      const get = (...keys) => {
+        for (const k of keys) {
+          if (raw[k] != null && raw[k] !== '') return raw[k];
+          const norm = k.toLowerCase().replace(/[\s_-]+/g, '');
+          for (const rk of Object.keys(raw)) {
+            if (rk.toLowerCase().replace(/[\s_-]+/g, '') === norm && raw[rk] != null && raw[rk] !== '') return raw[rk];
+          }
+        }
+        return null;
+      };
+
+      const patient_name = String(get('patient_name', 'pasien', 'nama', 'nama_pasien', 'name', 'customer') || '').trim().slice(0, 150);
+      if (!patient_name) { failed.push({ row: raw, reason: 'nama pasien kosong' }); continue; }
+
+      const whatsapp = String(get('whatsapp', 'wa', 'hp', 'no_hp', 'phone', 'telepon') || '').trim().slice(0, 30);
+      const address  = String(get('address',  'alamat') || '').trim().slice(0, 1000);
+
+      // service_date: accept YYYY-MM-DD, DD/MM/YYYY, MM/DD/YYYY
+      let service_date = String(get('service_date', 'tanggal', 'tgl_layanan', 'tgl', 'date') || '').slice(0, 10);
+      if (service_date && /^\d{2}\/\d{2}\/\d{4}$/.test(service_date)) {
+        const [d, m, y] = service_date.split('/');
+        service_date = `${y}-${m.padStart(2,'0')}-${d.padStart(2,'0')}`;
+      }
+      if (!service_date || !/^\d{4}-\d{2}-\d{2}$/.test(service_date)) {
+        service_date = new Date().toISOString().slice(0, 10);
+      }
+
+      // Items: accept items[] or a single "layanan" string + price+qty
+      let items = raw.items || raw.layanan || raw.services;
+      if (!Array.isArray(items) || !items.length) {
+        const name  = get('item', 'layanan', 'service', 'nama_layanan', 'service_name');
+        const price = parseInt(get('price', 'harga', 'nominal', 'amount') || 0, 10);
+        const qty   = parseInt(get('qty', 'jumlah', 'quantity') || 1, 10);
+        if (name && price > 0) items = [{ name: String(name).trim(), price, qty: Math.max(1, qty) }];
+      }
+      if (!Array.isArray(items) || !items.length) { failed.push({ row: raw, reason: 'items kosong' }); continue; }
+      items = items.map((it) => ({
+        name:  String(it.name || it.layanan || it.service || '').trim().slice(0, 200),
+        price: parseInt(it.price ?? it.harga ?? it.nominal ?? 0, 10) || 0,
+        qty:   Math.min(99, Math.max(1, parseInt(it.qty ?? it.jumlah ?? 1, 10) || 1))
+      })).filter((it) => it.name);
+
+      if (!items.length) { failed.push({ row: raw, reason: 'item tidak valid' }); continue; }
+
+      const transport_fee = parseInt(get('transport_fee', 'transport', 'ongkir', 'fee') || 0, 10) || 0;
+      const discount      = parseInt(get('discount', 'diskon', 'potongan') || 0, 10) || 0;
+
+      // Recompute totals server-side (never trust input numbers).
+      const subtotal = items.reduce((s, it) => s + it.price * it.qty, 0);
+      const total    = subtotal + transport_fee - discount;
+
+      // Invoice number: keep if present and unique, otherwise auto-generate.
+      let invoice_no = String(get('invoice_no', 'invoice', 'no_kwitansi', 'nomor') || '').trim().slice(0, 40);
+      const dupe = skip && DB.receipts.find((x) =>
+        (invoice_no && x.invoice_no === invoice_no) ||
+        (!invoice_no && x.patient_name === patient_name && x.service_date === service_date)
+      );
+      if (dupe) { skipped.push({ invoice_no: dupe.invoice_no, patient_name, reason: 'duplicate' }); continue; }
+      if (!invoice_no) {
+        const tag = service_date.replace(/-/g, '');
+        const sameDay = DB.receipts.filter((x) => (x.invoice_no || '').slice(4, 12) === tag).length + imported.filter((x) => x.invoice_no.slice(4, 12) === tag).length;
+        invoice_no = `INV-${tag}-${String(sameDay + 1).padStart(3, '0')}`;
+      }
+
+      const id = nextId('receipts');
+      const rec = {
+        id, invoice_no, patient_name, whatsapp, address, service_date,
+        items, transport_fee, discount, subtotal, total,
+        created_at: get('created_at', 'tanggal_buat') || new Date().toISOString()
+      };
+      DB.receipts.push(rec);
+      imported.push(rec);
+    }
+
+    if (imported.length) {
+      // Bump the counter so future auto-generated invoice numbers don't
+      // collide with the ones we just imported.
+      const maxId = imported.reduce((m, r) => Math.max(m, r.id || 0), 0);
+      if (maxId > (DB._seq.receipts || 0)) DB._seq.receipts = maxId;
+      save();
+    }
+
+    res.json({
+      ok: true,
+      imported: imported.length,
+      skipped: skipped.length,
+      failed: failed.length,
+      imported_items: imported.map((r) => ({ id: r.id, invoice_no: r.invoice_no, patient_name: r.patient_name, total: r.total })),
+      skipped_items: skipped,
+      failed_items: failed
+    });
+  } catch (e) {
+    console.error('import receipts error:', e);
+    res.status(500).json({ error: 'Gagal import: ' + e.message });
+  }
+});
+
 // ===== ADMIN — SETTINGS =====
 app.get('/api/admin/settings', auth, (req, res) => {
   const s = DB.settings || {};

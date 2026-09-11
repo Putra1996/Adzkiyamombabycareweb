@@ -451,7 +451,13 @@ async function renderReceipts() {
         </div>
       </div>
       <div>
-        <h3 style="margin-bottom:12px;">Riwayat Kwitansi</h3>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px;">
+          <h3 style="margin:0;">Riwayat Kwitansi</h3>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+            <input type="search" id="kwSearch" placeholder="Cari nama / invoice..." oninput="filterKwList()" style="padding:8px 12px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);min-width:180px;">
+            <button onclick="openImportKwitansiModal()" class="btn-sm btn-approve" title="Import banyak kwitansi dari JSON / spreadsheet">📥 Import</button>
+          </div>
+        </div>
         <div id="kwList">Loading...</div>
       </div>
     </div>
@@ -460,6 +466,20 @@ async function renderReceipts() {
   receiptItems = [];
   addReceiptItem();
   loadReceipts();
+}
+
+// Filter kwitansi list by search text (client-side)
+function filterKwList() {
+  const q = (document.getElementById('kwSearch')?.value || '').toLowerCase().trim();
+  const tbody = document.querySelector('#kwList tbody');
+  if (!tbody) return;
+  let visible = 0;
+  tbody.querySelectorAll('tr').forEach((tr) => {
+    const text = tr.textContent.toLowerCase();
+    const show = !q || text.includes(q);
+    tr.style.display = show ? '' : 'none';
+    if (show) visible++;
+  });
 }
 
 function addReceiptItem(item) {
@@ -938,6 +958,132 @@ async function openKwitansiDetailModal(id) {
       <button class="btn-sm btn-view" onclick="closeModal()">Tutup</button>
     </div>
   `);
+}
+
+// ===== IMPORT KWITANSI DARI JSON =====
+// Modal ini menerima:
+//   - File .json hasil export dari sistem ini / sistem lain
+//   - File .json hasil copy-paste dari spreadsheet (array of objects)
+//   - JSON langsung yang di-paste ke textarea
+// Server akan otomatis mengenali format dan melewati baris duplikat.
+function openImportKwitansiModal() {
+  openModal(`
+    <h3>📥 Import Kwitansi</h3>
+    <p style="color:var(--text-soft);font-size:0.88rem;margin:6px 0 14px;line-height:1.5;">
+      Upload file <strong>.json</strong> atau paste JSON langsung. Format yang didukung:
+      <br>• Array of objects: <code>[{patient_name,service_date,items:[{name,price,qty}]}]</code>
+      <br>• Backup format: <code>{receipts:[...]}</code>
+      <br>• Spreadsheet headers (ID/EN): nama/pasien, tanggal/service_date, harga/price, dll.
+    </p>
+    <div style="display:grid;gap:12px;">
+      <div>
+        <label style="font-weight:600;">📁 Upload File JSON</label>
+        <input type="file" id="impKwFile" accept="application/json,.json" style="margin-top:6px;width:100%;">
+      </div>
+      <div>
+        <label style="font-weight:600;">📋 atau Paste JSON</label>
+        <textarea id="impKwText" rows="6" placeholder='[{"patient_name":"Bunda Rina","service_date":"2026-09-05","items":[{"name":"Massage Ibu Hamil","price":80000,"qty":1}]}]' style="width:100%;font-family:monospace;font-size:0.85rem;"></textarea>
+      </div>
+      <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;font-size:0.9rem;">
+        <label style="display:flex;gap:6px;align-items:center;cursor:pointer;">
+          <input type="checkbox" id="impKwSkipDups" checked> Lewati duplikat (invoice_no / pasien+tanggal sama)
+        </label>
+        <a href="javascript:void(0)" onclick="downloadKwitansiTemplate()" style="color:var(--primary);text-decoration:underline;font-size:0.85rem;">📄 Download Template</a>
+      </div>
+    </div>
+    <div id="impKwResult" style="margin-top:12px;"></div>
+    <div style="margin-top:18px;display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;">
+      <button class="btn-sm btn-view" onclick="closeModal()">Tutup</button>
+      <button onclick="doImportKwitansi()" class="btn btn-primary">📥 Import Sekarang</button>
+    </div>
+  `);
+}
+
+async function doImportKwitansi() {
+  const resultEl = document.getElementById('impKwResult');
+  const fileEl = document.getElementById('impKwFile');
+  const textEl = document.getElementById('impKwText');
+  const skipDups = document.getElementById('impKwSkipDups').checked;
+
+  let payload;
+  if (fileEl.files && fileEl.files[0]) {
+    try { payload = await fileEl.files[0].text(); }
+    catch (e) { return resultEl.innerHTML = `<div class="alert alert-error">Gagal baca file: ${esc(e.message)}</div>`; }
+  } else if (textEl.value.trim()) {
+    payload = textEl.value.trim();
+  } else {
+    return resultEl.innerHTML = `<div class="alert alert-error">Pilih file atau paste JSON terlebih dahulu.</div>`;
+  }
+
+  let parsed;
+  try { parsed = JSON.parse(payload); }
+  catch (e) { return resultEl.innerHTML = `<div class="alert alert-error">JSON tidak valid: ${esc(e.message)}</div>`; }
+
+  resultEl.innerHTML = `<div style="padding:10px;background:var(--pink-50);border-radius:8px;">⏳ Mengimport...</div>`;
+  try {
+    const res = await fetch(apiUrl('/api/admin/receipts/import' + (skipDups ? '' : '?skip=0')), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + TOKEN },
+      body: JSON.stringify(parsed)
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || res.statusText);
+
+    let html = `<div style="padding:12px;border-radius:8px;background:${data.imported ? '#d9efe1' : '#fff3d6'};">
+      <strong>✅ Import selesai</strong><br>
+      Berhasil: <strong>${data.imported}</strong> · Lewati (duplikat): <strong>${data.skipped}</strong> · Gagal: <strong>${data.failed}</strong>
+    </div>`;
+    if (data.failed_items && data.failed_items.length) {
+      html += `<details style="margin-top:8px;"><summary style="cursor:pointer;color:var(--text-soft);">Lihat ${data.failed_items.length} baris gagal</summary>
+        <pre style="background:#fde0e4;padding:8px;border-radius:6px;margin-top:6px;max-height:200px;overflow:auto;font-size:0.78rem;">${esc(JSON.stringify(data.failed_items, null, 2))}</pre>
+      </details>`;
+    }
+    resultEl.innerHTML = html;
+    loadReceipts();
+    loadKwitansiStats();
+  } catch (e) {
+    resultEl.innerHTML = `<div class="alert alert-error">${esc(e.message)}</div>`;
+  }
+}
+
+function downloadKwitansiTemplate() {
+  const sample = [
+    {
+      patient_name: "Bunda Rina",
+      whatsapp: "081234567890",
+      address: "Cilacap",
+      service_date: "2026-09-05",
+      items: [
+        { name: "Massage Ibu Hamil", price: 80000, qty: 1 }
+      ],
+      transport_fee: 0,
+      discount: 0
+    },
+    {
+      patient_name: "Bunda Dewi",
+      whatsapp: "081234567891",
+      address: "Nusawungu",
+      service_date: "2026-09-10",
+      items: [
+        { name: "Pijat Laktasi", price: 80000, qty: 2 },
+        { name: "Baby Sleepwell", price: 50000, qty: 1 }
+      ],
+      transport_fee: 15000,
+      discount: 0
+    }
+  ];
+  const blob = new Blob([JSON.stringify(sample, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'template-import-kwitansi.json';
+  a.click();
+}
+
+// Refresh total kwitansi stat card on Rekap Bulanan (called after import)
+async function loadKwitansiStats() {
+  if (typeof RECAP_DATA !== 'undefined' && RECAP_DATA && RECAP_DATA.month) {
+    try { await loadRecap(); } catch {}
+  }
 }
 
 function exportRecapCSV() {
