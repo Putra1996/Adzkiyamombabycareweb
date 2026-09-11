@@ -13,8 +13,17 @@ const mysql = require('mysql2/promise');
 const compression = require('compression');
 const rateLimit = require('express-rate-limit');
 const { Pool: PostgresPool } = require('pg');
-// pdf-parse v2 uses a class-based API: `new PDFParse({data}).getText()`.
-const { PDFParse } = require('pdf-parse');
+// pdf-parse v2 has heavy transitive deps (pdfjs-dist + worker). Load it
+// lazily inside the /api/admin/receipts/import-pdf handler so a broken
+// pdf-parse install never crashes the boot of the rest of the API.
+let _pdfParse = null;
+async function getPdfParse() {
+  if (!_pdfParse) {
+    const mod = require('pdf-parse');
+    _pdfParse = mod.PDFParse || mod.default || mod;
+  }
+  return _pdfParse;
+}
 
 const app = express();
 const PORT = parseInt(process.env.PORT || '3000', 10);
@@ -1463,6 +1472,11 @@ app.post('/api/admin/receipts/import-pdf', auth, pdfUpload.array('files', 50), a
   try {
     const files = req.files || [];
     if (!files.length) return res.status(400).json({ error: 'Pilih minimal 1 file PDF' });
+
+    // Lazy-load pdf-parse so a broken install doesn't crash the boot.
+    let PDFParse;
+    try { PDFParse = await getPdfParse(); }
+    catch (e) { return res.status(500).json({ error: 'pdf-parse gagal dimuat: ' + e.message }); }
 
     const results = [];
     for (const f of files) {
