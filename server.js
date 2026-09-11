@@ -864,7 +864,13 @@ app.get('/api/admin/recap', auth, (req, res) => {
   const totalReservasi = rows.length;
   const totalOmzet = rows.filter(r => r.payment_status === 'lunas')
     .reduce((s, r) => s + r.total, 0);
-  const totalKwitansi = DB.receipts.filter(k => (k.created_at || '').slice(0, 7) === month).length;
+  // Count receipts whose EITHER created_at OR service_date falls in
+  // this month. This matches the filter used by /api/admin/receipts so
+  // the stat card and the receipts table stay consistent.
+  const totalKwitansi = DB.receipts.filter(k =>
+    (k.created_at && k.created_at.slice(0, 7) === month) ||
+    (k.service_date && k.service_date.slice(0, 7) === month)
+  ).length;
   res.json({ month, totalReservasi, totalOmzet, totalKwitansi, rows });
 });
 
@@ -1035,7 +1041,19 @@ app.post('/api/admin/receipts', auth, (req, res) => {
 });
 
 app.get('/api/admin/receipts', auth, (req, res) => {
-  res.json(DB.receipts.slice().sort((a, b) => b.created_at.localeCompare(a.created_at)).slice(0, 200));
+  // Optional ?month=YYYY-MM filter. When set, include receipts whose
+  // EITHER created_at OR service_date falls in that month. The frontend
+  // Rekap page uses this to show a list of all receipts for the chosen
+  // month, regardless of which date field is more relevant.
+  const month = req.query.month;
+  let rows = DB.receipts.slice();
+  if (month && /^\d{4}-\d{2}$/.test(month)) {
+    rows = rows.filter(r =>
+      (r.created_at && r.created_at.slice(0, 7) === month) ||
+      (r.service_date && r.service_date.slice(0, 7) === month)
+    );
+  }
+  res.json(rows.sort((a, b) => b.created_at.localeCompare(a.created_at)).slice(0, 200));
 });
 
 app.get('/api/admin/receipts/:id', auth, (req, res) => {

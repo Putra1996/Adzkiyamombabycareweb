@@ -575,6 +575,7 @@ async function loadReceipts() {
               <td>${esc(r.patient_name || '-')}</td>
               <td><strong>${fmtRp(r.total)}</strong></td>
               <td style="white-space:nowrap;">
+                <button class="btn-sm btn-view" onclick="openKwitansiDetailModal(${r.id})" title="Lihat">👁️</button>
                 <button class="btn-sm btn-view" onclick='printReceiptById(${r.id})' title="Cetak">🖨️</button>
                 <button class="btn-sm btn-del" onclick="deleteReceipt(${r.id}, '${esc(r.invoice_no)}')" title="Hapus" style="padding:6px 10px;">🗑️</button>
               </td>
@@ -717,6 +718,7 @@ async function renderRecap() {
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
         <input type="month" id="recapMonth" value="${m}" style="padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--card);color:var(--text);">
         <button onclick="loadRecap()" class="btn-sm btn-pay">🔄 Muat</button>
+        <button onclick="openKwitansiModal()" class="btn-sm btn-approve">🧾 Buat Kwitansi Manual</button>
         <button onclick="exportRecapXLSX()" class="btn-sm btn-approve">📊 Excel</button>
         <button onclick="exportRecapCSV()" class="btn-sm btn-pay">📥 CSV</button>
         <button onclick="exportRecapPDF()" class="btn-sm btn-view">🖨️ PDF</button>
@@ -728,33 +730,214 @@ async function renderRecap() {
 }
 
 let RECAP_DATA = null;
+let RECAP_RECEIPTS = [];
 async function loadRecap() {
   const month = document.getElementById('recapMonth').value;
   try {
     RECAP_DATA = await api('/api/admin/recap?month=' + month);
+    RECAP_RECEIPTS = await api('/api/admin/receipts?month=' + month);
     const el = document.getElementById('recapContent');
     el.innerHTML = `
       <div class="stat-grid">
         <div class="stat-card"><div class="label">Total Reservasi</div><div class="value">${RECAP_DATA.totalReservasi}</div></div>
         <div class="stat-card pink"><div class="label">Total Omzet</div><div class="value">${fmtRp(RECAP_DATA.totalOmzet)}</div></div>
-        <div class="stat-card peach"><div class="label">Total Kwitansi</div><div class="value">${RECAP_DATA.totalKwitansi}</div></div>
+        <div class="stat-card peach"><div class="label">Total Kwitansi</div><div class="value">${RECAP_RECEIPTS.length}</div></div>
       </div>
-      <h3 style="margin:20px 0 12px;">Detail Reservasi Bulan ${RECAP_DATA.month}</h3>
-      <div class="table-scroll"><table class="data-table"><thead><tr>
-        <th>Tgl</th><th>Pasien</th><th>Layanan</th><th>Sesi</th><th>Total</th><th>Status</th><th>Bayar</th>
-      </tr></thead><tbody>
-      ${RECAP_DATA.rows.map(r => `<tr>
-        <td>${(r.slots||[]).map(s=>`${fmtDate(s.date)} <small>${s.time}</small>`).join('<br>')}</td>
-        <td>${esc(r.patient_name)}</td>
-        <td><div class="items-list">${(r.items||[]).map(it=>`<div>• ${esc(it.name)} ×${it.qty}</div>`).join('')}</div></td>
-        <td>${(r.slots||[]).length}</td>
-        <td><strong>${fmtRp(r.total)}</strong></td>
-        <td><span class="badge badge-${r.status}">${r.status}</span></td>
-        <td><span class="badge badge-${r.payment_status}">${r.payment_status}</span></td>
-      </tr>`).join('') || '<tr><td colspan="7" style="text-align:center;color:var(--text-soft);padding:20px;">Tidak ada data.</td></tr>'}
-      </tbody></table></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-top:8px;" id="recapCols">
+        <div>
+          <h3 style="margin:20px 0 12px;">🧾 Kwitansi Bulan ${month}</h3>
+          ${RECAP_RECEIPTS.length ? renderReceiptTable(RECAP_RECEIPTS) : '<p style="color:var(--text-soft);text-align:center;padding:20px;background:var(--card);border-radius:12px;">Belum ada kwitansi bulan ini.</p>'}
+        </div>
+        <div>
+          <h3 style="margin:20px 0 12px;">📅 Detail Reservasi Bulan ${month}</h3>
+          ${RECAP_DATA.rows.length ? `
+            <div class="table-scroll"><table class="data-table"><thead><tr>
+              <th>Tgl</th><th>Pasien</th><th>Layanan</th><th>Sesi</th><th>Total</th><th>Status</th><th>Bayar</th>
+            </tr></thead><tbody>
+            ${RECAP_DATA.rows.map(r => `<tr>
+              <td>${(r.slots||[]).map(s=>`${fmtDate(s.date)} <small>${s.time}</small>`).join('<br>')}</td>
+              <td>${esc(r.patient_name)}</td>
+              <td><div class="items-list">${(r.items||[]).map(it=>`<div>• ${esc(it.name)} ×${it.qty}</div>`).join('')}</div></td>
+              <td>${(r.slots||[]).length}</td>
+              <td><strong>${fmtRp(r.total)}</strong></td>
+              <td><span class="badge badge-${r.status}">${r.status}</span></td>
+              <td><span class="badge badge-${r.payment_status}">${r.payment_status}</span></td>
+            </tr>`).join('') || '<tr><td colspan="7" style="text-align:center;color:var(--text-soft);padding:20px;">Tidak ada data.</td></tr>'}
+            </tbody></table></div>
+          ` : '<p style="color:var(--text-soft);text-align:center;padding:20px;background:var(--card);border-radius:12px;">Belum ada reservasi bulan ini.</p>'}
+        </div>
+      </div>
+      <style>@media(max-width:920px){#recapCols{grid-template-columns:1fr !important;}}</style>
     `;
   } catch (e) { document.getElementById('recapContent').innerHTML = `<div class="alert alert-error">${e.message}</div>`; }
+}
+
+function renderReceiptTable(rows) {
+  return `<div class="table-scroll"><table class="data-table"><thead><tr>
+    <th>Invoice</th><th>Tgl Layanan</th><th>Pasien</th><th>Total</th><th>Aksi</th>
+  </tr></thead><tbody>
+  ${rows.map(r => `<tr>
+    <td><strong>${esc(r.invoice_no || '-')}</strong><br><small style="color:var(--text-soft)">${fmtDateTime(r.created_at)}</small></td>
+    <td>${r.service_date ? fmtDate(r.service_date) : '<span style="color:var(--text-soft)">—</span>'}</td>
+    <td>${esc(r.patient_name || '-')}<br><small style="color:var(--text-soft)">${esc(r.whatsapp || '')}</small></td>
+    <td><strong>${fmtRp(r.total)}</strong></td>
+    <td style="white-space:nowrap;">
+      <button class="btn-sm btn-view" onclick="openKwitansiDetailModal(${r.id})" title="Lihat">👁️</button>
+      <button class="btn-sm btn-view" onclick="printReceiptById(${r.id})" title="Cetak PDF">🖨️</button>
+      <button class="btn-sm btn-del" onclick="deleteReceipt(${r.id}, '${esc(r.invoice_no)}')" title="Hapus">🗑️</button>
+    </td>
+  </tr>`).join('')}
+  </tbody></table></div>`;
+}
+
+// Buka modal 'Buat Kwitansi Manual' dari Rekap Bulanan — tidak perlu pindah
+// ke menu Kwitansi di sidebar. Form identik dengan yang ada di /receipts.
+function openKwitansiModal() {
+  receiptItems = [];
+  const month = document.getElementById('recapMonth').value + '-01';
+  openModal(`
+    <h3>🧾 Buat Kwitansi Manual</h3>
+    <p style="color:var(--text-soft);font-size:0.85rem;margin:6px 0 14px;">Kwitansi ini akan otomatis muncul di Rekap <strong>${esc(document.getElementById('recapMonth').value)}</strong>.</p>
+    <div class="form-wrap" style="padding:0;">
+      <div class="form-group"><label>Nama Pasien</label><input type="text" id="mkw_name"></div>
+      <div class="form-row">
+        <div class="form-group"><label>HP</label><input type="tel" id="mkw_hp"></div>
+        <div class="form-group"><label>Tanggal Layanan</label><input type="date" id="mkw_date" value="${month}"></div>
+      </div>
+      <div class="form-group"><label>Alamat</label><input type="text" id="mkw_addr"></div>
+      <hr style="margin:14px 0;border:none;border-top:1px dashed var(--border);">
+      <h4 style="margin-bottom:8px;">Layanan</h4>
+      <div id="mkw_items"></div>
+      <button type="button" onclick="mkwAddRow()" class="btn-sm btn-pay" style="margin-top:8px;">+ Tambah Layanan</button>
+      <div class="form-row" style="margin-top:14px;">
+        <div class="form-group"><label>Fee Transportasi</label><input type="number" id="mkw_transport" value="0"></div>
+        <div class="form-group"><label>Diskon</label><input type="number" id="mkw_discount" value="0"></div>
+      </div>
+      <div class="summary-card" id="mkw_summary" style="margin-top:14px;">
+        <div class="row"><span>Subtotal:</span><span id="mkw_sub">Rp 0</span></div>
+        <div class="row total"><span>Total:</span><span id="mkw_total">Rp 0</span></div>
+      </div>
+      <div id="mkw_err" style="display:none;margin-top:10px;padding:10px;background:#fde0e4;color:#c43050;border-radius:8px;font-size:0.88rem;"></div>
+      <div style="margin-top:18px;display:flex;gap:8px;justify-content:flex-end;">
+        <button class="btn-sm btn-view" onclick="closeModal()">Batal</button>
+        <button class="btn btn-primary" onclick="mkwSave()">💾 Simpan & Cetak</button>
+      </div>
+    </div>
+  `);
+  mkwAddRow();
+}
+
+function mkwAddRow(item) {
+  const i = receiptItems.length;
+  receiptItems.push(item || { name: '', price: 0, qty: 1 });
+  const wrap = document.getElementById('mkw_items');
+  if (!wrap) return;
+  const div = document.createElement('div');
+  div.style.cssText = 'display:grid;grid-template-columns:1fr 90px 70px 32px;gap:8px;margin-bottom:8px;align-items:center;';
+  div.innerHTML = `
+    <select onchange="mkwOnServiceChange(${i}, this)">
+      <option value="">— pilih layanan —</option>
+      ${SERVICES.map(c => `<optgroup label="${esc(c.cat)}">${c.items.map(it => `<option value="${esc(it.name)}" data-price="${it.price}" ${item && item.name === it.name ? 'selected' : ''}>${esc(it.name)}</option>`).join('')}</optgroup>`).join('')}
+    </select>
+    <div class="kw-price-tag" style="padding:8px 10px;background:var(--pink-50);border:1px solid var(--pink-100);border-radius:8px;font-weight:700;color:var(--pink-700);font-size:0.85rem;text-align:right;white-space:nowrap;">${fmtRp(item ? item.price : 0)}</div>
+    <input type="number" placeholder="qty" value="${item ? item.qty : 1}" min="1" oninput="receiptItems[${i}].qty=parseInt(this.value)||1;mkwUpdateTotal();">
+    <button type="button" onclick="receiptItems.splice(${i},1);mkwRebuild();" class="btn-sm btn-del" style="padding:6px;" title="Hapus baris">×</button>
+  `;
+  div.querySelectorAll('select, input').forEach(el => {
+    el.style.cssText = (el.style.cssText || '') + ';padding:8px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-family:inherit;font-size:0.88rem;';
+  });
+  wrap.appendChild(div);
+  ['#mkw_transport', '#mkw_discount'].forEach(s => { const el = document.querySelector(s); if (el) el.oninput = mkwUpdateTotal; });
+  mkwUpdateTotal();
+}
+
+function mkwRebuild() {
+  const wrap = document.getElementById('mkw_items');
+  if (!wrap) return;
+  wrap.innerHTML = '';
+  const snap = receiptItems.slice();
+  receiptItems = [];
+  snap.forEach(it => mkwAddRow(it));
+}
+
+function mkwOnServiceChange(idx, sel) {
+  const opt = sel.options[sel.selectedIndex];
+  const price = parseInt(opt.dataset.price) || 0;
+  receiptItems[idx].name = sel.value;
+  receiptItems[idx].price = price;
+  mkwRebuild();
+}
+
+function mkwUpdateTotal() {
+  const sub = receiptItems.reduce((s, it) => s + (it.price * it.qty), 0);
+  const trans = parseInt(document.getElementById('mkw_transport')?.value) || 0;
+  const disc = parseInt(document.getElementById('mkw_discount')?.value) || 0;
+  const total = sub + trans - disc;
+  if (document.getElementById('mkw_sub')) document.getElementById('mkw_sub').textContent = fmtRp(sub);
+  if (document.getElementById('mkw_total')) document.getElementById('mkw_total').textContent = fmtRp(total);
+}
+
+async function mkwSave() {
+  const items = receiptItems.filter(it => it.name && it.price > 0);
+  const errEl = document.getElementById('mkw_err');
+  errEl.style.display = 'none';
+  if (!items.length) {
+    errEl.textContent = '⚠️ Tambahkan minimal 1 layanan (pilih dari dropdown).';
+    errEl.style.display = 'block';
+    return;
+  }
+  const body = {
+    patient_name: document.getElementById('mkw_name').value,
+    whatsapp: document.getElementById('mkw_hp').value,
+    address: document.getElementById('mkw_addr').value,
+    service_date: document.getElementById('mkw_date').value,
+    items,
+    transport_fee: parseInt(document.getElementById('mkw_transport').value) || 0,
+    discount: parseInt(document.getElementById('mkw_discount').value) || 0
+  };
+  try {
+    const res = await api('/api/admin/receipts', { method: 'POST', body: JSON.stringify(body) });
+    printReceipt({ ...body, invoice_no: res.invoice_no, subtotal: res.subtotal, total: res.total, created_at: new Date().toISOString() });
+    closeModal();
+    loadRecap();
+  } catch (e) {
+    errEl.textContent = 'Gagal: ' + e.message;
+    errEl.style.display = 'block';
+  }
+}
+
+// Modal detail kwitansi — dipanggil dari tabel kwitansi di Rekap Bulanan.
+async function openKwitansiDetailModal(id) {
+  const r = (RECAP_RECEIPTS && RECAP_RECEIPTS.find(x => x.id === id))
+    || (window._receiptsCache && window._receiptsCache.find(x => x.id === id));
+  if (!r) return alert('Kwitansi tidak ditemukan di cache. Coba muat ulang halaman.');
+  const items = Array.isArray(r.items) ? r.items : [];
+  openModal(`
+    <h3>🧾 Detail Kwitansi ${esc(r.invoice_no || '')}</h3>
+    <div style="margin-top:14px;display:grid;gap:8px;font-size:0.92rem;">
+      <div><strong>Tanggal Buat:</strong> ${fmtDateTime(r.created_at)}</div>
+      <div><strong>Tanggal Layanan:</strong> ${r.service_date ? fmtDate(r.service_date) : '<span style="color:var(--text-soft)">—</span>'}</div>
+      <div><strong>Pasien:</strong> ${esc(r.patient_name || '-')}</div>
+      <div><strong>WhatsApp:</strong> ${esc(r.whatsapp || '-')}</div>
+      <div><strong>Alamat:</strong> ${esc(r.address || '-')}</div>
+      <div><strong>Layanan:</strong>
+        <div style="margin-top:4px;padding:8px;background:var(--pink-50);border-radius:8px;">
+          ${items.length ? items.map(it => `<div>• ${esc(it.name)} <small>×${it.qty || 1}</small> — ${fmtRp((it.price || 0) * (it.qty || 1))}</div>`).join('') : '<em style="color:var(--text-soft)">Tidak ada item layanan.</em>'}
+        </div>
+      </div>
+      <div><strong>Subtotal:</strong> ${fmtRp(r.subtotal || 0)}</div>
+      ${r.transport_fee ? `<div><strong>Transportasi:</strong> ${fmtRp(r.transport_fee)}</div>` : ''}
+      ${r.discount ? `<div><strong>Diskon:</strong> -${fmtRp(r.discount)}</div>` : ''}
+      <div style="margin-top:8px;padding:10px;background:var(--primary);color:white;border-radius:10px;text-align:center;font-size:1.05rem;font-weight:800;">
+        TOTAL: ${fmtRp(r.total)}
+      </div>
+    </div>
+    <div style="margin-top:18px;display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;">
+      <button class="btn-sm btn-view" onclick="printReceiptById(${r.id})">🖨️ Cetak PDF</button>
+      <button class="btn-sm btn-del" onclick="if(confirm('Hapus kwitansi ${esc(r.invoice_no)}?')){closeModal();deleteReceipt(${r.id},'${esc(r.invoice_no)}').then(()=>loadRecap());}">🗑️ Hapus</button>
+      <button class="btn-sm btn-view" onclick="closeModal()">Tutup</button>
+    </div>
+  `);
 }
 
 function exportRecapCSV() {
