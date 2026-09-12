@@ -438,6 +438,88 @@ footer { padding: 40px 24px; background: var(--card); border-top: 1px solid var(
 .kw-search { padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); min-width: 160px; max-width: 100%; }
 @media (max-width: 540px) { .kw-search { min-width: 0; width: 100%; } }
 
+/* === Card list view for admin tables on phones ===
+   The default <table class="data-table"> stays for desktop. Below
+   ~720px the table is still readable via horizontal scroll, but
+   the action buttons in the last column get clipped on the
+   narrowest phones. The classes below flip the table into a
+   stacked card view so every action button is tappable. */
+.card-list { display: none; }
+.card-list-item {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px 14px;
+  margin-bottom: 10px;
+  box-shadow: var(--shadow);
+}
+.card-list-item .cli-row { display: flex; justify-content: space-between; gap: 10px; align-items: flex-start; padding: 4px 0; flex-wrap: wrap; }
+.card-list-item .cli-row .cli-label { color: var(--text-soft); font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 700; min-width: 80px; }
+.card-list-item .cli-row .cli-value { font-weight: 700; text-align: right; flex: 1; min-width: 0; word-break: break-word; }
+.card-list-item .cli-actions { display: flex; gap: 6px; margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--border); }
+.card-list-item .cli-actions .btn-sm { flex: 1; justify-content: center; }
+.card-list-item .cli-head { font-weight: 800; color: var(--primary); margin-bottom: 6px; font-size: 1rem; }
+.card-list-item .cli-meta { color: var(--text-soft); font-size: 0.82rem; margin-bottom: 6px; }
+
+/* The body[data-table-mode] attribute is set by JS when the
+   relevant list renders. CSS swaps the table and card view based
+   on viewport width regardless of the attribute. */
+@media (max-width: 720px) {
+  body[data-table-mode="cards"] .data-table-wrap { display: none !important; }
+  body[data-table-mode="cards"] .card-list { display: block; }
+}
+@media (min-width: 721px) {
+  /* On desktop always show the table, hide the duplicate card
+     list — even if the JS forgot to set data-table-mode. */
+  body[data-table-mode="cards"] .card-list { display: none !important; }
+}
+
+/* Hours row in settings: stack on phones, horizontal on desktop. */
+.settings-row {
+  display: grid;
+  grid-template-columns: 90px 1fr 1fr auto;
+  gap: 8px;
+  margin-bottom: 6px;
+  align-items: center;
+}
+@media (max-width: 540px) {
+  .settings-row { grid-template-columns: 1fr 1fr; gap: 6px; padding: 8px; border: 1px dashed var(--border); border-radius: 8px; }
+  .settings-row > .settings-row-day { grid-column: span 2; font-size: 0.92rem; padding-bottom: 4px; border-bottom: 1px solid var(--border); margin-bottom: 4px; }
+  .settings-row > .settings-row-label { grid-column: span 2; font-size: 0.82rem; }
+  .settings-row input[type="time"] { padding: 8px 6px; }
+}
+
+/* Social row in settings — six columns on desktop, three rows on
+   phones so the URL input + icon picker + delete button all fit. */
+.social-row {
+  display: grid;
+  grid-template-columns: 140px 50px 1fr 70px 70px 36px;
+  gap: 8px;
+  align-items: center;
+}
+.social-row .social-platform,
+.social-row .social-url { padding: 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); }
+.social-row .social-avatar { width: 42px; height: 42px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 1.2rem; flex-shrink: 0; }
+.social-row .social-upload { cursor: pointer; display: inline-flex; align-items: center; justify-content: center; padding: 8px; margin: 0; }
+.social-row .social-delete { padding: 8px; }
+.social-row .social-spacer { display: inline-block; width: 36px; }
+.social-row .social-remove { height: 38px; background: #fde0e4; color: #c43050; border: none; border-radius: 8px; cursor: pointer; }
+@media (max-width: 720px) {
+  .social-row {
+    grid-template-columns: 1fr 42px 36px;
+    grid-template-areas: "platform avatar remove" "url url url" "upload upload delete";
+    gap: 6px;
+    padding: 8px;
+    border: 1px dashed var(--border);
+    border-radius: 8px;
+  }
+  .social-row .social-platform { grid-area: platform; }
+  .social-row .social-avatar { grid-area: avatar; }
+  .social-row .social-remove { grid-area: remove; }
+  .social-row .social-url { grid-area: url; }
+  .social-row .social-upload { grid-area: upload; }
+  .social-row .social-delete, .social-row .social-spacer { grid-area: delete; }
+}
 /* Inline grid-template-columns "1fr 90px 70px 32px" from admin.js
    (rebuildReceiptItems / mkwAddRow) — shrink columns for tiny
    phones so the select + price tag + qty + delete button all fit

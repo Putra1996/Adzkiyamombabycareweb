@@ -77,8 +77,17 @@ function renderCalendar() {
     if (isPast) classes += ' past';
     c.className = classes;
     c.style.cursor = 'pointer';
+    c.style.position = 'relative';
     c.title = `${d} ${monthNames[m]} ${y}${count ? ' — ' + count + ' sesi' : ''}${isFull ? ' (Penuh)' : ''}`;
-    c.onclick = () => openDateDetail(dateStr, dayEvents, isFull);
+    // Same fix as the admin calendar: addEventListener instead of
+    // c.onclick so desktop browsers don't drop the handler when
+    // innerHTML is overwritten.
+    c.dataset.date = dateStr;
+    c.dataset.idx = String(count);
+    c.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openDateDetail(dateStr, dayEvents, isFull);
+    });
 
     let html = `<span class="day-num">${d}</span>`;
     if (count > 0 && !isPast) {

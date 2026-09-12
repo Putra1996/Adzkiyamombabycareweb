@@ -166,18 +166,20 @@ async function renderDashboard() {
 
     const recent = rows.slice(0, 8);
     document.getElementById('recentList').innerHTML = recent.length ? `
-      <div class="table-scroll"><table class="data-table"><thead>
-        <tr><th>Pasien</th><th>Layanan</th><th>Sesi</th><th>Status</th><th>Bayar</th><th>Total</th></tr>
-      </thead><tbody>
-      ${recent.map(r => `<tr>
-        <td><strong>${esc(r.patient_name)}</strong><br><small style="color:var(--text-soft)">${esc(r.whatsapp)}</small></td>
-        <td>${renderItemsCompact(r.items)}</td>
-        <td>${(r.slots || []).length} sesi</td>
-        <td><span class="badge badge-${r.status}">${r.status}</span></td>
-        <td><span class="badge badge-${r.payment_status}">${r.payment_status}</span></td>
-        <td><strong>${fmtRp(r.total)}</strong></td>
-      </tr>`).join('')}
-      </tbody></table></div>
+      <div class="data-table-wrap">
+        <div class="table-scroll"><table class="data-table"><thead>
+          <tr><th>Pasien</th><th>Layanan</th><th>Sesi</th><th>Status</th><th>Bayar</th><th>Total</th></tr>
+        </thead><tbody>
+        ${recent.map(r => `<tr>
+          <td><strong>${esc(r.patient_name)}</strong><br><small style="color:var(--text-soft)">${esc(r.whatsapp)}</small></td>
+          <td>${renderItemsCompact(r.items)}</td>
+          <td>${(r.slots || []).length} sesi</td>
+          <td><span class="badge badge-${r.status}">${r.status}</span></td>
+          <td><span class="badge badge-${r.payment_status}">${r.payment_status}</span></td>
+          <td><strong>${fmtRp(r.total)}</strong></td>
+        </tr>`).join('')}
+        </tbody></table></div>
+      </div>
     ` : '<p style="color:var(--text-soft);text-align:center;padding:20px;">Belum ada reservasi.</p>';
   } catch (e) { document.getElementById('statGrid').innerHTML = `<div class="alert alert-error">${e.message}</div>`; }
 }
@@ -284,8 +286,9 @@ async function loadReservations() {
   try {
     const rows = await api('/api/admin/reservations?' + qs);
     const el = document.getElementById('reservationsList');
+    document.body.setAttribute('data-table-mode', 'cards');
     if (!rows.length) { el.innerHTML = '<p style="color:var(--text-soft);text-align:center;padding:40px;">Tidak ada reservasi.</p>'; return; }
-    el.innerHTML = `<div class="table-scroll"><table class="data-table"><thead><tr>
+    const tableHtml = `<div class="data-table-wrap"><div class="table-scroll"><table class="data-table"><thead><tr>
       <th>#</th><th>Pasien</th><th>Layanan</th><th>Jadwal</th><th>Bayar</th><th>Total</th><th>Status</th><th>Aksi</th>
     </tr></thead><tbody>
       ${rows.map(r => `<tr>
@@ -305,7 +308,26 @@ async function loadReservations() {
           <button class="btn-sm btn-del" onclick="delRes(${r.id})">🗑️</button>
         </td>
       </tr>`).join('')}
-    </tbody></table></div>`;
+    </tbody></table></div></div>`;
+    const cardHtml = `<div class="card-list">
+      ${rows.map(r => `<div class="card-list-item">
+        <div class="cli-head">#${r.id} · ${esc(r.patient_name)}</div>
+        <div class="cli-row"><span class="cli-label">WhatsApp</span><span class="cli-value"><a href="https://wa.me/${r.whatsapp.replace(/\D/g,'')}" target="_blank">${esc(r.whatsapp)}</a></span></div>
+        <div class="cli-row"><span class="cli-label">Alamat</span><span class="cli-value" style="font-weight:500;">${esc(r.address.slice(0,60))}${r.address.length>60?'…':''}</span></div>
+        <div class="cli-row"><span class="cli-label">Layanan</span><span class="cli-value" style="text-align:left;font-weight:500;">${(r.items||[]).map(it => `• ${esc(it.name)} ×${it.qty}`).join('<br>')}</span></div>
+        <div class="cli-row"><span class="cli-label">Jadwal</span><span class="cli-value" style="font-weight:500;">${(r.slots||[]).map(s => `${fmtDate(s.date)} ${s.time}`).join('<br>')}</span></div>
+        <div class="cli-row"><span class="cli-label">Bayar</span><span class="cli-value">${esc(r.payment_method)}${r.proof_file ? `<br><button type="button" onclick="openProtectedAsset('/api/proof/${r.id}')" class="link-button" style="font-size:0.78rem;">📎 Bukti</button>` : ''}</span></div>
+        <div class="cli-row"><span class="cli-label">Total</span><span class="cli-value">${fmtRp(r.total)}</span></div>
+        <div class="cli-row"><span class="cli-label">Status</span><span class="cli-value"><span class="badge badge-${r.status}">${r.status}</span> <span class="badge badge-${r.payment_status}">${r.payment_status}</span></span></div>
+        <div class="cli-actions">
+          ${r.status === 'pending' ? `<button class="btn-sm btn-approve" onclick="updateRes(${r.id}, 'approved', null)">✓ Approve</button>` : ''}
+          ${r.payment_status === 'unpaid' ? `<button class="btn-sm btn-pay" onclick="updateRes(${r.id}, null, 'lunas')">💰 Lunas</button>` : ''}
+          <button class="btn-sm btn-view" onclick="viewRes(${r.id})">👁️ Detail</button>
+          <button class="btn-sm btn-del" onclick="delRes(${r.id})">🗑️ Hapus</button>
+        </div>
+      </div>`).join('')}
+    </div>`;
+    el.innerHTML = tableHtml + cardHtml;
   } catch (e) { document.getElementById('reservationsList').innerHTML = `<div class="alert alert-error">${e.message}</div>`; }
 }
 
@@ -476,8 +498,20 @@ function drawAdmCal() {
     if (isPast) cls += ' past';
     c.className = cls;
     c.style.cursor = 'pointer';
+    c.style.position = 'relative';
     c.title = `${d} ${mn[m]} ${y}${evs.length ? ` — ${evs.length} reservasi` : ''}`;
-    c.onclick = () => openAdmCalDetail(ds, evs);
+    // Use addEventListener + data-* instead of c.onclick. Some
+    // desktop browsers detach the .onclick handler when innerHTML is
+    // overwritten, leaving the cell visually clickable but
+    // functionally dead. addEventListener survives and the data-*
+    // attribute keeps the (date, events) pair around for the
+    // handler to read directly.
+    c.dataset.date = ds;
+    c.dataset.idx = String(evs.length);
+    c.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openAdmCalDetail(ds, evs);
+    });
     let html = `<span class="day-num">${d}</span>`;
     if (evs.length && !isPast) {
       html += `<span class="count-badge" title="${evs.length} reservasi">${evs.length}</span>`;
@@ -928,6 +962,11 @@ async function loadReceipts() {
     const rows = await api('/api/admin/receipts');
     window._receiptsCache = rows;
     const el = document.getElementById('kwList');
+    // Enable the responsive card-list view for phones (<720px). The
+    // CSS rule body[data-table-mode="cards"] hides the table on
+    // small screens, so we render BOTH the table and the cards and
+    // let CSS pick which one is visible.
+    document.body.setAttribute('data-table-mode', 'cards');
     if (!rows.length) {
       el.innerHTML = '<p style="color:var(--text-soft);padding:20px;text-align:center;">Belum ada kwitansi.</p>';
       return;
@@ -942,26 +981,44 @@ async function loadReceipts() {
         <button onclick="deleteSelectedReceipts()" class="btn-sm btn-del" id="kwBulkBtn" disabled style="padding:6px 14px;">🗑️ Hapus Terpilih</button>
         <button onclick="deleteAllReceipts()" class="btn-sm btn-del" style="padding:6px 14px;background:#b91c1c;">⚠️ Hapus Semua</button>
       </div>
-      <div class="table-scroll">
-        <table class="data-table">
-          <thead><tr>
-            <th style="width:36px;"></th>
-            <th>No. Invoice</th><th>Pasien</th><th>Total</th><th>Aksi</th>
-          </tr></thead>
-          <tbody>
-            ${rows.map(r => `<tr data-rid="${r.id}">
-              <td><input type="checkbox" class="kw-chk" value="${r.id}" onchange="updateKwSelCount()"></td>
-              <td><strong>${r.invoice_no}</strong><br><small>${fmtDateTime(r.created_at)}</small></td>
-              <td>${esc(r.patient_name || '-')}</td>
-              <td><strong>${fmtRp(r.total)}</strong></td>
-              <td style="white-space:nowrap;">
-                <button class="btn-sm btn-view" onclick="openKwitansiDetailModal(${r.id})" title="Lihat">👁️</button>
-                <button class="btn-sm btn-view" onclick='printReceiptById(${r.id})' title="Cetak">🖨️</button>
-                <button class="btn-sm btn-del" onclick="deleteReceipt(${r.id}, '${esc(r.invoice_no)}')" title="Hapus" style="padding:6px 10px;">🗑️</button>
-              </td>
-            </tr>`).join('')}
-          </tbody>
-        </table>
+      <div class="data-table-wrap">
+        <div class="table-scroll">
+          <table class="data-table">
+            <thead><tr>
+              <th style="width:36px;"></th>
+              <th>No. Invoice</th><th>Pasien</th><th>Total</th><th>Aksi</th>
+            </tr></thead>
+            <tbody>
+              ${rows.map(r => `<tr data-rid="${r.id}">
+                <td><input type="checkbox" class="kw-chk" value="${r.id}" onchange="updateKwSelCount()"></td>
+                <td><strong>${r.invoice_no}</strong><br><small>${fmtDateTime(r.created_at)}</small></td>
+                <td>${esc(r.patient_name || '-')}</td>
+                <td><strong>${fmtRp(r.total)}</strong></td>
+                <td style="white-space:nowrap;">
+                  <button class="btn-sm btn-view" onclick="openKwitansiDetailModal(${r.id})" title="Lihat">👁️</button>
+                  <button class="btn-sm btn-view" onclick='printReceiptById(${r.id})' title="Cetak">🖨️</button>
+                  <button class="btn-sm btn-del" onclick="deleteReceipt(${r.id}, '${esc(r.invoice_no)}')" title="Hapus" style="padding:6px 10px;">🗑️</button>
+                </td>
+              </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div class="card-list" aria-label="Daftar kwitansi (tampilan kartu untuk HP)">
+        ${rows.map(r => `<div class="card-list-item" data-rid="${r.id}">
+          <div class="cli-head">${esc(r.invoice_no || '')}</div>
+          <div class="cli-meta">📅 ${fmtDateTime(r.created_at)}</div>
+          <div class="cli-row"><span class="cli-label">Pasien</span><span class="cli-value">${esc(r.patient_name || '-')}</span></div>
+          <div class="cli-row"><span class="cli-label">Total</span><span class="cli-value">${fmtRp(r.total)}</span></div>
+          <div class="cli-actions">
+            <label style="display:flex;align-items:center;gap:6px;padding:6px 10px;background:var(--bg);border-radius:8px;font-size:0.78rem;font-weight:700;">
+              <input type="checkbox" class="kw-chk" value="${r.id}" onchange="updateKwSelCount()"> Pilih
+            </label>
+            <button class="btn-sm btn-view" onclick="openKwitansiDetailModal(${r.id})" title="Lihat">👁️ Lihat</button>
+            <button class="btn-sm btn-view" onclick='printReceiptById(${r.id})' title="Cetak">🖨️ Cetak</button>
+            <button class="btn-sm btn-del" onclick="deleteReceipt(${r.id}, '${esc(r.invoice_no)}')" title="Hapus">🗑️ Hapus</button>
+          </div>
+        </div>`).join('')}
       </div>`;
     updateKwSelCount();
   } catch (e) { document.getElementById('kwList').innerHTML = `<div class="alert alert-error">${e.message}</div>`; }
@@ -1198,19 +1255,31 @@ async function loadRecap() {
         <div>
           <h3 style="margin:20px 0 12px;">📅 Detail Reservasi ${isRange ? '(' + RECAP_DATA.rows.length + ' di ' + months + ' bulan)' : 'Bulan ' + month}</h3>
           ${RECAP_DATA.rows.length ? `
-            <div class="table-scroll"><table class="data-table"><thead><tr>
-              <th>Tgl</th><th>Pasien</th><th>Layanan</th><th>Sesi</th><th>Total</th><th>Status</th><th>Bayar</th>
-            </tr></thead><tbody>
-            ${RECAP_DATA.rows.map(r => `<tr>
-              <td>${(r.slots||[]).map(s=>`${fmtDate(s.date)} <small>${s.time}</small>`).join('<br>')}</td>
-              <td>${esc(r.patient_name)}</td>
-              <td><div class="items-list">${(r.items||[]).map(it=>`<div>• ${esc(it.name)} ×${it.qty}</div>`).join('')}</div></td>
-              <td>${(r.slots||[]).length}</td>
-              <td><strong>${fmtRp(r.total)}</strong></td>
-              <td><span class="badge badge-${r.status}">${r.status}</span></td>
-              <td><span class="badge badge-${r.payment_status}">${r.payment_status}</span></td>
-            </tr>`).join('') || '<tr><td colspan="7" style="text-align:center;color:var(--text-soft);padding:20px;">Tidak ada data.</td></tr>'}
-            </tbody></table></div>
+            <div class="data-table-wrap">
+              <div class="table-scroll"><table class="data-table"><thead><tr>
+                <th>Tgl</th><th>Pasien</th><th>Layanan</th><th>Sesi</th><th>Total</th><th>Status</th><th>Bayar</th>
+              </tr></thead><tbody>
+              ${RECAP_DATA.rows.map(r => `<tr>
+                <td>${(r.slots||[]).map(s=>`${fmtDate(s.date)} <small>${s.time}</small>`).join('<br>')}</td>
+                <td>${esc(r.patient_name)}</td>
+                <td><div class="items-list">${(r.items||[]).map(it=>`<div>• ${esc(it.name)} ×${it.qty}</div>`).join('')}</div></td>
+                <td>${(r.slots||[]).length}</td>
+                <td><strong>${fmtRp(r.total)}</strong></td>
+                <td><span class="badge badge-${r.status}">${r.status}</span></td>
+                <td><span class="badge badge-${r.payment_status}">${r.payment_status}</span></td>
+              </tr>`).join('') || '<tr><td colspan="7" style="text-align:center;color:var(--text-soft);padding:20px;">Tidak ada data.</td></tr>'}
+              </tbody></table></div>
+            </div>
+            <div class="card-list">
+              ${RECAP_DATA.rows.map(r => `<div class="card-list-item">
+                <div class="cli-head">${esc(r.patient_name || '-')}</div>
+                <div class="cli-meta">📅 ${(r.slots||[]).map(s=>`${fmtDate(s.date)} ${s.time}`).join(', ')}</div>
+                <div class="cli-row"><span class="cli-label">Layanan</span><span class="cli-value" style="text-align:left;font-weight:500;">${(r.items||[]).map(it=>`• ${esc(it.name)} ×${it.qty}`).join('<br>')}</span></div>
+                <div class="cli-row"><span class="cli-label">Sesi</span><span class="cli-value">${(r.slots||[]).length}</span></div>
+                <div class="cli-row"><span class="cli-label">Total</span><span class="cli-value">${fmtRp(r.total)}</span></div>
+                <div class="cli-row"><span class="cli-label">Status</span><span class="cli-value"><span class="badge badge-${r.status}">${r.status}</span> <span class="badge badge-${r.payment_status}">${r.payment_status}</span></span></div>
+              </div>`).join('')}
+            </div>
           ` : '<p style="color:var(--text-soft);text-align:center;padding:20px;background:var(--card);border-radius:12px;">Belum ada reservasi bulan ini.</p>'}
         </div>
       </div>
@@ -1220,7 +1289,11 @@ async function loadRecap() {
 }
 
 function renderReceiptTable(rows) {
-  return `<div class="table-scroll"><table class="data-table"><thead><tr>
+  // Enable responsive card-list view for phones. Both the table and
+  // the card list are rendered; CSS hides the table on phones so
+  // every action button stays tappable.
+  document.body.setAttribute('data-table-mode', 'cards');
+  const tableHtml = `<div class="data-table-wrap"><div class="table-scroll"><table class="data-table"><thead><tr>
     <th>Invoice</th><th>Tgl Layanan</th><th>Pasien</th><th>Total</th><th>Aksi</th>
   </tr></thead><tbody>
   ${rows.map(r => `<tr>
@@ -1234,7 +1307,22 @@ function renderReceiptTable(rows) {
       <button class="btn-sm btn-del" onclick="deleteReceipt(${r.id}, '${esc(r.invoice_no)}')" title="Hapus">🗑️</button>
     </td>
   </tr>`).join('')}
-  </tbody></table></div>`;
+  </tbody></table></div></div>`;
+  const cardHtml = `<div class="card-list" aria-label="Daftar kwitansi (tampilan kartu untuk HP)">
+    ${rows.map(r => `<div class="card-list-item">
+      <div class="cli-head">${esc(r.invoice_no || '')}</div>
+      <div class="cli-meta">📅 ${fmtDateTime(r.created_at)}</div>
+      <div class="cli-row"><span class="cli-label">Tgl Layanan</span><span class="cli-value">${r.service_date ? fmtDate(r.service_date) : '—'}</span></div>
+      <div class="cli-row"><span class="cli-label">Pasien</span><span class="cli-value">${esc(r.patient_name || '-')}<br><small style="font-weight:400;color:var(--text-soft)">${esc(r.whatsapp || '')}</small></span></div>
+      <div class="cli-row"><span class="cli-label">Total</span><span class="cli-value">${fmtRp(r.total)}</span></div>
+      <div class="cli-actions">
+        <button class="btn-sm btn-view" onclick="openKwitansiDetailModal(${r.id})">👁️ Lihat</button>
+        <button class="btn-sm btn-view" onclick="printReceiptById(${r.id})">🖨️ Cetak</button>
+        <button class="btn-sm btn-del" onclick="deleteReceipt(${r.id}, '${esc(r.invoice_no)}')">🗑️ Hapus</button>
+      </div>
+    </div>`).join('')}
+  </div>`;
+  return tableHtml + cardHtml;
 }
 
 // Buka modal 'Buat Kwitansi Manual' dari Rekap Bulanan — tidak perlu pindah
@@ -2078,12 +2166,12 @@ function renderHours() {
   el.innerHTML = '';
   SETTINGS.hours.forEach((h, i) => {
     const row = document.createElement('div');
-    row.style.cssText = 'display:grid;grid-template-columns:90px 1fr 1fr auto;gap:8px;margin-bottom:6px;align-items:center;';
+    row.className = 'settings-row';
     row.innerHTML = `
-      <div style="font-weight:600;font-size:0.9rem;">${esc(h.day)}</div>
-      <input type="time" value="${esc(h.open||'08:00')}" ${h.closed ? 'disabled' : ''} oninput="SETTINGS.hours[${i}].open=this.value" style="padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);">
-      <input type="time" value="${esc(h.close||'20:00')}" ${h.closed ? 'disabled' : ''} oninput="SETTINGS.hours[${i}].close=this.value" style="padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);">
-      <label style="display:flex;gap:4px;align-items:center;font-size:0.82rem;cursor:pointer;white-space:nowrap;">
+      <div class="settings-row-day" style="font-weight:600;font-size:0.9rem;">${esc(h.day)}</div>
+      <input type="time" class="settings-row-open" value="${esc(h.open||'08:00')}" ${h.closed ? 'disabled' : ''} oninput="SETTINGS.hours[${i}].open=this.value" style="padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);">
+      <input type="time" class="settings-row-close" value="${esc(h.close||'20:00')}" ${h.closed ? 'disabled' : ''} oninput="SETTINGS.hours[${i}].close=this.value" style="padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);">
+      <label class="settings-row-label" style="display:flex;gap:4px;align-items:center;font-size:0.82rem;cursor:pointer;white-space:nowrap;">
         <input type="checkbox" ${h.closed ? 'checked' : ''} onchange="SETTINGS.hours[${i}].closed=this.checked;renderHours();"> Tutup
       </label>
     `;
@@ -2126,20 +2214,21 @@ function renderSocials() {
   const icons = { 'Instagram':'📷','TikTok':'🎵','Facebook':'📘','YouTube':'▶️','Twitter/X':'🐦','WhatsApp':'💬','Telegram':'✈️','LinkedIn':'💼','Threads':'@','Lainnya':'🌐' };
   SETTINGS.socials.forEach((sc, i) => {
     const row = document.createElement('div');
-    row.style.cssText = 'display:grid;grid-template-columns:140px 50px 1fr 70px 70px 36px;gap:8px;margin-bottom:8px;align-items:center;';
+    row.className = 'social-row';
+    row.style.marginBottom = '8px';
     const hasIcon = !!sc.icon_b64;
     row.innerHTML = `
-      <select onchange="onSocialPlatformChange(${i}, this)" style="padding:8px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);">
+      <select class="social-platform" onchange="onSocialPlatformChange(${i}, this)">
         ${platforms.map(p => `<option value="${p}" data-icon="${icons[p]}" ${sc.platform===p?'selected':''}>${icons[p]} ${p}</option>`).join('')}
       </select>
-      <div style="width:42px;height:42px;border-radius:50%;background:${hasIcon ? `url(data:${sc.icon_mime||'image/png'};base64,${sc.icon_b64}) center/cover` : 'var(--pink-100)'};display:flex;align-items:center;justify-content:center;font-size:1.2rem;flex-shrink:0;">${hasIcon ? '' : esc(sc.icon || icons[sc.platform] || '🌐')}</div>
-      <input type="url" placeholder="https://instagram.com/username" value="${esc(sc.url || '')}" oninput="SETTINGS.socials[${i}].url=this.value" style="padding:8px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);">
-      <label class="btn-sm btn-approve" style="cursor:pointer;display:inline-flex;align-items:center;justify-content:center;padding:8px;margin:0;">
+      <div class="social-avatar" style="background:${hasIcon ? `url(data:${sc.icon_mime||'image/png'};base64,${sc.icon_b64}) center/cover` : 'var(--pink-100)'};">${hasIcon ? '' : esc(sc.icon || icons[sc.platform] || '🌐')}</div>
+      <input class="social-url" type="url" placeholder="https://instagram.com/username" value="${esc(sc.url || '')}" oninput="SETTINGS.socials[${i}].url=this.value">
+      <label class="btn-sm btn-approve social-upload">
         📷
         <input type="file" accept="image/*" onchange="uploadSocialIcon(${i}, this)" style="display:none;">
       </label>
-      ${hasIcon ? `<button class="btn-sm btn-del" onclick="deleteSocialIcon(${i})" style="padding:8px;">🗑️</button>` : `<span style="display:inline-block;width:36px;"></span>`}
-      <button class="rm-btn" onclick="SETTINGS.socials.splice(${i},1);renderSocials();" style="height:38px;background:#fde0e4;color:#c43050;border:none;border-radius:8px;cursor:pointer;">×</button>
+      ${hasIcon ? `<button class="btn-sm btn-del social-delete" onclick="deleteSocialIcon(${i})">🗑️</button>` : `<span class="social-spacer"></span>`}
+      <button class="rm-btn social-remove" onclick="SETTINGS.socials.splice(${i},1);renderSocials();">×</button>
     `;
     el.appendChild(row);
   });
