@@ -434,7 +434,11 @@ async function renderReceipts() {
             <div class="form-group"><label>HP</label><input type="tel" id="kw_hp"></div>
             <div class="form-group"><label>Tanggal Layanan</label><input type="date" id="kw_date" value="${new Date().toISOString().slice(0,10)}"></div>
           </div>
-          <div class="form-group"><label>Waktu / Jam Layanan</label><input type="time" id="kw_time" value="09:00"></div>
+          <div class="form-group"><label>⏰ Waktu / Jam Layanan (multi-waktu)</label>
+            <div id="kw_times" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;"></div>
+            <button type="button" onclick="addKwTimePrompt()" class="btn-sm btn-pay" style="margin-top:6px;">+ Tambah Waktu</button>
+            <small style="color:var(--text-soft);display:block;margin-top:4px;">Misal: satu pasien dengan 3 sesi (09:00, 14:00, 19:00). Masing-masing jadi 1 sesi di reservasi mirror.</small>
+          </div>
           <div class="form-group"><label>Alamat</label><input type="text" id="kw_addr"></div>
           <hr style="margin:16px 0;border:none;border-top:1px dashed var(--border);">
           <h4 style="margin-bottom:10px;">Layanan</h4>
@@ -482,6 +486,7 @@ async function renderReceipts() {
   `;
   receiptItems = [];
   addReceiptItem();
+  initKwTimes();
   loadReceipts();
 }
 
@@ -563,21 +568,166 @@ function prefillReceipt(r) {
   rebuildReceiptItems();
 }
 
+// ===== MULTI-WAKTU (kwitansi manual) =====
+// The "kw_*" form (left side of /receipts page) uses one set of state
+// (kwTimes), the "mkw_*" modal (Rekap Bulanan → Buat Kwitansi Manual)
+// uses another (mkwTimes). Each is a flat array of "HH:MM" strings.
+let kwTimes = [];
+let mkwTimes = [];
+
+function initKwTimes(initial) {
+  // Always seed with at least one 09:00 entry. If `initial` is provided
+  // (e.g. from prefill), use that.
+  const seed = Array.isArray(initial) && initial.length ? initial.slice() : ['09:00'];
+  kwTimes = seed.filter((t) => /^\d{1,2}:\d{2}$/.test(t));
+  if (!kwTimes.length) kwTimes = ['09:00'];
+  renderKwTimes();
+}
+
+function addKwTime(value) {
+  const t = (value && /^\d{1,2}:\d{2}$/.test(value)) ? value : '09:00';
+  if (!kwTimes.includes(t)) kwTimes.push(t);
+  renderKwTimes();
+}
+
+function removeKwTime(t) {
+  if (kwTimes.length <= 1) return; // keep at least one
+  kwTimes = kwTimes.filter((x) => x !== t);
+  renderKwTimes();
+}
+
+function getKwTimes() {
+  return kwTimes.filter((t) => /^\d{1,2}:\d{2}$/.test(t));
+}
+
+function renderKwTimes() {
+  const wrap = document.getElementById('kw_times');
+  if (!wrap) return;
+  wrap.innerHTML = '';
+  if (!kwTimes.length) kwTimes = ['09:00'];
+  kwTimes.forEach((t, i) => {
+    const chip = document.createElement('span');
+    chip.className = 'kw-time-chip';
+    chip.style.cssText = 'display:inline-flex;align-items:center;gap:6px;padding:6px 12px;background:var(--pink-50);border:1px solid var(--pink-100);border-radius:999px;font-size:0.92rem;font-weight:600;color:var(--pink-700);';
+    chip.innerHTML = `⏰ ${t} <button type="button" onclick="removeKwTime('${t}')" style="background:none;border:none;color:#c43050;cursor:pointer;font-weight:700;padding:0 2px;font-size:1rem;line-height:1;" title="Hapus waktu">×</button>`;
+    wrap.appendChild(chip);
+  });
+  // Hidden input mirror so any legacy code reading #kw_time still works
+  const mirror = document.getElementById('kw_time_mirror');
+  if (mirror) mirror.value = kwTimes[0] || '';
+}
+
+function initMkwTimes(initial) {
+  const seed = Array.isArray(initial) && initial.length ? initial.slice() : ['09:00'];
+  mkwTimes = seed.filter((t) => /^\d{1,2}:\d{2}$/.test(t));
+  if (!mkwTimes.length) mkwTimes = ['09:00'];
+  renderMkwTimes();
+}
+
+function mkwAddTime(value) {
+  const t = (value && /^\d{1,2}:\d{2}$/.test(value)) ? value : '09:00';
+  if (!mkwTimes.includes(t)) mkwTimes.push(t);
+  renderMkwTimes();
+}
+
+function removeMkwTime(t) {
+  if (mkwTimes.length <= 1) return;
+  mkwTimes = mkwTimes.filter((x) => x !== t);
+  renderMkwTimes();
+}
+
+function getMkwTimes() {
+  return mkwTimes.filter((t) => /^\d{1,2}:\d{2}$/.test(t));
+}
+
+function renderMkwTimes() {
+  const wrap = document.getElementById('mkw_times');
+  if (!wrap) return;
+  wrap.innerHTML = '';
+  if (!mkwTimes.length) mkwTimes = ['09:00'];
+  mkwTimes.forEach((t) => {
+    const chip = document.createElement('span');
+    chip.className = 'kw-time-chip';
+    chip.style.cssText = 'display:inline-flex;align-items:center;gap:6px;padding:6px 12px;background:var(--pink-50);border:1px solid var(--pink-100);border-radius:999px;font-size:0.92rem;font-weight:600;color:var(--pink-700);';
+    chip.innerHTML = `⏰ ${t} <button type="button" onclick="removeMkwTime('${t}')" style="background:none;border:none;color:#c43050;cursor:pointer;font-weight:700;padding:0 2px;font-size:1rem;line-height:1;" title="Hapus waktu">×</button>`;
+    wrap.appendChild(chip);
+  });
+}
+
+// Inline "Tambah waktu" picker: pops a small input + add button next
+// to the chip row. Keeps the main UI tidy.
+function addKwTimePrompt() {
+  const wrap = document.getElementById('kw_times');
+  if (!wrap) return;
+  const existing = document.getElementById('kw_time_picker');
+  if (existing) { existing.focus(); return; }
+  const picker = document.createElement('span');
+  picker.id = 'kw_time_picker';
+  picker.className = 'kw-time-chip';
+  picker.style.cssText = 'display:inline-flex;align-items:center;gap:6px;padding:6px 10px;background:var(--card);border:2px solid var(--primary);border-radius:999px;';
+  picker.innerHTML = `<input type="time" id="kw_time_input" style="border:none;background:transparent;font-weight:600;color:var(--text);font-family:inherit;font-size:0.92rem;padding:0;width:90px;">
+    <button type="button" onclick="commitKwTime()" style="background:var(--primary);color:white;border:none;cursor:pointer;font-weight:700;padding:2px 8px;border-radius:6px;font-size:0.85rem;">✓</button>
+    <button type="button" onclick="cancelKwTimePicker()" style="background:none;border:none;color:var(--text-soft);cursor:pointer;font-weight:700;padding:0 2px;font-size:1rem;">×</button>`;
+  wrap.appendChild(picker);
+  document.getElementById('kw_time_input').focus();
+}
+
+function commitKwTime() {
+  const val = document.getElementById('kw_time_input')?.value;
+  if (!val || !/^\d{1,2}:\d{2}$/.test(val)) { cancelKwTimePicker(); return; }
+  addKwTime(val);
+  cancelKwTimePicker();
+}
+
+function cancelKwTimePicker() {
+  document.getElementById('kw_time_picker')?.remove();
+}
+
+function addMkwTimePrompt() {
+  const wrap = document.getElementById('mkw_times');
+  if (!wrap) return;
+  const existing = document.getElementById('mkw_time_picker');
+  if (existing) { existing.focus(); return; }
+  const picker = document.createElement('span');
+  picker.id = 'mkw_time_picker';
+  picker.className = 'kw-time-chip';
+  picker.style.cssText = 'display:inline-flex;align-items:center;gap:6px;padding:6px 10px;background:var(--card);border:2px solid var(--primary);border-radius:999px;';
+  picker.innerHTML = `<input type="time" id="mkw_time_input" style="border:none;background:transparent;font-weight:600;color:var(--text);font-family:inherit;font-size:0.92rem;padding:0;width:90px;">
+    <button type="button" onclick="commitMkwTime()" style="background:var(--primary);color:white;border:none;cursor:pointer;font-weight:700;padding:2px 8px;border-radius:6px;font-size:0.85rem;">✓</button>
+    <button type="button" onclick="cancelMkwTimePicker()" style="background:none;border:none;color:var(--text-soft);cursor:pointer;font-weight:700;padding:0 2px;font-size:1rem;">×</button>`;
+  wrap.appendChild(picker);
+  document.getElementById('mkw_time_input').focus();
+}
+
+function commitMkwTime() {
+  const val = document.getElementById('mkw_time_input')?.value;
+  if (!val || !/^\d{1,2}:\d{2}$/.test(val)) { cancelMkwTimePicker(); return; }
+  mkwAddTime(val);
+  cancelMkwTimePicker();
+}
+
+function cancelMkwTimePicker() {
+  document.getElementById('mkw_time_picker')?.remove();
+}
+
 async function saveReceipt() {
   const items = receiptItems.filter(it => it.name && it.price > 0);
   if (!items.length) return alert('Tambahkan minimal 1 layanan');
+  const times = getKwTimes();
+  if (!times.length) return alert('Tambahkan minimal 1 waktu layanan');
   const body = {
     patient_name: document.getElementById('kw_name').value,
     whatsapp: document.getElementById('kw_hp').value,
     address: document.getElementById('kw_addr').value,
     service_date: document.getElementById('kw_date').value,
-    service_time: document.getElementById('kw_time').value || '09:00',
+    service_time: times[0],
+    service_times: times,
     items,
     transport_fee: parseInt(document.getElementById('kw_transport').value) || 0,
     discount: parseInt(document.getElementById('kw_discount').value) || 0
   };
   const res = await api('/api/admin/receipts', { method: 'POST', body: JSON.stringify(body) });
-  printReceipt({ ...body, invoice_no: res.invoice_no, subtotal: res.subtotal, total: res.total, created_at: new Date().toISOString(), service_time: body.service_time });
+  printReceipt({ ...body, invoice_no: res.invoice_no, subtotal: res.subtotal, total: res.total, created_at: new Date().toISOString() });
   loadReceipts();
 }
 
@@ -682,6 +832,16 @@ function printReceipt(r) {
   const items = Array.isArray(r.items) ? r.items : (r.items || JSON.parse(r.items_json || '[]'));
   const biz = SETTINGS || {};
   const logoSrc = biz.has_logo ? apiUrl('/api/logo') : null;
+  // Multi-waktu support: prefer service_times[] if available, fall back
+  // to service_time. Render each as a chip so several sessions fit
+  // gracefully on a single line.
+  const times = (Array.isArray(r.service_times) && r.service_times.length)
+    ? r.service_times
+    : (r.service_time ? [r.service_time] : []);
+  const timesHtml = times.length
+    ? times.map((t) => `<span style="display:inline-block;margin:2px 4px 2px 0;padding:3px 10px;background:#fff0f5;border:1px solid #ffd1de;border-radius:999px;font-size:0.86rem;font-weight:700;color:#c43050;">⏰ ${esc(t)} WIB</span>`).join('')
+    : '<span style="color:var(--text-soft);">—</span>';
+  const sessionsLabel = times.length > 1 ? `<strong style="color:var(--primary);">${times.length} sesi</strong>` : '';
   const html = `<!doctype html><html><head><title>Kwitansi ${r.invoice_no}</title>
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="${PAGE_STYLESHEET}">
@@ -715,9 +875,9 @@ function printReceipt(r) {
           ${esc(r.address || '')}
         </div>
         <div class="invoice-block">
-          <h4>Tanggal & Waktu Layanan</h4>
+          <h4>Tanggal & Waktu Layanan ${sessionsLabel}</h4>
           ${r.service_date ? new Date(r.service_date).toLocaleDateString('id-ID', { day:'2-digit', month:'long', year:'numeric' }) : '-'}
-          ${r.service_time ? `<br><small style="color:var(--text-soft);">⏰ ${esc(r.service_time)} WIB</small>` : ''}
+          <div style="margin-top:6px;line-height:1.6;">${timesHtml}</div>
         </div>
       </div>
       <table>
@@ -843,7 +1003,11 @@ function openKwitansiModal() {
         <div class="form-group"><label>HP</label><input type="tel" id="mkw_hp"></div>
         <div class="form-group"><label>Tanggal Layanan</label><input type="date" id="mkw_date" value="${month}"></div>
       </div>
-      <div class="form-group"><label>Waktu / Jam Layanan</label><input type="time" id="mkw_time" value="09:00"></div>
+      <div class="form-group"><label>⏰ Waktu / Jam Layanan (multi-waktu)</label>
+        <div id="mkw_times" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;"></div>
+        <button type="button" onclick="addMkwTimePrompt()" class="btn-sm btn-pay" style="margin-top:6px;">+ Tambah Waktu</button>
+        <small style="color:var(--text-soft);display:block;margin-top:4px;">Misal: satu pasien dengan beberapa sesi (09:00, 14:00, 19:00).</small>
+      </div>
       <div class="form-group"><label>Alamat</label><input type="text" id="mkw_addr"></div>
       <hr style="margin:14px 0;border:none;border-top:1px dashed var(--border);">
       <h4 style="margin-bottom:8px;">Layanan</h4>
@@ -865,6 +1029,7 @@ function openKwitansiModal() {
     </div>
   `);
   mkwAddRow();
+  initMkwTimes();
 }
 
 function mkwAddRow(item) {
@@ -926,12 +1091,19 @@ async function mkwSave() {
     errEl.style.display = 'block';
     return;
   }
+  const times = getMkwTimes();
+  if (!times.length) {
+    errEl.textContent = '⚠️ Tambahkan minimal 1 waktu layanan.';
+    errEl.style.display = 'block';
+    return;
+  }
   const body = {
     patient_name: document.getElementById('mkw_name').value,
     whatsapp: document.getElementById('mkw_hp').value,
     address: document.getElementById('mkw_addr').value,
     service_date: document.getElementById('mkw_date').value,
-    service_time: document.getElementById('mkw_time').value || '09:00',
+    service_time: times[0],
+    service_times: times,
     items,
     transport_fee: parseInt(document.getElementById('mkw_transport').value) || 0,
     discount: parseInt(document.getElementById('mkw_discount').value) || 0
@@ -953,11 +1125,21 @@ async function openKwitansiDetailModal(id) {
     || (window._receiptsCache && window._receiptsCache.find(x => x.id === id));
   if (!r) return alert('Kwitansi tidak ditemukan di cache. Coba muat ulang halaman.');
   const items = Array.isArray(r.items) ? r.items : [];
+  const times = (Array.isArray(r.service_times) && r.service_times.length)
+    ? r.service_times
+    : (r.service_time ? [r.service_time] : []);
+  const sessionsLabel = times.length > 1 ? ` <span style="color:var(--primary);font-weight:700;">(${times.length} sesi)</span>` : '';
+  const timesHtml = times.length
+    ? times.map((t) => `<span style="display:inline-block;margin:2px 4px 2px 0;padding:4px 10px;background:var(--pink-50);border:1px solid var(--pink-100);border-radius:999px;font-size:0.86rem;font-weight:700;color:var(--primary);">⏰ ${esc(t)} WIB</span>`).join('')
+    : '<span style="color:var(--text-soft);">—</span>';
   openModal(`
     <h3>🧾 Detail Kwitansi ${esc(r.invoice_no || '')}</h3>
     <div style="margin-top:14px;display:grid;gap:8px;font-size:0.92rem;">
       <div><strong>Tanggal Buat:</strong> ${fmtDateTime(r.created_at)}</div>
       <div><strong>Tanggal Layanan:</strong> ${r.service_date ? fmtDate(r.service_date) : '<span style="color:var(--text-soft)">—</span>'}</div>
+      <div><strong>Waktu Layanan${sessionsLabel}:</strong>
+        <div style="margin-top:4px;line-height:1.8;">${timesHtml}</div>
+      </div>
       <div><strong>Pasien:</strong> ${esc(r.patient_name || '-')}</div>
       <div><strong>WhatsApp:</strong> ${esc(r.whatsapp || '-')}</div>
       <div><strong>Alamat:</strong> ${esc(r.address || '-')}</div>
@@ -1088,6 +1270,7 @@ function downloadKwitansiTemplate() {
       whatsapp: "081234567890",
       address: "Cilacap",
       service_date: "2026-09-05",
+      service_times: ["09:00"],
       items: [
         { name: "Massage Ibu Hamil", price: 80000, qty: 1 }
       ],
@@ -1099,6 +1282,8 @@ function downloadKwitansiTemplate() {
       whatsapp: "081234567891",
       address: "Nusawungu",
       service_date: "2026-09-10",
+      // Multi-waktu: pisahkan pakai koma. Bisa juga array service_times: ["09:00", "14:00", "19:00"].
+      service_times: ["09:00", "14:00", "19:00"],
       items: [
         { name: "Pijat Laktasi", price: 80000, qty: 2 },
         { name: "Baby Sleepwell", price: 50000, qty: 1 }
