@@ -355,69 +355,198 @@ async function quickMakeReceipt(id) {
 }
 
 // ---------- CALENDAR ADMIN ----------
+// Compact mobile-friendly calendar. Cells pakai class .cal-compact
+// dari stylesheet. Click tanggal → buka panel detail di bawah
+// kalender yang menampilkan daftar (layanan, jam) per reservasi.
+// Nama pasien & nomor HP di-mask ("Bunda A***") demi privasi —
+// admin bisa buka Reservasi atau Kwitansi untuk lihat data lengkap.
 let admCalDate = new Date();
+let admCalEvents = []; // {date, time, items, status, reservation_id, items_count}
+let admCalSelectedDate = null;
 async function renderCalendarAdmin() {
   const c = document.getElementById('pageContent');
   c.innerHTML = `
     <div class="admin-header">
       <h1>🗓️ Kalender Realtime</h1>
-      <div class="cal-nav">
-        <button class="btn-sm btn-pay" onclick="admPrev()">‹</button>
-        <button class="btn-sm btn-pay" onclick="admToday()">Hari ini</button>
-        <button class="btn-sm btn-pay" onclick="admNext()">›</button>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+        <span style="font-size:0.82rem;color:var(--text-soft);">📅 Lihat jadwal reservasi per hari</span>
+        <button onclick="admRefresh()" class="btn-sm btn-pay">🔄 Refresh</button>
       </div>
     </div>
-    <div class="calendar-wrap">
-      <h3 id="admCalLabel" style="margin-bottom:16px;">—</h3>
+    <div class="calendar-wrap cal-compact">
+      <div class="cal-header">
+        <h3 id="admCalLabel">—</h3>
+        <div class="cal-nav">
+          <button onclick="admPrev()" title="Bulan sebelumnya">‹</button>
+          <button onclick="admToday()">Hari ini</button>
+          <button onclick="admNext()" title="Bulan berikutnya">›</button>
+        </div>
+      </div>
       <div class="cal-grid" id="admCalGrid"></div>
+      <div class="cal-legend">
+        <span><span class="swatch today"></span>Hari ini</span>
+        <span><span class="swatch has-events"></span>Ada reservasi</span>
+        <span style="color:var(--text-soft);font-size:0.78rem;">💡 Klik tanggal untuk lihat detail (nama pasien di-mask)</span>
+      </div>
+    </div>
+    <div id="admCalDetail" style="display:none;margin-top:18px;background:var(--card);border-radius:12px;padding:18px;border:1px solid var(--border);">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+        <h3 style="margin:0;" id="admCalDetailTitle">—</h3>
+        <button onclick="closeAdmCalDetail()" class="btn-sm btn-view">Tutup</button>
+      </div>
+      <div id="admCalDetailContent"></div>
     </div>
   `;
+  await admRefresh();
+}
+async function admRefresh() {
+  try {
+    const rows = await api('/api/admin/reservations');
+    admCalEvents = [];
+    rows.forEach(r => {
+      const items = Array.isArray(r.items) ? r.items : [];
+      (r.slots || []).forEach((s, idx) => {
+        admCalEvents.push({
+          reservation_id: r.id,
+          date: s.date,
+          time: s.time,
+          status: r.status,
+          payment_status: r.payment_status,
+          // Items for this reservation — we display per-slot. Since
+          // items are usually identical across slots of the same
+          // reservation, we attach them on the FIRST slot only.
+          items: idx === 0 ? items : [],
+          items_total: r.total,
+          // Private fields (name, whatsapp) are NOT loaded here. They
+          // are masked out of the calendar entirely — admin opens
+          // Reservasi / Kwitansi to see full PII.
+        });
+      });
+    });
+  } catch (e) {
+    admCalEvents = [];
+  }
   drawAdmCal();
 }
-async function drawAdmCal() {
-  const rows = await api('/api/admin/reservations');
-  // Flatten slots
-  const events = [];
-  rows.forEach(r => {
-    (r.slots || []).forEach(s => events.push({
-      date: s.date, time: s.time, patient_name: r.patient_name,
-      service_name: r.items && r.items[0] ? r.items[0].name : r.service_name,
-      status: r.status
-    }));
-  });
+function maskPatientId(id) {
+  // Stable short mask of a numeric reservation id, e.g. #42 → "#…0042".
+  // Doesn't reveal the real name/phone — just an opaque token so the
+  // admin knows multiple slots at the same time belong to the same
+  // reservation when looking at the detail panel.
+  if (!id) return '';
+  const tail = String(id).padStart(4, '0').slice(-4);
+  return `Pasien #…${tail}`;
+}
+function drawAdmCal() {
   const y = admCalDate.getFullYear(), m = admCalDate.getMonth();
   const mn = ['Januari','Februari','Maret','April','Mei','Juni','Juli','Agustus','September','Oktober','November','Desember'];
   document.getElementById('admCalLabel').textContent = `${mn[m]} ${y}`;
-  const grid = document.getElementById('admCalGrid'); grid.innerHTML = '';
+  const grid = document.getElementById('admCalGrid');
+  grid.innerHTML = '';
+  const today = new Date().toISOString().slice(0, 10);
+  const todayMidnight = new Date(); todayMidnight.setHours(0,0,0,0);
+
   ['Min','Sen','Sel','Rab','Kam','Jum','Sab'].forEach(d => {
-    const h = document.createElement('div'); h.className = 'cal-cell head'; h.textContent = d; grid.appendChild(h);
+    const h = document.createElement('div');
+    h.className = 'cal-cell head';
+    h.textContent = d;
+    grid.appendChild(h);
   });
+
   const firstDay = new Date(y, m, 1).getDay();
   const daysInMonth = new Date(y, m + 1, 0).getDate();
-  for (let i = 0; i < firstDay; i++) { const c = document.createElement('div'); c.className = 'cal-cell muted'; grid.appendChild(c); }
-  const today = new Date().toISOString().slice(0, 10);
+  const prevDays = new Date(y, m, 0).getDate();
+
+  for (let i = firstDay - 1; i >= 0; i--) {
+    const c = document.createElement('div');
+    c.className = 'cal-cell muted';
+    c.innerHTML = `<span class="day-num">${prevDays - i}</span>`;
+    grid.appendChild(c);
+  }
+
   for (let d = 1; d <= daysInMonth; d++) {
     const ds = `${y}-${String(m + 1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
-    const evs = events.filter(e => e.date === ds);
+    const cellDate = new Date(y, m, d);
+    const isPast = cellDate < todayMidnight;
+    const evs = admCalEvents.filter(e => e.date === ds);
     const c = document.createElement('div');
-    c.className = 'cal-cell' + (ds === today ? ' today' : '');
-    c.innerHTML = `<span class="day-num">${d}</span>`;
-    evs.slice(0,3).forEach(e => {
-      const ev = document.createElement('div');
-      ev.className = 'ev';
-      ev.style.background = e.status === 'approved' ? '#d9efe1' : '#fff3d6';
-      ev.style.color = e.status === 'approved' ? '#1e8957' : '#b07b15';
-      ev.title = `${e.time} — ${e.patient_name} — ${e.service_name}`;
-      ev.textContent = `${e.time.slice(0,5)} ${e.patient_name}`;
-      c.appendChild(ev);
-    });
-    if (evs.length > 3) { const m = document.createElement('div'); m.className = 'ev'; m.textContent = `+${evs.length - 3}`; c.appendChild(m); }
+    let cls = 'cal-cell';
+    if (ds === today) cls += ' today';
+    if (evs.length && !isPast) cls += evs.length >= 4 ? ' full' : ' has-events';
+    if (isPast) cls += ' past';
+    c.className = cls;
+    c.style.cursor = 'pointer';
+    c.title = `${d} ${mn[m]} ${y}${evs.length ? ` — ${evs.length} reservasi` : ''}`;
+    c.onclick = () => openAdmCalDetail(ds, evs);
+    let html = `<span class="day-num">${d}</span>`;
+    if (evs.length && !isPast) {
+      html += `<span class="count-badge" title="${evs.length} reservasi">${evs.length}</span>`;
+    }
+    c.innerHTML = html;
+    grid.appendChild(c);
+  }
+
+  const cells = firstDay + daysInMonth;
+  const trail = (7 - (cells % 7)) % 7;
+  for (let i = 1; i <= trail; i++) {
+    const c = document.createElement('div');
+    c.className = 'cal-cell muted';
+    c.innerHTML = `<span class="day-num">${i}</span>`;
     grid.appendChild(c);
   }
 }
-function admPrev() { admCalDate.setMonth(admCalDate.getMonth() - 1); drawAdmCal(); }
-function admNext() { admCalDate.setMonth(admCalDate.getMonth() + 1); drawAdmCal(); }
-function admToday() { admCalDate = new Date(); drawAdmCal(); }
+function openAdmCalDetail(dateStr, evs) {
+  admCalSelectedDate = dateStr;
+  const detail = document.getElementById('admCalDetail');
+  const title = document.getElementById('admCalDetailTitle');
+  const content = document.getElementById('admCalDetailContent');
+  if (!detail) return;
+  const dateLabel = new Date(dateStr + 'T00:00:00').toLocaleDateString('id-ID', { weekday: 'long', day: '2-digit', month: 'long', year: 'numeric' });
+  title.textContent = `📅 ${dateLabel}`;
+  if (!evs.length) {
+    content.innerHTML = `<p style="color:var(--text-soft);margin:6px 0 0;">Tidak ada reservasi di tanggal ini.</p>`;
+  } else {
+    const sorted = evs.slice().sort((a, b) => (a.time || '').localeCompare(b.time || ''));
+    const itemsByRes = sorted.reduce((m, e) => {
+      // Aggregate items per reservation: items[] only on first slot.
+      if (e.items && e.items.length) m[e.reservation_id] = e.items;
+      return m;
+    }, {});
+    const list = sorted.map(e => {
+      const items = itemsByRes[e.reservation_id] || [];
+      const itemsHtml = items.length
+        ? `<div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:4px;">${items.map((it) => `<span style="display:inline-block;padding:2px 8px;background:var(--pink-100);color:var(--primary);border-radius:999px;font-size:0.78rem;font-weight:600;">${esc(it.name)}${it.qty > 1 ? ` ×${it.qty}` : ''}</span>`).join('')}</div>`
+        : '<div style="margin-top:6px;color:var(--text-soft);font-size:0.8rem;font-style:italic;">(item layanan sudah ditampilkan di slot pertama)</div>';
+      return `
+        <div style="display:flex;gap:10px;align-items:flex-start;padding:10px 12px;margin-top:8px;background:var(--pink-50);border-radius:8px;border-left:4px solid ${e.status === 'approved' ? '#4caf85' : e.status === 'rejected' ? '#e85a78' : '#f4a83a'};">
+          <div style="font-weight:700;color:var(--primary);min-width:54px;font-size:0.92rem;">${esc((e.time || '').slice(0,5))}</div>
+          <div style="flex:1;">
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+              <strong style="font-size:0.88rem;">${maskPatientId(e.reservation_id)}</strong>
+              <span class="badge badge-${e.status}" style="font-size:0.72rem;">${e.status}</span>
+              <span class="badge badge-${e.payment_status}" style="font-size:0.72rem;">${e.payment_status}</span>
+              <small style="color:var(--text-soft);">#${e.reservation_id}</small>
+            </div>
+            ${itemsHtml}
+          </div>
+        </div>`;
+    }).join('');
+    const note = `<p style="margin-top:12px;padding:10px 12px;background:var(--bg);border-radius:8px;color:var(--text-soft);font-size:0.82rem;line-height:1.5;">
+      🔒 <strong>Privasi terjaga:</strong> Nama pasien & nomor WhatsApp tidak ditampilkan di sini. Buka menu <strong>Reservasi</strong> atau <strong>Kwitansi</strong> untuk lihat data lengkap.
+    </p>`;
+    content.innerHTML = `${list}${note}`;
+  }
+  detail.style.display = 'block';
+  detail.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+function closeAdmCalDetail() {
+  const detail = document.getElementById('admCalDetail');
+  if (detail) detail.style.display = 'none';
+  admCalSelectedDate = null;
+}
+function admPrev() { admCalDate.setMonth(admCalDate.getMonth() - 1); drawAdmCal(); closeAdmCalDetail(); }
+function admNext() { admCalDate.setMonth(admCalDate.getMonth() + 1); drawAdmCal(); closeAdmCalDetail(); }
+function admToday() { admCalDate = new Date(); drawAdmCal(); closeAdmCalDetail(); }
 
 // ---------- RECEIPTS ----------
 let receiptItems = [];
