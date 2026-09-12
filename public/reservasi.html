@@ -37,6 +37,25 @@
       <p>Pilih beberapa layanan & tentukan beberapa jadwal sekaligus.</p>
     </div>
 
+    <!-- Compact calendar: pasien bisa lihat ketersediaan sebelum booking -->
+    <div class="calendar-wrap cal-compact" style="margin-bottom: 24px;">
+      <div class="cal-header">
+        <h3 id="calLabel">—</h3>
+        <div class="cal-nav">
+          <button onclick="prevMonth()" title="Bulan sebelumnya">‹</button>
+          <button onclick="todayBtn()">Hari ini</button>
+          <button onclick="nextMonth()" title="Bulan berikutnya">›</button>
+        </div>
+      </div>
+      <div class="cal-grid" id="calGrid"></div>
+      <div class="cal-legend">
+        <span><span class="swatch today"></span>Hari ini</span>
+        <span><span class="swatch has-events"></span>Ada treatment</span>
+        <span><span class="swatch full"></span>Penuh</span>
+        <span>💡 Penuh = sudah banyak yg reservasi, pilih hari lain</span>
+      </div>
+    </div>
+
     <div class="form-wrap">
       <div id="alertBox"></div>
 
@@ -122,6 +141,7 @@
 
 <script src="js/api-config.js"></script>
 <script src="js/main.js"></script>
+<script src="js/kalender.js"></script>
 <script>
 let SERVICES = [];
 let SETTINGS = {};

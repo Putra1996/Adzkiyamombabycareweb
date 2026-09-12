@@ -852,17 +852,16 @@ app.patch('/api/admin/reservations/:id', auth, (req, res) => {
   if (!r) return res.status(404).json({ error: 'Not found' });
   if (req.body.status) r.status = req.body.status;
   if (req.body.payment_status) r.payment_status = req.body.payment_status;
-  // Allow editing the time slots when the auto-sync copied over a
-  // wrong or default time. Accept either a single service_time or an
-  // array of service_times / service_slots.
+  // Allow editing the time slots (multi-waktu + multi-tanggal).
   //
-  // IMPORTANT: when the slots change, we do NOT recompute r.total
-  // from itemSum × slotCount. For kwitansi-mirror reservations the
-  // total is already the receipt total (which is a single number,
-  // independent of how many sesi the user wants to schedule).
-  // Recomputing would silently inflate the receipt amount by the
-  // number of sesi. We only update r.qty so dashboard widgets that
-  // count sesi stay in sync.
+  // When slots change:
+  //   • If admin is editing a kwitansi-mirror reservation (note
+  //     starts with "Auto-generated from kwitansi"), preserve r.total
+  //     as-is. The receipt total is independent of how many sesi the
+  //     admin wants to schedule.
+  //   • Otherwise (a real public reservation), recompute r.total via
+  //     calcReservationTotal() so the new slot count is reflected.
+  let slotsChanged = false;
   if (Array.isArray(req.body.service_slots) && req.body.service_slots.length) {
     const slots = req.body.service_slots
       .map((s) => ({
@@ -875,7 +874,7 @@ app.patch('/api/admin/reservations/:id', auth, (req, res) => {
       r.reservation_date = slots[0].date;
       r.reservation_time = slots[0].time;
       r.qty = slots.length;
-      // Don't touch r.total — the receipt amount stays as-is.
+      slotsChanged = true;
     }
   } else if (Array.isArray(req.body.service_times) && req.body.service_times.length) {
     const times = req.body.service_times
@@ -885,19 +884,25 @@ app.patch('/api/admin/reservations/:id', auth, (req, res) => {
       r.slots = times.map((time) => ({ date: r.reservation_date, time }));
       r.reservation_time = times[0];
       r.qty = r.slots.length;
-      // Don't touch r.total.
+      slotsChanged = true;
     }
   } else if (req.body.service_time && /^\d{1,2}:\d{2}$/.test(req.body.service_time)) {
     if (r.slots && r.slots.length) {
       r.slots[0].time = req.body.service_time;
       r.reservation_time = req.body.service_time;
-      // Don't touch r.total.
+      slotsChanged = true;
     } else {
       r.slots = [{ date: r.reservation_date, time: req.body.service_time }];
       r.reservation_time = req.body.service_time;
       r.qty = 1;
-      // Don't touch r.total.
+      slotsChanged = true;
     }
+  }
+  // Only recompute total when this is a real public reservation
+  // (not a kwitansi mirror). The kwitansi total is a single fixed
+  // number regardless of how many sesi are scheduled.
+  if (slotsChanged && !(r.notes && r.notes.startsWith('Auto-generated from kwitansi'))) {
+    r.total = calcReservationTotal(r);
   }
   save();
   res.json({ ok: true });
@@ -1194,36 +1199,48 @@ app.get('/api/admin/recap.xlsx', auth, async (req, res) => {
 
 // ===== ADMIN — RECEIPTS =====
 app.post('/api/admin/receipts', auth, (req, res) => {
-  const { patient_name, whatsapp, address, service_date, service_time, service_times, items, transport_fee, discount } = req.body;
+  const { patient_name, whatsapp, address, service_date, service_time, service_times, service_slots, items, transport_fee, discount } = req.body;
   if (!items || !items.length) return res.status(400).json({ error: 'Items kosong' });
   const subtotal = items.reduce((s, it) => s + (it.price * it.qty), 0);
-  const total = subtotal + (parseInt(transport_fee) || 0) - (parseInt(discount) || 0);
-  const today = new Date().toISOString().slice(0, 10).replace(/-/g, '');
-  const count = DB.receipts.filter(k => (k.invoice_no || '').slice(4, 12) === today).length;
-  const invoice_no = `INV-${today}-${String(count + 1).padStart(3, '0')}`;
-  // Normalize multi-waktu: accept service_times[] (preferred) or
-  // service_time (legacy single). Strip empties and dedupe. Cap at 6
-  // slots per kwitansi to keep reservations manageable. The first
-  // entry becomes service_time so the legacy single-time UI still
-  // works.
-  let normalizedTimes = [];
-  if (Array.isArray(service_times)) {
-    normalizedTimes = service_times
-      .map((t) => String(t || '').trim())
+  // Normalize multi-waktu + multi-tanggal: prefer service_slots (array
+  // of {date, time}) for the full flexibility. Fall back to
+  // service_times[] (assume same date), then service_time (single).
+  // Each slot represents one session the patient is paying for.
+  let slots = [];
+  if (Array.isArray(service_slots) && service_slots.length) {
+    slots = service_slots
+      .map((s) => ({
+        date: String(s?.date || service_date || '').slice(0, 10),
+        time: String(s?.time || '').slice(0, 5)
+      }))
+      .filter((s) => /^\d{4}-\d{2}-\d{2}$/.test(s.date) && /^\d{1,2}:\d{2}$/.test(s.time));
+  }
+  if (!slots.length && Array.isArray(service_times) && service_times.length) {
+    slots = service_times
       .filter((t) => /^\d{1,2}:\d{2}$/.test(t))
-      .slice(0, 6);
+      .map((t) => ({ date: service_date, time: t }));
   }
-  if (!normalizedTimes.length && service_time && /^\d{1,2}:\d{2}$/.test(service_time)) {
-    normalizedTimes = [service_time];
+  if (!slots.length && service_time && /^\d{1,2}:\d{2}$/.test(service_time)) {
+    slots = [{ date: service_date, time: service_time }];
   }
-  if (!normalizedTimes.length) normalizedTimes = ['09:00'];
-  // Dedupe while preserving order
-  normalizedTimes = normalizedTimes.filter((t, i) => normalizedTimes.indexOf(t) === i);
+  if (!slots.length) slots = [{ date: service_date, time: '09:00' }];
+  // Dedupe by (date, time)
+  slots = slots.filter((s, i) => slots.findIndex((x) => x.date === s.date && x.time === s.time) === i);
+  // The kwitansi total is subtotal × number of sessions. Each session
+  // is one (date, time) pair. This matches the auto-sync reservation
+  // calculation so Rekap Bulanan stays accurate.
+  const slotCount = slots.length;
+  const total = subtotal * slotCount + (parseInt(transport_fee) || 0) - (parseInt(discount) || 0);
+  const today = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+  const count = DB.receipts.filter((k) => (k.invoice_no || '').slice(4, 12) === today).length;
+  const invoice_no = `INV-${today}-${String(count + 1).padStart(3, '0')}`;
   const id = nextId('receipts');
   DB.receipts.push({
-    id, invoice_no, patient_name, whatsapp, address, service_date,
-    service_time: normalizedTimes[0],
-    service_times: normalizedTimes,
+    id, invoice_no, patient_name, whatsapp, address,
+    service_date: slots[0].date,
+    service_time: slots[0].time,
+    service_times: slots.map((s) => s.time),
+    service_slots: slots,
     items, transport_fee: parseInt(transport_fee) || 0,
     discount: parseInt(discount) || 0, subtotal, total,
     created_at: new Date().toISOString()
@@ -1236,7 +1253,7 @@ app.post('/api/admin/receipts', auth, (req, res) => {
     syncReceiptToReservation(lastReceipt);
   }
   save();
-  res.json({ ok: true, invoice_no, subtotal, total });
+  res.json({ ok: true, invoice_no, subtotal, total, slot_count: slotCount });
 });
 
 app.get('/api/admin/receipts', auth, (req, res) => {
@@ -1373,18 +1390,28 @@ app.post('/api/admin/receipts/import', auth, restoreJsonParser, (req, res) => {
 
       const transport_fee = parseInt(get('transport_fee', 'transport', 'ongkir', 'fee') || 0, 10) || 0;
       const discount      = parseInt(get('discount', 'diskon', 'potongan') || 0, 10) || 0;
-      // service_time(s): multi-waktu support. Accepts either:
-      //   • service_times : ["09:00","14:00","19:00"] (array)
+      // service_time(s) + service_slots: support multi-waktu &
+      // multi-tanggal. Accepts either:
+      //   • service_slots : [{date, time}, ...] (array, most flexible)
+      //   • service_times : ["09:00","14:00"] (array of HH:MM)
       //   • service_time  : "09:00"             (single, legacy)
-      //   • waktu / jam / time : "09:00"        (single, spreadsheet)
-      //   • waktu / jam / time : "09:00,14:00,19:00" (CSV string)
+      //   • waktu / jam / time : "09:00" or CSV "09:00,14:00,19:00"
+      let slots = [];
+      if (Array.isArray(raw.service_slots) && raw.service_slots.length) {
+        slots = raw.service_slots
+          .map((s) => ({
+            date: String(s?.date || service_date || '').slice(0, 10),
+            time: String(s?.time || '').slice(0, 5)
+          }))
+          .filter((s) => /^\d{4}-\d{2}-\d{2}$/.test(s.date) && /^\d{1,2}:\d{2}$/.test(s.time));
+      }
       let normalizedTimes = [];
       const arrTimes = raw.service_times || raw.times || raw.waktu_list;
       if (Array.isArray(arrTimes)) {
         normalizedTimes = arrTimes
           .map((t) => String(t || '').trim())
           .filter((t) => /^\d{1,2}:\d{2}$/.test(t))
-          .slice(0, 6);
+          .slice(0, 14);
       }
       if (!normalizedTimes.length) {
         const rawTimeStr = String(get('service_time', 'waktu', 'jam', 'time', 'waktu_jam') || '').trim();
@@ -1394,16 +1421,23 @@ app.post('/api/admin/receipts/import', auth, restoreJsonParser, (req, res) => {
           const parts = rawTimeStr.split(/[,;\n|]/).map((s) => s.trim()).filter(Boolean);
           normalizedTimes = parts
             .filter((t) => /^\d{1,2}:\d{2}$/.test(t))
-            .slice(0, 6);
+            .slice(0, 14);
         }
       }
-      if (!normalizedTimes.length) normalizedTimes = ['09:00'];
-      normalizedTimes = normalizedTimes.filter((t, i) => normalizedTimes.indexOf(t) === i);
-      const service_time = normalizedTimes[0];
+      if (!slots.length) {
+        slots = normalizedTimes.map((t) => ({ date: service_date, time: t }));
+      }
+      if (!slots.length) slots = [{ date: service_date, time: '09:00' }];
+      // Dedupe by (date, time)
+      slots = slots.filter((s, i) => slots.findIndex((x) => x.date === s.date && x.time === s.time) === i);
+      normalizedTimes = slots.map((s) => s.time);
+      const service_time = slots[0].time;
 
       // Recompute totals server-side (never trust input numbers).
+      // Total = subtotal × jumlah slot (per-waktu pricing). User can
+      // still adjust with transport_fee / discount on top.
       const subtotal = items.reduce((s, it) => s + it.price * it.qty, 0);
-      const total    = subtotal + transport_fee - discount;
+      const total    = subtotal * slots.length + transport_fee - discount;
 
       // Invoice number: keep if present and unique, otherwise auto-generate.
       let invoice_no = String(get('invoice_no', 'invoice', 'no_kwitansi', 'nomor') || '').trim().slice(0, 40);
@@ -1420,9 +1454,11 @@ app.post('/api/admin/receipts/import', auth, restoreJsonParser, (req, res) => {
 
       const id = nextId('receipts');
       const rec = {
-        id, invoice_no, patient_name, whatsapp, address, service_date,
+        id, invoice_no, patient_name, whatsapp, address,
+        service_date: slots[0].date,
         service_time,
         service_times: normalizedTimes,
+        service_slots: slots,
         items, transport_fee, discount, subtotal, total,
         created_at: get('created_at', 'tanggal_buat') || new Date().toISOString()
       };

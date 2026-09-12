@@ -566,116 +566,173 @@ function prefillReceipt(r) {
   (r.items || []).forEach(it => receiptItems.push({ name: it.name, price: it.price, qty: it.qty }));
   if (!receiptItems.length) receiptItems.push({ name: '', price: 0, qty: 1 });
   rebuildReceiptItems();
+  // Pre-fill slots from reservation (multi-waktu + multi-tanggal)
+  if (r.slots && r.slots.length) {
+    initKwSlots(r.slots.map((s) => ({ date: s.date, time: s.time })));
+  }
 }
 
-// ===== MULTI-WAKTU (kwitansi manual) =====
-// The "kw_*" form (left side of /receipts page) uses one set of state
-// (kwTimes), the "mkw_*" modal (Rekap Bulanan → Buat Kwitansi Manual)
-// uses another (mkwTimes). Each is a flat array of "HH:MM" strings.
-let kwTimes = [];
-let mkwTimes = [];
+// ===== MULTI-WAKTU + MULTI-TANGGAL (kwitansi manual) =====
+// Each slot has a date AND a time. Total harga = subtotal × jumlah slot
+// (per-waktu pricing) plus any transport_fee / discount. The
+// auto-synced reservation gets one entry in `slots` per (date, time).
+//
+// Two forms share this UI:
+//   • kwSlots — left side of /receipts page (manual kwitansi form)
+//   • mkwSlots — modal "Buat Kwitansi Manual" in Rekap Bulanan
+// Both are arrays of {date, time} objects (same shape as the API).
+let kwSlots = [];
+let mkwSlots = [];
 
 function initKwTimes(initial) {
-  // Always seed with at least one 09:00 entry. If `initial` is provided
-  // (e.g. from prefill), use that.
-  const seed = Array.isArray(initial) && initial.length ? initial.slice() : ['09:00'];
-  kwTimes = seed.filter((t) => /^\d{1,2}:\d{2}$/.test(t));
-  if (!kwTimes.length) kwTimes = ['09:00'];
-  renderKwTimes();
+  // Legacy: support old kwTimes init by converting to slots. Prefer
+  // initKwSlots when possible (date+time per slot).
+  const today = new Date().toISOString().slice(0, 10);
+  if (Array.isArray(initial) && initial.length && typeof initial[0] === 'string') {
+    return initKwSlots([{ date: today, time: initial[0] }]);
+  }
+  return initKwSlots(initial);
+}
+function initMkwTimes(initial) {
+  const today = new Date().toISOString().slice(0, 10);
+  if (Array.isArray(initial) && initial.length && typeof initial[0] === 'string') {
+    return initMkwSlots([{ date: today, time: initial[0] }]);
+  }
+  return initMkwSlots(initial);
 }
 
-function addKwTime(value) {
-  const t = (value && /^\d{1,2}:\d{2}$/.test(value)) ? value : '09:00';
-  if (!kwTimes.includes(t)) kwTimes.push(t);
-  renderKwTimes();
+// ===== Multi-date+time slots (newer, more flexible UI) =====
+
+function normalizeSlot(s, fallbackDate) {
+  if (!s || typeof s !== 'object') return null;
+  const date = String(s.date || fallbackDate || '').slice(0, 10);
+  const time = String(s.time || '').slice(0, 5);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !/^\d{1,2}:\d{2}$/.test(time)) return null;
+  return { date, time };
 }
 
-function removeKwTime(t) {
-  if (kwTimes.length <= 1) return; // keep at least one
-  kwTimes = kwTimes.filter((x) => x !== t);
-  renderKwTimes();
+function initKwSlots(initial) {
+  const today = new Date().toISOString().slice(0, 10);
+  const seed = (Array.isArray(initial) && initial.length)
+    ? initial.map((s) => normalizeSlot(s, today)).filter(Boolean)
+    : [{ date: today, time: '09:00' }];
+  kwSlots = seed.length ? seed : [{ date: today, time: '09:00' }];
+  renderKwSlots();
 }
 
-function getKwTimes() {
-  return kwTimes.filter((t) => /^\d{1,2}:\d{2}$/.test(t));
+function addKwSlot(value) {
+  const today = new Date().toISOString().slice(0, 10);
+  const slot = normalizeSlot(value, today);
+  if (!slot) return;
+  if (kwSlots.find((x) => x.date === slot.date && x.time === slot.time)) return;
+  kwSlots.push(slot);
+  renderKwSlots();
 }
 
-function renderKwTimes() {
+function removeKwSlot(idx) {
+  if (kwSlots.length <= 1) return; // keep at least one slot
+  kwSlots.splice(idx, 1);
+  renderKwSlots();
+}
+
+function getKwSlots() {
+  const today = new Date().toISOString().slice(0, 10);
+  return kwSlots.map((s) => normalizeSlot(s, today)).filter(Boolean);
+}
+
+function renderKwSlots() {
   const wrap = document.getElementById('kw_times');
   if (!wrap) return;
+  const today = new Date().toISOString().slice(0, 10);
+  if (!kwSlots.length) kwSlots = [{ date: today, time: '09:00' }];
   wrap.innerHTML = '';
-  if (!kwTimes.length) kwTimes = ['09:00'];
-  kwTimes.forEach((t, i) => {
+  // Sort slots by date+time so the user sees them in chronological order
+  const sorted = kwSlots.map((s, i) => ({ ...s, _origIdx: i }))
+    .sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time));
+  sorted.forEach((s) => {
+    const realIdx = s._origIdx;
     const chip = document.createElement('span');
     chip.className = 'kw-time-chip';
     chip.style.cssText = 'display:inline-flex;align-items:center;gap:6px;padding:6px 12px;background:var(--pink-50);border:1px solid var(--pink-100);border-radius:999px;font-size:0.92rem;font-weight:600;color:var(--pink-700);';
-    chip.innerHTML = `⏰ ${t} <button type="button" onclick="removeKwTime('${t}')" style="background:none;border:none;color:#c43050;cursor:pointer;font-weight:700;padding:0 2px;font-size:1rem;line-height:1;" title="Hapus waktu">×</button>`;
+    const dateLabel = s.date === today ? 'Hari ini' : new Date(s.date).toLocaleDateString('id-ID', { day: '2-digit', month: 'short' });
+    chip.innerHTML = `📅 ${dateLabel} &nbsp;⏰ ${s.time} <button type="button" onclick="removeKwSlot(${realIdx})" style="background:none;border:none;color:#c43050;cursor:pointer;font-weight:700;padding:0 2px;font-size:1rem;line-height:1;" title="Hapus jadwal">×</button>`;
     wrap.appendChild(chip);
   });
-  // Hidden input mirror so any legacy code reading #kw_time still works
-  const mirror = document.getElementById('kw_time_mirror');
-  if (mirror) mirror.value = kwTimes[0] || '';
 }
 
-function initMkwTimes(initial) {
-  const seed = Array.isArray(initial) && initial.length ? initial.slice() : ['09:00'];
-  mkwTimes = seed.filter((t) => /^\d{1,2}:\d{2}$/.test(t));
-  if (!mkwTimes.length) mkwTimes = ['09:00'];
-  renderMkwTimes();
+function initMkwSlots(initial) {
+  const today = new Date().toISOString().slice(0, 10);
+  const seed = (Array.isArray(initial) && initial.length)
+    ? initial.map((s) => normalizeSlot(s, today)).filter(Boolean)
+    : [{ date: today, time: '09:00' }];
+  mkwSlots = seed.length ? seed : [{ date: today, time: '09:00' }];
+  renderMkwSlots();
 }
 
-function mkwAddTime(value) {
-  const t = (value && /^\d{1,2}:\d{2}$/.test(value)) ? value : '09:00';
-  if (!mkwTimes.includes(t)) mkwTimes.push(t);
-  renderMkwTimes();
+function mkwAddSlot(value) {
+  const today = new Date().toISOString().slice(0, 10);
+  const slot = normalizeSlot(value, today);
+  if (!slot) return;
+  if (mkwSlots.find((x) => x.date === slot.date && x.time === slot.time)) return;
+  mkwSlots.push(slot);
+  renderMkwSlots();
 }
 
-function removeMkwTime(t) {
-  if (mkwTimes.length <= 1) return;
-  mkwTimes = mkwTimes.filter((x) => x !== t);
-  renderMkwTimes();
+function removeMkwSlot(idx) {
+  if (mkwSlots.length <= 1) return;
+  mkwSlots.splice(idx, 1);
+  renderMkwSlots();
 }
 
-function getMkwTimes() {
-  return mkwTimes.filter((t) => /^\d{1,2}:\d{2}$/.test(t));
+function getMkwSlots() {
+  const today = new Date().toISOString().slice(0, 10);
+  return mkwSlots.map((s) => normalizeSlot(s, today)).filter(Boolean);
 }
 
-function renderMkwTimes() {
+function renderMkwSlots() {
   const wrap = document.getElementById('mkw_times');
   if (!wrap) return;
+  const today = new Date().toISOString().slice(0, 10);
+  if (!mkwSlots.length) mkwSlots = [{ date: today, time: '09:00' }];
   wrap.innerHTML = '';
-  if (!mkwTimes.length) mkwTimes = ['09:00'];
-  mkwTimes.forEach((t) => {
+  const sorted = mkwSlots.map((s, i) => ({ ...s, _origIdx: i }))
+    .sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time));
+  sorted.forEach((s) => {
+    const realIdx = s._origIdx;
     const chip = document.createElement('span');
     chip.className = 'kw-time-chip';
     chip.style.cssText = 'display:inline-flex;align-items:center;gap:6px;padding:6px 12px;background:var(--pink-50);border:1px solid var(--pink-100);border-radius:999px;font-size:0.92rem;font-weight:600;color:var(--pink-700);';
-    chip.innerHTML = `⏰ ${t} <button type="button" onclick="removeMkwTime('${t}')" style="background:none;border:none;color:#c43050;cursor:pointer;font-weight:700;padding:0 2px;font-size:1rem;line-height:1;" title="Hapus waktu">×</button>`;
+    const dateLabel = s.date === today ? 'Hari ini' : new Date(s.date).toLocaleDateString('id-ID', { day: '2-digit', month: 'short' });
+    chip.innerHTML = `📅 ${dateLabel} &nbsp;⏰ ${s.time} <button type="button" onclick="removeMkwSlot(${realIdx})" style="background:none;border:none;color:#c43050;cursor:pointer;font-weight:700;padding:0 2px;font-size:1rem;line-height:1;" title="Hapus jadwal">×</button>`;
     wrap.appendChild(chip);
   });
 }
 
-// Inline "Tambah waktu" picker: pops a small input + add button next
-// to the chip row. Keeps the main UI tidy.
+// Inline picker: pops a small date+time input + add button next to
+// the chip row. Keeps the main UI tidy.
 function addKwTimePrompt() {
   const wrap = document.getElementById('kw_times');
   if (!wrap) return;
   const existing = document.getElementById('kw_time_picker');
   if (existing) { existing.focus(); return; }
+  const today = new Date().toISOString().slice(0, 10);
   const picker = document.createElement('span');
   picker.id = 'kw_time_picker';
   picker.className = 'kw-time-chip';
-  picker.style.cssText = 'display:inline-flex;align-items:center;gap:6px;padding:6px 10px;background:var(--card);border:2px solid var(--primary);border-radius:999px;';
-  picker.innerHTML = `<input type="time" id="kw_time_input" style="border:none;background:transparent;font-weight:600;color:var(--text);font-family:inherit;font-size:0.92rem;padding:0;width:90px;">
+  picker.style.cssText = 'display:inline-flex;align-items:center;gap:6px;padding:6px 10px;background:var(--card);border:2px solid var(--primary);border-radius:999px;flex-wrap:wrap;';
+  picker.innerHTML = `<input type="date" id="kw_date_input" value="${today}" min="${today}" style="border:none;background:transparent;font-weight:600;color:var(--text);font-family:inherit;font-size:0.85rem;padding:0;width:130px;">
+    <input type="time" id="kw_time_input" value="09:00" style="border:none;background:transparent;font-weight:600;color:var(--text);font-family:inherit;font-size:0.85rem;padding:0;width:80px;">
     <button type="button" onclick="commitKwTime()" style="background:var(--primary);color:white;border:none;cursor:pointer;font-weight:700;padding:2px 8px;border-radius:6px;font-size:0.85rem;">✓</button>
     <button type="button" onclick="cancelKwTimePicker()" style="background:none;border:none;color:var(--text-soft);cursor:pointer;font-weight:700;padding:0 2px;font-size:1rem;">×</button>`;
   wrap.appendChild(picker);
-  document.getElementById('kw_time_input').focus();
+  document.getElementById('kw_date_input').focus();
 }
 
 function commitKwTime() {
-  const val = document.getElementById('kw_time_input')?.value;
-  if (!val || !/^\d{1,2}:\d{2}$/.test(val)) { cancelKwTimePicker(); return; }
-  addKwTime(val);
+  const date = document.getElementById('kw_date_input')?.value;
+  const time = document.getElementById('kw_time_input')?.value;
+  if (!date || !time) { cancelKwTimePicker(); return; }
+  addKwSlot({ date, time });
   cancelKwTimePicker();
 }
 
@@ -688,21 +745,24 @@ function addMkwTimePrompt() {
   if (!wrap) return;
   const existing = document.getElementById('mkw_time_picker');
   if (existing) { existing.focus(); return; }
+  const today = new Date().toISOString().slice(0, 10);
   const picker = document.createElement('span');
   picker.id = 'mkw_time_picker';
   picker.className = 'kw-time-chip';
-  picker.style.cssText = 'display:inline-flex;align-items:center;gap:6px;padding:6px 10px;background:var(--card);border:2px solid var(--primary);border-radius:999px;';
-  picker.innerHTML = `<input type="time" id="mkw_time_input" style="border:none;background:transparent;font-weight:600;color:var(--text);font-family:inherit;font-size:0.92rem;padding:0;width:90px;">
+  picker.style.cssText = 'display:inline-flex;align-items:center;gap:6px;padding:6px 10px;background:var(--card);border:2px solid var(--primary);border-radius:999px;flex-wrap:wrap;';
+  picker.innerHTML = `<input type="date" id="mkw_date_input" value="${today}" min="${today}" style="border:none;background:transparent;font-weight:600;color:var(--text);font-family:inherit;font-size:0.85rem;padding:0;width:130px;">
+    <input type="time" id="mkw_time_input" value="09:00" style="border:none;background:transparent;font-weight:600;color:var(--text);font-family:inherit;font-size:0.85rem;padding:0;width:80px;">
     <button type="button" onclick="commitMkwTime()" style="background:var(--primary);color:white;border:none;cursor:pointer;font-weight:700;padding:2px 8px;border-radius:6px;font-size:0.85rem;">✓</button>
     <button type="button" onclick="cancelMkwTimePicker()" style="background:none;border:none;color:var(--text-soft);cursor:pointer;font-weight:700;padding:0 2px;font-size:1rem;">×</button>`;
   wrap.appendChild(picker);
-  document.getElementById('mkw_time_input').focus();
+  document.getElementById('mkw_date_input').focus();
 }
 
 function commitMkwTime() {
-  const val = document.getElementById('mkw_time_input')?.value;
-  if (!val || !/^\d{1,2}:\d{2}$/.test(val)) { cancelMkwTimePicker(); return; }
-  mkwAddTime(val);
+  const date = document.getElementById('mkw_date_input')?.value;
+  const time = document.getElementById('mkw_time_input')?.value;
+  if (!date || !time) { cancelMkwTimePicker(); return; }
+  mkwAddSlot({ date, time });
   cancelMkwTimePicker();
 }
 
@@ -713,15 +773,18 @@ function cancelMkwTimePicker() {
 async function saveReceipt() {
   const items = receiptItems.filter(it => it.name && it.price > 0);
   if (!items.length) return alert('Tambahkan minimal 1 layanan');
-  const times = getKwTimes();
-  if (!times.length) return alert('Tambahkan minimal 1 waktu layanan');
+  const slots = getKwSlots();
+  if (!slots.length) return alert('Tambahkan minimal 1 jadwal');
+  // If all slots are on the same date as the form's date input,
+  // use the form's date. Otherwise the per-slot dates win.
+  const formDate = document.getElementById('kw_date').value;
+  const allSameDate = slots.every((s) => s.date === formDate);
   const body = {
     patient_name: document.getElementById('kw_name').value,
     whatsapp: document.getElementById('kw_hp').value,
     address: document.getElementById('kw_addr').value,
-    service_date: document.getElementById('kw_date').value,
-    service_time: times[0],
-    service_times: times,
+    service_date: allSameDate ? formDate : slots[0].date,
+    service_slots: slots,
     items,
     transport_fee: parseInt(document.getElementById('kw_transport').value) || 0,
     discount: parseInt(document.getElementById('kw_discount').value) || 0
@@ -1091,19 +1154,20 @@ async function mkwSave() {
     errEl.style.display = 'block';
     return;
   }
-  const times = getMkwTimes();
-  if (!times.length) {
-    errEl.textContent = '⚠️ Tambahkan minimal 1 waktu layanan.';
+  const slots = getMkwSlots();
+  if (!slots.length) {
+    errEl.textContent = '⚠️ Tambahkan minimal 1 jadwal.';
     errEl.style.display = 'block';
     return;
   }
+  const formDate = document.getElementById('mkw_date').value;
+  const allSameDate = slots.every((s) => s.date === formDate);
   const body = {
     patient_name: document.getElementById('mkw_name').value,
     whatsapp: document.getElementById('mkw_hp').value,
     address: document.getElementById('mkw_addr').value,
-    service_date: document.getElementById('mkw_date').value,
-    service_time: times[0],
-    service_times: times,
+    service_date: allSameDate ? formDate : slots[0].date,
+    service_slots: slots,
     items,
     transport_fee: parseInt(document.getElementById('mkw_transport').value) || 0,
     discount: parseInt(document.getElementById('mkw_discount').value) || 0
@@ -1177,6 +1241,7 @@ function openImportKwitansiModal() {
       <br>• Array of objects: <code>[{patient_name,service_date,items:[{name,price,qty}]}]</code>
       <br>• Backup format: <code>{receipts:[...]}</code>
       <br>• Spreadsheet headers (ID/EN): nama/pasien, tanggal/service_date, harga/price, dll.
+      <br>• <strong>Multi-waktu & multi-tanggal</strong>: pakai <code>service_slots:[{date,time}]</code> atau CSV <code>"waktu":"09:00,14:00,19:00"</code>. Total dihitung otomatis (subtotal × jumlah slot).
     </p>
     <div style="display:grid;gap:12px;">
       <div>
@@ -1270,7 +1335,7 @@ function downloadKwitansiTemplate() {
       whatsapp: "081234567890",
       address: "Cilacap",
       service_date: "2026-09-05",
-      service_times: ["09:00"],
+      service_slots: [{ date: "2026-09-05", time: "09:00" }],
       items: [
         { name: "Massage Ibu Hamil", price: 80000, qty: 1 }
       ],
@@ -1282,8 +1347,14 @@ function downloadKwitansiTemplate() {
       whatsapp: "081234567891",
       address: "Nusawungu",
       service_date: "2026-09-10",
-      // Multi-waktu: pisahkan pakai koma. Bisa juga array service_times: ["09:00", "14:00", "19:00"].
-      service_times: ["09:00", "14:00", "19:00"],
+      // Multi-waktu + multi-tanggal: total dihitung otomatis
+      // (subtotal × jumlah slot). Bisa juga service_times array
+      // untuk 1 tanggal dengan beberapa jam.
+      service_slots: [
+        { date: "2026-09-12", time: "09:00" },
+        { date: "2026-09-14", time: "10:00" },
+        { date: "2026-09-15", time: "08:00" }
+      ],
       items: [
         { name: "Pijat Laktasi", price: 80000, qty: 2 },
         { name: "Baby Sleepwell", price: 50000, qty: 1 }
