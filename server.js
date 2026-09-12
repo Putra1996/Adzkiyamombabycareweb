@@ -1033,169 +1033,279 @@ app.get('/api/admin/charts', auth, (req, res) => {
 });
 
 // ===== ADMIN — RECAP =====
+// Compute list of months (YYYY-MM strings) covered by a range.
+// months=1 → just [from]. months=3 → [from, from-1, from-2] etc.
+// `from` defaults to the current month.
+function computeMonthRange(month, months) {
+  const [y, m] = month.split('-').map(Number);
+  const start = new Date(y, m - 1, 1);
+  const out = [];
+  for (let i = 0; i < months; i++) {
+    const d = new Date(start.getFullYear(), start.getMonth() - i, 1);
+    out.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
+  }
+  return out;
+}
+
 app.get('/api/admin/recap', auth, (req, res) => {
   const month = req.query.month || new Date().toISOString().slice(0, 7);
-  const rows = DB.reservations.filter(r => (r.reservation_date || '').slice(0, 7) === month)
+  const months = Math.max(1, Math.min(24, parseInt(req.query.months || '1', 10) || 1));
+  const monthList = computeMonthRange(month, months);
+  const monthSet = new Set(monthList);
+
+  // Reservations whose reservation_date falls in any month of the range
+  const rows = DB.reservations.filter((r) => monthSet.has((r.reservation_date || '').slice(0, 7)))
     .sort((a, b) => a.reservation_date.localeCompare(b.reservation_date))
     .map(publicReservation);
   const totalReservasi = rows.length;
-  const totalOmzet = rows.filter(r => r.payment_status === 'lunas')
+  const totalOmzet = rows.filter((r) => r.payment_status === 'lunas')
     .reduce((s, r) => s + r.total, 0);
   // Count receipts whose EITHER created_at OR service_date falls in
-  // this month. This matches the filter used by /api/admin/receipts so
-  // the stat card and the receipts table stay consistent.
-  const totalKwitansi = DB.receipts.filter(k =>
-    (k.created_at && k.created_at.slice(0, 7) === month) ||
-    (k.service_date && k.service_date.slice(0, 7) === month)
+  // any month of the range. This matches the filter used by
+  // /api/admin/receipts so the stat card and the receipts table
+  // stay consistent across the range view.
+  const totalKwitansi = DB.receipts.filter((k) =>
+    (k.created_at && monthSet.has(k.created_at.slice(0, 7))) ||
+    (k.service_date && monthSet.has(k.service_date.slice(0, 7)))
   ).length;
-  res.json({ month, totalReservasi, totalOmzet, totalKwitansi, rows });
+
+  // Per-month breakdown — admin wants to compare months at a glance.
+  const byMonth = monthList.map((m) => {
+    const mRows = rows.filter((r) => (r.reservation_date || '').slice(0, 7) === m);
+    const mOmzet = mRows.filter((r) => r.payment_status === 'lunas')
+      .reduce((s, r) => s + r.total, 0);
+    const mKw = DB.receipts.filter((k) =>
+      (k.created_at && k.created_at.slice(0, 7) === m) ||
+      (k.service_date && k.service_date.slice(0, 7) === m)
+    ).length;
+    return { month: m, totalReservasi: mRows.length, totalOmzet: mOmzet, totalKwitansi: mKw };
+  });
+
+  res.json({
+    month, months, monthList,
+    totalReservasi, totalOmzet, totalKwitansi,
+    byMonth,
+    rows
+  });
 });
 
-// XLSX export — professional formatting
+// XLSX export — professional formatting. Supports ?months=N to
+// export multiple months into one workbook (one sheet per month +
+// a summary "Ringkasan" sheet at the front).
 app.get('/api/admin/recap.xlsx', auth, async (req, res) => {
   try {
     const month = req.query.month || new Date().toISOString().slice(0, 7);
-    const monthRows = DB.reservations.filter(r => (r.reservation_date || '').slice(0, 7) === month)
+    const months = Math.max(1, Math.min(24, parseInt(req.query.months || '1', 10) || 1));
+    const monthList = computeMonthRange(month, months);
+    const monthSet = new Set(monthList);
+    const monthRows = DB.reservations.filter((r) => monthSet.has((r.reservation_date || '').slice(0, 7)))
       .sort((a, b) => a.reservation_date.localeCompare(b.reservation_date));
 
     const wb = new ExcelJS.Workbook();
     wb.creator = 'Adzkiya Mom Baby Care';
     wb.created = new Date();
 
-    const ws = wb.addWorksheet('Rekap ' + month, {
-      pageSetup: { paperSize: 9, orientation: 'landscape', fitToPage: true, fitToWidth: 1, margins: { left: 0.5, right: 0.5, top: 0.5, bottom: 0.5, header: 0.3, footer: 0.3 } },
-      views: [{ showGridLines: false }]
+    // Build one sheet per month in the range. The latest requested
+    // month always comes first so the user lands on it when opening
+    // the workbook.
+    monthList.slice().reverse().forEach((m) => {
+      const rowsForMonth = monthRows.filter((r) => (r.reservation_date || '').slice(0, 7) === m);
+      buildMonthSheet(wb, 'Rekap ' + m, m, rowsForMonth);
     });
 
-    // Header banner
-    ws.mergeCells('A1:I1');
-    ws.getCell('A1').value = '🌸 ADZKIYA MOM BABY CARE';
-    ws.getCell('A1').font = { name: 'Calibri', size: 22, bold: true, color: { argb: 'FFFFFFFF' } };
-    ws.getCell('A1').alignment = { vertical: 'middle', horizontal: 'center' };
-    ws.getCell('A1').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEE5A8A' } };
-    ws.getRow(1).height = 36;
-
-    ws.mergeCells('A2:I2');
-    ws.getCell('A2').value = 'Layanan Kesehatan Ibu & Anak Terpercaya · ' + (DB.settings.address || '');
-    ws.getCell('A2').font = { name: 'Calibri', size: 10, italic: true, color: { argb: 'FFFFFFFF' } };
-    ws.getCell('A2').alignment = { horizontal: 'center' };
-    ws.getCell('A2').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFB979' } };
-    ws.getRow(2).height = 20;
-
-    ws.mergeCells('A4:I4');
-    ws.getCell('A4').value = `REKAPITULASI BULANAN — ${month}`;
-    ws.getCell('A4').font = { size: 14, bold: true, color: { argb: 'FF4A2533' } };
-    ws.getCell('A4').alignment = { horizontal: 'center' };
-    ws.getRow(4).height = 24;
-
-    // Summary box
-    const totalReservasi = monthRows.length;
-    const totalOmzet = monthRows.filter(r => r.payment_status === 'lunas').reduce((s, r) => s + calcReservationTotal(r), 0);
-    const totalKw = DB.receipts.filter(k => (k.created_at || '').slice(0, 7) === month).length;
-    const pendingCnt = monthRows.filter(r => r.status === 'pending').length;
-    const approvedCnt = monthRows.filter(r => r.status === 'approved').length;
-    const lunasCnt = monthRows.filter(r => r.payment_status === 'lunas').length;
-
-    const summaryRows = [
-      ['Total Reservasi', totalReservasi, '', 'Total Omzet', { v: totalOmzet, t: 'rp' }],
-      ['Total Kwitansi', totalKw, '', 'Status Pending', pendingCnt],
-      ['Approved', approvedCnt, '', 'Lunas', lunasCnt]
-    ];
-    let rNum = 6;
-    summaryRows.forEach(row => {
-      ws.getCell(`A${rNum}`).value = row[0];
-      ws.getCell(`A${rNum}`).font = { bold: true, color: { argb: 'FF8B6878' } };
-      ws.getCell(`B${rNum}`).value = typeof row[1] === 'object' ? row[1].v : row[1];
-      ws.getCell(`B${rNum}`).font = { bold: true, size: 12, color: { argb: 'FFEE5A8A' } };
-      ws.getCell(`D${rNum}`).value = row[3];
-      ws.getCell(`D${rNum}`).font = { bold: true, color: { argb: 'FF8B6878' } };
-      ws.getCell(`E${rNum}`).value = typeof row[4] === 'object' ? row[4].v : row[4];
-      ws.getCell(`E${rNum}`).font = { bold: true, size: 12, color: { argb: 'FFEE5A8A' } };
-      if (typeof row[4] === 'object' && row[4].t === 'rp') {
-        ws.getCell(`E${rNum}`).numFmt = '"Rp"#,##0';
-      }
-      rNum++;
-    });
-
-    // Table header
-    const headerRow = rNum + 1;
-    const headers = ['No', 'Tanggal', 'Jam', 'Pasien', 'WhatsApp', 'Layanan (Detail)', 'Sesi', 'Total', 'Status'];
-    headers.forEach((h, i) => {
-      const cell = ws.getCell(headerRow, i + 1);
-      cell.value = h;
-      cell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
-      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEE5A8A' } };
-      cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
-      cell.border = { top: { style: 'thin', color: { argb: 'FFEE5A8A' } }, bottom: { style: 'thin', color: { argb: 'FFEE5A8A' } } };
-    });
-    ws.getRow(headerRow).height = 28;
-
-    // Data rows
-    monthRows.forEach((r, idx) => {
-      const items = r.items || [{ name: r.service_name, price: r.service_price, qty: r.qty }];
-      const slots = r.slots || [{ date: r.reservation_date, time: r.reservation_time }];
-      const itemsText = items.map(it => `• ${it.name} (×${it.qty}) — Rp${(it.price * it.qty).toLocaleString('id-ID')}`).join('\n');
-      const slotsCount = slots.length;
-      const total = calcReservationTotal(r);
-      const dateText = slots.map(s => s.date).join('\n');
-      const timeText = slots.map(s => s.time).join('\n');
-      const row = ws.addRow([
-        idx + 1, dateText, timeText, r.patient_name, r.whatsapp,
-        itemsText, slotsCount, total, `${r.status} / ${r.payment_status}`
-      ]);
-      row.alignment = { vertical: 'top', wrapText: true };
-      row.getCell(8).numFmt = '"Rp"#,##0';
-      row.getCell(8).font = { bold: true };
-      row.getCell(9).alignment = { ...row.alignment, horizontal: 'center' };
-      // Status color
-      const statusFill = r.payment_status === 'lunas' ? 'FFD9EFE1' : r.status === 'pending' ? 'FFFFF3D6' : 'FFFDE0E4';
-      row.getCell(9).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: statusFill } };
-      // Zebra
-      if (idx % 2 === 0) {
-        for (let c = 1; c <= 9; c++) {
-          const cell = row.getCell(c);
-          if (!cell.fill) cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF5F8' } };
-        }
-      }
-      row.eachCell(c => {
-        c.border = { bottom: { style: 'thin', color: { argb: 'FFFFE0E8' } } };
+    // Front sheet: ringkasan per bulan — handy for finance reports.
+    if (months > 1) {
+      const sum = wb.addWorksheet('Ringkasan', {
+        pageSetup: { paperSize: 9, orientation: 'landscape', fitToPage: true, fitToWidth: 1 },
+        views: [{ showGridLines: false }]
       });
-      // Auto-height by text
-      const maxLines = Math.max(itemsText.split('\n').length, dateText.split('\n').length);
-      row.height = Math.max(20, maxLines * 16);
-    });
-
-    // Total row
-    const totalRow = ws.addRow(['', '', '', '', '', 'TOTAL OMZET', '', totalOmzet, '']);
-    totalRow.font = { bold: true, size: 12, color: { argb: 'FFFFFFFF' } };
-    for (let c = 1; c <= 9; c++) {
-      totalRow.getCell(c).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEE5A8A' } };
-      totalRow.getCell(c).border = { top: { style: 'thick', color: { argb: 'FFEE5A8A' } } };
+      sum.mergeCells('A1:E1');
+      sum.getCell('A1').value = '🌸 ADZKIYA MOM BABY CARE';
+      sum.getCell('A1').font = { name: 'Calibri', size: 18, bold: true, color: { argb: 'FFFFFFFF' } };
+      sum.getCell('A1').alignment = { vertical: 'middle', horizontal: 'center' };
+      sum.getCell('A1').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEE5A8A' } };
+      sum.getRow(1).height = 32;
+      sum.mergeCells('A2:E2');
+      sum.getCell('A2').value = `LAPORAN KEUANGAN — ${months} Bulan Terakhir (sampai ${month})`;
+      sum.getCell('A2').font = { size: 12, bold: true, color: { argb: 'FF4A2533' } };
+      sum.getCell('A2').alignment = { horizontal: 'center' };
+      sum.getRow(2).height = 22;
+      const sumHeaders = ['Bulan', 'Total Reservasi', 'Total Kwitansi', 'Omzet (Lunas)', 'Rata-rata/Reservasi'];
+      sumHeaders.forEach((h, i) => {
+        const cell = sum.getCell(4, i + 1);
+        cell.value = h;
+        cell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 10 };
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEE5A8A' } };
+        cell.alignment = { horizontal: 'center', vertical: 'middle' };
+      });
+      sum.getRow(4).height = 24;
+      let sR = 5;
+      monthList.slice().reverse().forEach((m) => {
+        const mRows = monthRows.filter((r) => (r.reservation_date || '').slice(0, 7) === m);
+        const mOmzet = mRows.filter((r) => r.payment_status === 'lunas').reduce((s, r) => s + calcReservationTotal(r), 0);
+        const mKw = DB.receipts.filter((k) => (k.created_at || '').slice(0, 7) === m).length;
+        const avg = mRows.length ? Math.round(mOmzet / mRows.length) : 0;
+        const row = sum.addRow([m, mRows.length, mKw, mOmzet, avg]);
+        row.getCell(4).numFmt = '"Rp"#,##0';
+        row.getCell(5).numFmt = '"Rp"#,##0';
+        if ((sR - 5) % 2 === 0) {
+          for (let c = 1; c <= 5; c++) {
+            const cell = row.getCell(c);
+            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF5F8' } };
+          }
+        }
+        sR++;
+      });
+      const totRow = sum.addRow([
+        'TOTAL',
+        monthRows.length,
+        monthList.reduce((s, m) => s + DB.receipts.filter((k) => (k.created_at || '').slice(0, 7) === m).length, 0),
+        monthRows.filter((r) => r.payment_status === 'lunas').reduce((s, r) => s + calcReservationTotal(r), 0),
+        monthRows.length ? Math.round(monthRows.filter((r) => r.payment_status === 'lunas').reduce((s, r) => s + calcReservationTotal(r), 0) / monthRows.length) : 0
+      ]);
+      totRow.font = { bold: true, size: 12, color: { argb: 'FFFFFFFF' } };
+      for (let c = 1; c <= 5; c++) {
+        totRow.getCell(c).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEE5A8A' } };
+      }
+      totRow.getCell(4).numFmt = '"Rp"#,##0';
+      totRow.getCell(5).numFmt = '"Rp"#,##0';
+      totRow.height = 24;
+      sum.getColumn(1).width = 14;
+      sum.getColumn(2).width = 22;
+      sum.getColumn(3).width = 18;
+      sum.getColumn(4).width = 22;
+      sum.getColumn(5).width = 24;
     }
-    totalRow.getCell(8).numFmt = '"Rp"#,##0';
-    totalRow.getCell(6).alignment = { horizontal: 'right' };
-    totalRow.height = 26;
 
-    // Column widths
-    ws.getColumn(1).width = 5;
-    ws.getColumn(2).width = 14;
-    ws.getColumn(3).width = 10;
-    ws.getColumn(4).width = 22;
-    ws.getColumn(5).width = 16;
-    ws.getColumn(6).width = 45;
-    ws.getColumn(7).width = 8;
-    ws.getColumn(8).width = 16;
-    ws.getColumn(9).width = 18;
-
-    // Freeze
-    ws.views = [{ state: 'frozen', xSplit: 0, ySplit: headerRow, showGridLines: false }];
-
+    // File name: include range so admin knows it's a multi-month export
+    const fname = months > 1
+      ? `rekap-adzkiya-${monthList[monthList.length - 1]}_to_${month}.xlsx`
+      : `rekap-adzkiya-${month}.xlsx`;
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.setHeader('Content-Disposition', `attachment; filename="rekap-adzkiya-${month}.xlsx"`);
+    res.setHeader('Content-Disposition', `attachment; filename="${fname}"`);
     await wb.xlsx.write(res);
     res.end();
   } catch (e) { console.error(e); res.status(500).send(e.message); }
 });
+
+
+// Helper: build one styled worksheet for a single month. Pulled out
+// of recap.xlsx so the multi-month export can reuse the same
+// formatting for each per-month sheet without copy-pasting 150 lines.
+function buildMonthSheet(wb, sheetName, month, monthRows) {
+  const ws = wb.addWorksheet(sheetName, {
+    pageSetup: { paperSize: 9, orientation: 'landscape', fitToPage: true, fitToWidth: 1, margins: { left: 0.5, right: 0.5, top: 0.5, bottom: 0.5, header: 0.3, footer: 0.3 } },
+    views: [{ showGridLines: false }]
+  });
+  ws.mergeCells('A1:I1');
+  ws.getCell('A1').value = '🌸 ADZKIYA MOM BABY CARE';
+  ws.getCell('A1').font = { name: 'Calibri', size: 22, bold: true, color: { argb: 'FFFFFFFF' } };
+  ws.getCell('A1').alignment = { vertical: 'middle', horizontal: 'center' };
+  ws.getCell('A1').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEE5A8A' } };
+  ws.getRow(1).height = 36;
+  ws.mergeCells('A2:I2');
+  ws.getCell('A2').value = 'Layanan Kesehatan Ibu & Anak Terpercaya · ' + (DB.settings.address || '');
+  ws.getCell('A2').font = { name: 'Calibri', size: 10, italic: true, color: { argb: 'FFFFFFFF' } };
+  ws.getCell('A2').alignment = { horizontal: 'center' };
+  ws.getCell('A2').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFB979' } };
+  ws.getRow(2).height = 20;
+  ws.mergeCells('A4:I4');
+  ws.getCell('A4').value = `REKAPITULASI BULANAN — ${month}`;
+  ws.getCell('A4').font = { size: 14, bold: true, color: { argb: 'FF4A2533' } };
+  ws.getCell('A4').alignment = { horizontal: 'center' };
+  ws.getRow(4).height = 24;
+
+  const totalReservasi = monthRows.length;
+  const totalOmzet = monthRows.filter((r) => r.payment_status === 'lunas').reduce((s, r) => s + calcReservationTotal(r), 0);
+  const totalKw = DB.receipts.filter((k) => (k.created_at || '').slice(0, 7) === month).length;
+  const pendingCnt = monthRows.filter((r) => r.status === 'pending').length;
+  const approvedCnt = monthRows.filter((r) => r.status === 'approved').length;
+  const lunasCnt = monthRows.filter((r) => r.payment_status === 'lunas').length;
+
+  const summaryRows = [
+    ['Total Reservasi', totalReservasi, '', 'Total Omzet', { v: totalOmzet, t: 'rp' }],
+    ['Total Kwitansi', totalKw, '', 'Status Pending', pendingCnt],
+    ['Approved', approvedCnt, '', 'Lunas', lunasCnt]
+  ];
+  let rNum = 6;
+  summaryRows.forEach((row) => {
+    ws.getCell(`A${rNum}`).value = row[0];
+    ws.getCell(`A${rNum}`).font = { bold: true, color: { argb: 'FF8B6878' } };
+    ws.getCell(`B${rNum}`).value = typeof row[1] === 'object' ? row[1].v : row[1];
+    ws.getCell(`B${rNum}`).font = { bold: true, size: 12, color: { argb: 'FFEE5A8A' } };
+    ws.getCell(`D${rNum}`).value = row[3];
+    ws.getCell(`D${rNum}`).font = { bold: true, color: { argb: 'FF8B6878' } };
+    ws.getCell(`E${rNum}`).value = typeof row[4] === 'object' ? row[4].v : row[4];
+    ws.getCell(`E${rNum}`).font = { bold: true, size: 12, color: { argb: 'FFEE5A8A' } };
+    if (typeof row[4] === 'object' && row[4].t === 'rp') {
+      ws.getCell(`E${rNum}`).numFmt = '"Rp"#,##0';
+    }
+    rNum++;
+  });
+
+  const headerRow = rNum + 1;
+  const headers = ['No', 'Tanggal', 'Jam', 'Pasien', 'WhatsApp', 'Layanan (Detail)', 'Sesi', 'Total', 'Status'];
+  headers.forEach((h, i) => {
+    const cell = ws.getCell(headerRow, i + 1);
+    cell.value = h;
+    cell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEE5A8A' } };
+    cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+    cell.border = { top: { style: 'thin', color: { argb: 'FFEE5A8A' } }, bottom: { style: 'thin', color: { argb: 'FFEE5A8A' } } };
+  });
+  ws.getRow(headerRow).height = 28;
+
+  monthRows.forEach((r, idx) => {
+    const items = r.items || [{ name: r.service_name, price: r.service_price, qty: r.qty }];
+    const slots = r.slots || [{ date: r.reservation_date, time: r.reservation_time }];
+    const itemsText = items.map((it) => `• ${it.name} (×${it.qty}) — Rp${(it.price * it.qty).toLocaleString('id-ID')}`).join('\n');
+    const slotsCount = slots.length;
+    const total = calcReservationTotal(r);
+    const dateText = slots.map((s) => s.date).join('\n');
+    const timeText = slots.map((s) => s.time).join('\n');
+    const row = ws.addRow([
+      idx + 1, dateText, timeText, r.patient_name, r.whatsapp,
+      itemsText, slotsCount, total, `${r.status} / ${r.payment_status}`
+    ]);
+    row.alignment = { vertical: 'top', wrapText: true };
+    row.getCell(8).numFmt = '"Rp"#,##0';
+    row.getCell(8).font = { bold: true };
+    row.getCell(9).alignment = { ...row.alignment, horizontal: 'center' };
+    const statusFill = r.payment_status === 'lunas' ? 'FFD9EFE1' : r.status === 'pending' ? 'FFFFF3D6' : 'FFFDE0E4';
+    row.getCell(9).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: statusFill } };
+    if (idx % 2 === 0) {
+      for (let c = 1; c <= 9; c++) {
+        const cell = row.getCell(c);
+        if (!cell.fill) cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF5F8' } };
+      }
+    }
+    row.eachCell((c) => { c.border = { bottom: { style: 'thin', color: { argb: 'FFFFE0E8' } } }; });
+    const maxLines = Math.max(itemsText.split('\n').length, dateText.split('\n').length);
+    row.height = Math.max(20, maxLines * 16);
+  });
+
+  const totalRow = ws.addRow(['', '', '', '', '', 'TOTAL OMZET', '', totalOmzet, '']);
+  totalRow.font = { bold: true, size: 12, color: { argb: 'FFFFFFFF' } };
+  for (let c = 1; c <= 9; c++) {
+    totalRow.getCell(c).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEE5A8A' } };
+    totalRow.getCell(c).border = { top: { style: 'thick', color: { argb: 'FFEE5A8A' } } };
+  }
+  totalRow.getCell(8).numFmt = '"Rp"#,##0';
+  totalRow.getCell(6).alignment = { horizontal: 'right' };
+  totalRow.height = 26;
+
+  ws.getColumn(1).width = 5;
+  ws.getColumn(2).width = 14;
+  ws.getColumn(3).width = 10;
+  ws.getColumn(4).width = 22;
+  ws.getColumn(5).width = 16;
+  ws.getColumn(6).width = 45;
+  ws.getColumn(7).width = 8;
+  ws.getColumn(8).width = 16;
+  ws.getColumn(9).width = 18;
+
+  ws.views = [{ state: 'frozen', xSplit: 0, ySplit: headerRow, showGridLines: false }];
+}
 
 // ===== ADMIN — RECEIPTS =====
 app.post('/api/admin/receipts', auth, (req, res) => {

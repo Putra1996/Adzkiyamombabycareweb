@@ -1107,12 +1107,21 @@ async function renderRecap() {
     <div class="admin-header">
       <h1>📈 Rekap Bulanan</h1>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+        <label style="font-size:0.85rem;color:var(--text-soft);font-weight:600;">📅 Bulan:</label>
         <input type="month" id="recapMonth" value="${m}" style="padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--card);color:var(--text);">
+        <label style="font-size:0.85rem;color:var(--text-soft);font-weight:600;margin-left:6px;">📊 Range:</label>
+        <select id="recapMonths" onchange="loadRecap()" style="padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--card);color:var(--text);font-weight:600;">
+          <option value="1">1 Bulan</option>
+          <option value="3">3 Bulan</option>
+          <option value="6">6 Bulan</option>
+          <option value="12">1 Tahun (12 Bulan)</option>
+        </select>
         <button onclick="loadRecap()" class="btn-sm btn-pay">🔄 Muat</button>
         <button onclick="openKwitansiModal()" class="btn-sm btn-approve">🧾 Buat Kwitansi Manual</button>
-        <button onclick="exportRecapXLSX()" class="btn-sm btn-approve">📊 Excel</button>
+        <button onclick="exportRecapXLSX()" class="btn-sm btn-approve" title="Download laporan keuangan Excel">📊 Excel</button>
         <button onclick="exportRecapCSV()" class="btn-sm btn-pay">📥 CSV</button>
-        <button onclick="exportRecapPDF()" class="btn-sm btn-view">🖨️ PDF</button>
+        <button onclick="exportRecapPDF()" class="btn-sm btn-view" title="Cetak laporan keuangan sebagai PDF">🖨️ PDF</button>
+        <button onclick="openLaporanKeuangan()" class="btn-sm" style="background:#7c3aed;color:white;border:none;" title="Buka laporan keuangan printable">📑 Laporan</button>
       </div>
     </div>
     <div id="recapContent">Loading...</div>
@@ -1124,23 +1133,70 @@ let RECAP_DATA = null;
 let RECAP_RECEIPTS = [];
 async function loadRecap() {
   const month = document.getElementById('recapMonth').value;
+  const months = document.getElementById('recapMonths')?.value || '1';
   try {
-    RECAP_DATA = await api('/api/admin/recap?month=' + month);
+    RECAP_DATA = await api('/api/admin/recap?month=' + month + '&months=' + months);
+    // For receipts table we only show the single-month receipts (the
+    // receipts list is too long to mix across multi-month views).
     RECAP_RECEIPTS = await api('/api/admin/receipts?month=' + month);
     const el = document.getElementById('recapContent');
+    const isRange = parseInt(months, 10) > 1;
+    // Range label for the page header
+    const rangeLabel = isRange
+      ? `${RECAP_DATA.monthList[RECAP_DATA.monthList.length - 1]} s/d ${month} (${months} bulan)`
+      : month;
+
+    // Build byMonth breakdown table (only for range view)
+    const byMonthHtml = (isRange && Array.isArray(RECAP_DATA.byMonth))
+      ? `<div style="margin:18px 0 6px;background:var(--card);border-radius:12px;padding:16px;border:1px solid var(--border);">
+          <h3 style="margin:0 0 12px;font-size:1.05rem;">📊 Ringkasan Per Bulan (${months} bulan)</h3>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;">
+            ${RECAP_DATA.byMonth.map((m) => {
+              const isPeak = m.totalOmzet === Math.max(...RECAP_DATA.byMonth.map((x) => x.totalOmzet));
+              return `<span style="display:inline-flex;align-items:center;gap:6px;padding:6px 12px;background:${isPeak ? '#d9efe1' : 'var(--pink-50)'};border:1px solid ${isPeak ? '#1e8957' : 'var(--pink-100)'};border-radius:999px;font-size:0.85rem;font-weight:600;">
+                📅 <strong>${m.month}</strong> · ${m.totalReservasi} res · ${fmtRp(m.totalOmzet)}
+                ${isPeak ? ' 🏆' : ''}
+              </span>`;
+            }).join('')}
+          </div>
+          <div class="table-scroll"><table class="data-table"><thead><tr>
+            <th>Bulan</th><th>Reservasi</th><th>Kwitansi</th><th>Omzet (Lunas)</th><th>Rata-rata/Reservasi</th>
+          </tr></thead><tbody>
+            ${RECAP_DATA.byMonth.map((m) => `<tr>
+              <td><strong>${m.month}</strong></td>
+              <td>${m.totalReservasi}</td>
+              <td>${m.totalKwitansi}</td>
+              <td><strong>${fmtRp(m.totalOmzet)}</strong></td>
+              <td>${m.totalReservasi ? fmtRp(Math.round(m.totalOmzet / m.totalReservasi)) : '—'}</td>
+            </tr>`).join('')}
+            <tr style="background:var(--primary);color:white;font-weight:700;">
+              <td>TOTAL</td>
+              <td>${RECAP_DATA.totalReservasi}</td>
+              <td>${RECAP_RECEIPTS.length || RECAP_DATA.byMonth.reduce((s, m) => s + m.totalKwitansi, 0)}</td>
+              <td>${fmtRp(RECAP_DATA.totalOmzet)}</td>
+              <td>${RECAP_DATA.totalReservasi ? fmtRp(Math.round(RECAP_DATA.totalOmzet / RECAP_DATA.totalReservasi)) : '—'}</td>
+            </tr>
+          </tbody></table></div>
+        </div>`
+      : '';
+
     el.innerHTML = `
+      <div style="margin-bottom:14px;padding:10px 14px;background:var(--bg);border-radius:10px;font-size:0.92rem;color:var(--text-soft);border:1px solid var(--border);">
+        📅 <strong>${rangeLabel}</strong>${isRange ? ` &nbsp;·&nbsp; <button onclick="openLaporanKeuangan()" style="background:none;border:none;color:var(--primary);text-decoration:underline;font-weight:700;cursor:pointer;">📑 Cetak Laporan Keuangan</button>` : ''}
+      </div>
       <div class="stat-grid">
         <div class="stat-card"><div class="label">Total Reservasi</div><div class="value">${RECAP_DATA.totalReservasi}</div></div>
         <div class="stat-card pink"><div class="label">Total Omzet</div><div class="value">${fmtRp(RECAP_DATA.totalOmzet)}</div></div>
-        <div class="stat-card peach"><div class="label">Total Kwitansi</div><div class="value">${RECAP_RECEIPTS.length}</div></div>
+        <div class="stat-card peach"><div class="label">Total Kwitansi</div><div class="value">${RECAP_RECEIPTS.length || RECAP_DATA.byMonth.reduce((s, m) => s + m.totalKwitansi, 0)}</div></div>
       </div>
+      ${byMonthHtml}
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-top:8px;" id="recapCols">
         <div>
-          <h3 style="margin:20px 0 12px;">🧾 Kwitansi Bulan ${month}</h3>
+          <h3 style="margin:20px 0 12px;">🧾 Kwitansi ${isRange ? 'Bulan ' + month : ''}</h3>
           ${RECAP_RECEIPTS.length ? renderReceiptTable(RECAP_RECEIPTS) : '<p style="color:var(--text-soft);text-align:center;padding:20px;background:var(--card);border-radius:12px;">Belum ada kwitansi bulan ini.</p>'}
         </div>
         <div>
-          <h3 style="margin:20px 0 12px;">📅 Detail Reservasi Bulan ${month}</h3>
+          <h3 style="margin:20px 0 12px;">📅 Detail Reservasi ${isRange ? '(' + RECAP_DATA.rows.length + ' di ' + months + ' bulan)' : 'Bulan ' + month}</h3>
           ${RECAP_DATA.rows.length ? `
             <div class="table-scroll"><table class="data-table"><thead><tr>
               <th>Tgl</th><th>Pasien</th><th>Layanan</th><th>Sesi</th><th>Total</th><th>Status</th><th>Bayar</th>
@@ -1675,8 +1731,16 @@ async function loadKwitansiStats() {
   }
 }
 
+function getRecapMonthAndMonths() {
+  const month = document.getElementById('recapMonth')?.value || new Date().toISOString().slice(0, 7);
+  const months = document.getElementById('recapMonths')?.value || '1';
+  return { month, months };
+}
+
 function exportRecapCSV() {
   if (!RECAP_DATA) return;
+  const { month, months } = getRecapMonthAndMonths();
+  const isRange = parseInt(months, 10) > 1;
   const rows = [['Tanggal','Jam','Pasien','WhatsApp','Layanan','Qty','Harga','Sesi','Total','Status','Pembayaran']];
   RECAP_DATA.rows.forEach(r => {
     (r.slots||[{date:'',time:''}]).forEach(s => {
@@ -1688,15 +1752,17 @@ function exportRecapCSV() {
   const csv = rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
   const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8' });
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
-  a.download = `rekap-${RECAP_DATA.month}.csv`; a.click();
+  a.download = isRange ? `rekap-${month}_${months}bulan.csv` : `rekap-${month}.csv`; a.click();
 }
 
 async function exportRecapXLSX() {
   if (!RECAP_DATA) return;
   try {
+    const { month, months } = getRecapMonthAndMonths();
+    const isRange = parseInt(months, 10) > 1;
     await downloadProtected(
-      `/api/admin/recap.xlsx?month=${encodeURIComponent(RECAP_DATA.month)}`,
-      `rekap-adzkiya-${RECAP_DATA.month}.xlsx`
+      `/api/admin/recap.xlsx?month=${encodeURIComponent(month)}&months=${months}`,
+      isRange ? `rekap-adzkiya-${month}_${months}bulan.xlsx` : `rekap-adzkiya-${month}.xlsx`
     );
   } catch (error) {
     alert('Export Excel gagal: ' + error.message);
@@ -1705,30 +1771,105 @@ async function exportRecapXLSX() {
 
 function exportRecapPDF() {
   if (!RECAP_DATA) return;
+  // The "🖨️ PDF" button opens the same printable Laporan Keuangan view.
+  openLaporanKeuangan();
+}
+
+// Dedicated "Laporan Keuangan" printable view — same data as the
+// Rekap page but laid out for paper / PDF print. Includes range
+// summary at top when in range mode, then per-month breakdown, then
+// the full reservation detail table.
+function openLaporanKeuangan() {
+  if (!RECAP_DATA) return;
   const biz = SETTINGS || {};
   const logoSrc = biz.has_logo ? apiUrl('/api/logo') : null;
-  const html = `<!doctype html><html><head><title>Rekap ${RECAP_DATA.month}</title>
+  const { month, months } = getRecapMonthAndMonths();
+  const isRange = parseInt(months, 10) > 1;
+  const rangeLabel = isRange
+    ? `${RECAP_DATA.monthList[RECAP_DATA.monthList.length - 1]} s/d ${month} (${months} bulan)`
+    : month;
+
+  const summaryRows = isRange && Array.isArray(RECAP_DATA.byMonth)
+    ? `<table class="data-table" style="margin:18px 0;">
+        <thead><tr><th>Bulan</th><th>Reservasi</th><th>Kwitansi</th><th>Omzet (Lunas)</th><th>Rata-rata/Reservasi</th></tr></thead>
+        <tbody>
+          ${RECAP_DATA.byMonth.map((m) => `<tr>
+            <td><strong>${m.month}</strong></td>
+            <td>${m.totalReservasi}</td>
+            <td>${m.totalKwitansi}</td>
+            <td><strong>${fmtRp(m.totalOmzet)}</strong></td>
+            <td>${m.totalReservasi ? fmtRp(Math.round(m.totalOmzet / m.totalReservasi)) : '—'}</td>
+          </tr>`).join('')}
+          <tr style="background:var(--primary);color:white;">
+            <td><strong>TOTAL</strong></td>
+            <td><strong>${RECAP_DATA.totalReservasi}</strong></td>
+            <td><strong>${RECAP_DATA.byMonth.reduce((s, m) => s + m.totalKwitansi, 0)}</strong></td>
+            <td><strong>${fmtRp(RECAP_DATA.totalOmzet)}</strong></td>
+            <td><strong>${RECAP_DATA.totalReservasi ? fmtRp(Math.round(RECAP_DATA.totalOmzet / RECAP_DATA.totalReservasi)) : '—'}</strong></td>
+          </tr>
+        </tbody>
+      </table>`
+    : '';
+
+  const detailRows = RECAP_DATA.rows.map((r) => `<tr>
+    <td>${(r.slots||[]).map((s) => `${s.date} ${s.time}`).join('<br>')}</td>
+    <td>${esc(r.patient_name)}</td>
+    <td>${(r.items||[]).map((it) => `• ${esc(it.name)} ×${it.qty}`).join('<br>')}</td>
+    <td>${(r.slots||[]).length}</td>
+    <td>${fmtRp(r.total)}</td>
+    <td>${r.status}</td>
+    <td>${r.payment_status}</td>
+  </tr>`).join('');
+
+  const html = `<!doctype html><html><head><title>Laporan Keuangan — ${esc(rangeLabel)}</title>
     <link rel="stylesheet" href="${PAGE_STYLESHEET}">
-    <style>body{padding:30px;background:white;font-family:'Plus Jakarta Sans',sans-serif;}@media print{.no-print{display:none;}}</style>
+    <style>body{padding:30px;background:white;font-family:'Plus Jakarta Sans',sans-serif;color:#2a1822;}@media print{.no-print{display:none;}}h1,h2,h3{color:#4a2533;}</style>
     </head><body>
-    <div class="no-print" style="text-align:center;margin-bottom:16px;"><button onclick="window.print()" style="padding:10px 24px;background:#ee5a8a;color:white;border:none;border-radius:999px;font-weight:700;cursor:pointer;">🖨️ Cetak / Save PDF</button></div>
-    <div style="display:flex;align-items:center;gap:16px;margin-bottom:18px;padding-bottom:14px;border-bottom:3px solid #ee5a8a;">
-      ${logoSrc ? `<img src="${logoSrc}" style="width:80px;height:80px;object-fit:contain;">` : '<span style="font-size:3rem;">🌸</span>'}
-      <div><h1 style="color:#ee5a8a;margin:0;">${esc(biz.business_name || 'Adzkiya Mom Baby Care')}</h1><div style="color:#8b6878;">${esc(biz.tagline || '')}</div></div>
+    <div class="no-print" style="text-align:center;margin-bottom:16px;display:flex;gap:8px;justify-content:center;">
+      <button onclick="window.print()" style="padding:10px 24px;background:#ee5a8a;color:white;border:none;border-radius:999px;font-weight:700;cursor:pointer;font-size:1rem;">🖨️ Cetak / Save PDF</button>
+      <button onclick="window.close()" style="padding:10px 24px;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:999px;font-weight:700;cursor:pointer;font-size:1rem;">✕ Tutup</button>
     </div>
-    <h2>Rekap Bulanan — ${RECAP_DATA.month}</h2>
-    <p style="margin:14px 0;"><strong>Total Reservasi:</strong> ${RECAP_DATA.totalReservasi} &nbsp;|&nbsp; <strong>Total Omzet:</strong> ${fmtRp(RECAP_DATA.totalOmzet)} &nbsp;|&nbsp; <strong>Total Kwitansi:</strong> ${RECAP_DATA.totalKwitansi}</p>
-    <table class="data-table" style="font-size:0.85rem;">
+    <div style="display:flex;align-items:center;gap:16px;margin-bottom:14px;padding-bottom:14px;border-bottom:3px solid #ee5a8a;">
+      ${logoSrc ? `<img src="${logoSrc}" style="width:70px;height:70px;object-fit:contain;">` : '<span style="font-size:2.6rem;">🌸</span>'}
+      <div>
+        <h1 style="color:#ee5a8a;margin:0;font-size:1.5rem;">${esc(biz.business_name || 'Adzkiya Mom Baby Care')}</h1>
+        <div style="color:#8b6878;font-size:0.92rem;">${esc(biz.tagline || 'Layanan Kesehatan Ibu & Anak Terpercaya')}</div>
+        <div style="color:#8b6878;font-size:0.82rem;">${esc(biz.address || '')}</div>
+      </div>
+    </div>
+    <h2 style="margin:6px 0 4px;">📑 Laporan Keuangan</h2>
+    <p style="margin:0 0 14px;color:#8b6878;">Periode: <strong>${esc(rangeLabel)}</strong></p>
+    <div style="display:flex;gap:14px;flex-wrap:wrap;margin:14px 0;">
+      <div style="flex:1;min-width:160px;padding:14px;background:var(--pink-50);border-radius:10px;">
+        <div style="font-size:0.78rem;text-transform:uppercase;letter-spacing:0.5px;color:#8b6878;font-weight:700;">Total Reservasi</div>
+        <div style="font-size:1.6rem;font-weight:800;color:var(--primary);margin-top:4px;">${RECAP_DATA.totalReservasi}</div>
+      </div>
+      <div style="flex:1;min-width:160px;padding:14px;background:#d9efe1;border-radius:10px;">
+        <div style="font-size:0.78rem;text-transform:uppercase;letter-spacing:0.5px;color:#1e8957;font-weight:700;">Total Omzet (Lunas)</div>
+        <div style="font-size:1.6rem;font-weight:800;color:#1e8957;margin-top:4px;">${fmtRp(RECAP_DATA.totalOmzet)}</div>
+      </div>
+      <div style="flex:1;min-width:160px;padding:14px;background:#fff3d6;border-radius:10px;">
+        <div style="font-size:0.78rem;text-transform:uppercase;letter-spacing:0.5px;color:#b07b15;font-weight:700;">Rata-rata / Reservasi</div>
+        <div style="font-size:1.6rem;font-weight:800;color:#b07b15;margin-top:4px;">${RECAP_DATA.totalReservasi ? fmtRp(Math.round(RECAP_DATA.totalOmzet / RECAP_DATA.totalReservasi)) : '—'}</div>
+      </div>
+      <div style="flex:1;min-width:160px;padding:14px;background:var(--bg);border-radius:10px;border:1px solid var(--border);">
+        <div style="font-size:0.78rem;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-soft);font-weight:700;">Total Kwitansi</div>
+        <div style="font-size:1.6rem;font-weight:800;color:var(--text);margin-top:4px;">${RECAP_DATA.byMonth ? RECAP_DATA.byMonth.reduce((s, m) => s + m.totalKwitansi, 0) : RECAP_DATA.totalKwitansi || 0}</div>
+      </div>
+    </div>
+    ${summaryRows ? `<h3 style="margin:18px 0 10px;">📊 Ringkasan Per Bulan</h3>${summaryRows}` : ''}
+    <h3 style="margin:18px 0 10px;">📅 Detail Reservasi (${RECAP_DATA.rows.length} baris)</h3>
+    <table class="data-table" style="font-size:0.82rem;">
       <thead><tr><th>Jadwal</th><th>Pasien</th><th>Layanan</th><th>Sesi</th><th>Total</th><th>Status</th><th>Bayar</th></tr></thead>
-      <tbody>${RECAP_DATA.rows.map(r => `<tr>
-        <td>${(r.slots||[]).map(s=>`${s.date} ${s.time}`).join('<br>')}</td>
-        <td>${esc(r.patient_name)}</td>
-        <td>${(r.items||[]).map(it=>`• ${esc(it.name)} ×${it.qty}`).join('<br>')}</td>
-        <td>${(r.slots||[]).length}</td><td>${fmtRp(r.total)}</td><td>${r.status}</td><td>${r.payment_status}</td>
-      </tr>`).join('')}</tbody>
+      <tbody>${detailRows}</tbody>
     </table>
+    <p style="margin-top:18px;text-align:center;color:#8b6878;font-size:0.78rem;">
+      Laporan dicetak pada ${new Date().toLocaleString('id-ID')} · ${esc(biz.business_name || 'Adzkiya Mom Baby Care')}
+    </p>
     </body></html>`;
-  const w = window.open('', '_blank'); w.document.write(html); w.document.close();
+  const w = window.open('', '_blank');
+  w.document.write(html);
+  w.document.close();
 }
 
 // ---------- BACKUP / RESTORE ----------
