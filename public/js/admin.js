@@ -12,6 +12,50 @@ const apiUrl = (path) => /^https?:\/\//i.test(path) ? path : `${API_BASE}${path.
 const fmtDate = (s) => s ? new Date(s).toLocaleDateString('id-ID', { day: '2-digit', month: 'short', year: 'numeric' }) : '-';
 const fmtDateTime = (s) => s ? new Date(s).toLocaleString('id-ID', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '-';
 
+// Detect touch-primary devices (phones, tablets). Even when the user
+// has Chrome's "Situs desktop" toggle on, this still returns true —
+// `pointer:coarse` + `hover:none` is independent of the reported
+// viewport width. Combined with CSS media queries of the same name,
+// this keeps the mobile-friendly layout active on touch devices
+// regardless of what the viewport meta / desktop toggle lies about.
+function isTouchDevice() {
+  if (typeof window === 'undefined') return false;
+  // The matchMedia call works in all evergreen browsers; the inner
+  // property checks are fallback for older mobile browsers that don't
+  // expose the matchMedia query yet (rare these days).
+  if (window.matchMedia) {
+    return window.matchMedia('(hover: none) and (pointer: coarse)').matches
+      || window.matchMedia('(hover: none) and (pointer: coarse) and (max-width: 1024px)').matches;
+  }
+  return ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
+}
+
+// isNarrowView() returns true when the viewport is narrow by either
+// (a) physical width or (b) being a touch device with Chrome's
+// "Situs desktop" toggle enabled (which inflates innerWidth to 980).
+// Used by JS that needs to choose between rendering the table or the
+// card list — CSS does the final swap via body[data-table-mode].
+function isNarrowView() {
+  if (window.innerWidth <= 720) return true;
+  if (isTouchDevice() && window.innerWidth <= 1024) return true;
+  return false;
+}
+
+// Set the body's data-table-mode attribute early so that even pages
+// which never call setAttribute (e.g. dashboard before any list
+// renders) pick the right CSS rule on touch devices. On desktop the
+// attribute is a no-op (CSS hides the duplicate card list).
+if (isNarrowView()) {
+  try { document.body.setAttribute('data-table-mode', 'cards'); } catch {}
+}
+// And re-evaluate when the viewport changes (Chrome's "Situs desktop"
+// toggle can flip at runtime when the user pulls down the menu).
+window.addEventListener('resize', () => {
+  if (isNarrowView()) {
+    document.body.setAttribute('data-table-mode', 'cards');
+  }
+});
+
 async function api(path, opts = {}) {
   const headers = { 'Content-Type': 'application/json', ...(opts.headers || {}) };
   if (TOKEN) headers.Authorization = 'Bearer ' + TOKEN;
@@ -645,7 +689,7 @@ async function renderReceipts() {
         <div id="kwList">Loading...</div>
       </div>
     </div>
-    <style>@media(max-width:920px){#kwGrid{grid-template-columns:1fr !important;}}</style>
+    <style>@media(max-width:920px),(hover:none) and (pointer:coarse) and (max-width:1024px){#kwGrid{grid-template-columns:1fr !important;}}</style>
   `;
   receiptItems = [];
   addReceiptItem();
@@ -1283,7 +1327,7 @@ async function loadRecap() {
           ` : '<p style="color:var(--text-soft);text-align:center;padding:20px;background:var(--card);border-radius:12px;">Belum ada reservasi bulan ini.</p>'}
         </div>
       </div>
-      <style>@media(max-width:920px){#recapCols{grid-template-columns:1fr !important;}}</style>
+      <style>@media(max-width:920px),(hover:none) and (pointer:coarse) and (max-width:1024px){#recapCols{grid-template-columns:1fr !important;}}</style>
     `;
   } catch (e) { document.getElementById('recapContent').innerHTML = `<div class="alert alert-error">${e.message}</div>`; }
 }
@@ -1982,7 +2026,7 @@ async function renderBackup() {
         <button onclick="doRestore()" class="btn btn-outline" style="margin-top:14px;">📤 Restore</button>
       </div>
     </div>
-    <style>@media(max-width:920px){#bkGrid{grid-template-columns:1fr !important;}}</style>
+    <style>@media(max-width:920px),(hover:none) and (pointer:coarse) and (max-width:1024px){#bkGrid{grid-template-columns:1fr !important;}}</style>
   `;
 }
 
@@ -2452,7 +2496,7 @@ function renderNotifList(d) {
         </div>`).join('') : '<p style="color:var(--text-soft);padding:14px;background:var(--card);border-radius:12px;text-align:center;">Belum ada reservasi.</p>'}
     </div>
   </div>
-  <style>@media(max-width:920px){#notifInner{grid-template-columns:1fr !important;}}</style>`;
+  <style>@media(max-width:920px),(hover:none) and (pointer:coarse) and (max-width:1024px){#notifInner{grid-template-columns:1fr !important;}}</style>`;
 }
 
 function resetNotifSeen() {
