@@ -69,8 +69,10 @@
 <!-- Modal Container -->
 <div id="modalRoot"></div>
 
-<!-- Toast Container -->
-<div id="toastRoot" style="position:fixed;top:20px;right:20px;z-index:9999;display:flex;flex-direction:column;gap:10px;max-width:380px;"></div>
+<!-- Toast Container. max-width uses calc() so it never overflows
+     on phones narrower than 380px (the previous fixed max caused
+     horizontal scroll on small screens). -->
+<div id="toastRoot" style="position:fixed;top:14px;right:14px;left:14px;z-index:9999;display:flex;flex-direction:column;gap:10px;max-width:calc(100vw - 28px);"></div>
 
 <script src="js/api-config.js"></script>
 <script src="js/main.js"></script>

@@ -41,10 +41,25 @@
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
-html, body { font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--text); line-height: 1.6; scroll-behavior: smooth; }
+html, body {
+  font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: var(--bg); color: var(--text);
+  line-height: 1.6; scroll-behavior: smooth;
+  /* Prevent horizontal scroll caused by fixed-width elements that
+     overflow the viewport on narrow screens. */
+  overflow-x: hidden;
+  max-width: 100vw;
+}
 a { color: var(--primary); text-decoration: none; }
 a:hover { color: var(--primary-hover); }
 img { max-width: 100%; display: block; }
+/* Common mobile-safe utilities: shrink-to-fit buttons / chips /
+   chips so they don't push the layout wider than the viewport. */
+button, input, select, textarea {
+  max-width: 100%;
+  min-width: 0;
+  font-family: inherit;
+}
 
 /* ---------- NAV ---------- */
 .nav {
@@ -85,6 +100,144 @@ img { max-width: 100%; display: block; }
   .nav-links { display: none; position: absolute; top: 100%; left: 0; right: 0; flex-direction: column; background: var(--card); padding: 16px; border-top: 1px solid var(--border); align-items: stretch; }
   .nav-links.open { display: flex; }
   .nav-links a { padding: 12px 14px; }
+}
+
+/* Smaller-screen tweak: tighter nav padding so the brand + links fit
+   without forcing horizontal scroll on ~360px-wide phones. */
+@media (max-width: 480px) {
+  .nav-inner { padding: 10px 14px; gap: 8px; }
+  .brand { font-size: 0.95rem; gap: 8px; }
+  .brand-logo { width: 38px; height: 38px; font-size: 1rem; }
+  .nav-links a { padding: 10px 12px; font-size: 0.88rem; }
+}
+
+/* === Global mobile fixes for ~360-540px screens ===
+   Several admin & patient pages had elements that overflowed the
+   viewport on narrow phones. These rules force things like tables,
+   stat grids, and form rows to wrap or shrink instead of pushing
+   the page wider than the device. */
+@media (max-width: 540px) {
+  .container { padding: 0 14px; }
+  .section { padding: 50px 14px; }
+  .section-head { margin-bottom: 30px; }
+  .section-head h2 { font-size: 1.4rem; }
+  .form-wrap { padding: 20px 16px; }
+  .cart-row { grid-template-columns: 1fr 90px 60px 32px !important; gap: 6px !important; }
+  .slot-row { grid-template-columns: 1fr 110px 32px !important; gap: 6px !important; }
+  .cart-row input, .cart-row select, .slot-row input { padding: 8px !important; font-size: 0.85rem !important; }
+  .modal { padding: 20px 16px; max-height: 95vh; }
+  .stat-grid { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)) !important; gap: 10px !important; }
+  .stat-card { padding: 14px; }
+  .stat-card .value { font-size: 1.5rem; }
+  .charts-grid { gap: 12px; }
+  .invoice { padding: 20px 14px !important; }
+  .invoice-header { flex-direction: column; align-items: flex-start; gap: 10px; }
+  .invoice-header .meta { text-align: left; }
+  .data-table { font-size: 0.78rem; }
+  .data-table th, .data-table td { padding: 8px 6px; }
+  .toast { min-width: 0; max-width: calc(100vw - 32px); padding: 10px 14px; }
+  .notif-card { padding: 10px; }
+  .form-row { grid-template-columns: 1fr !important; }
+  .bank-row { grid-template-columns: 1fr !important; gap: 6px; }
+  .bank-row input { width: 100%; }
+  /* Calendar: tighten cells even further on phones */
+  .cal-cell { min-height: 44px; padding: 2px; font-size: 0.7rem; }
+  .cal-cell.head { font-size: 0.6rem; padding: 2px 1px; }
+  .cal-cell .day-num { font-size: 0.72rem; }
+  .cal-cell .count-badge { font-size: 0.55rem; padding: 0 3px; }
+  .cal-grid { gap: 2px; }
+  .cal-compact .calendar-wrap { padding: 10px; }
+  .calendar-wrap { padding: 14px; }
+  .cal-header h3 { font-size: 0.9rem; }
+  .cal-legend { font-size: 0.72rem; gap: 10px; }
+  .hero { padding: 50px 14px 60px; }
+  .hero h1 { font-size: 1.6rem; }
+  .hero p.lead { font-size: 0.95rem; }
+  .hero-stats { gap: 14px; }
+  .hero-stats strong { font-size: 1.15rem; }
+  /* Detail panel in calendar: stack the row, prevent time chip from
+     forcing a wide layout. */
+  .cal-legend > span { flex: 1 1 100%; }
+  /* Admin-specific: tighter headers, sidebar nav, login card */
+  .admin-main { padding: 14px !important; }
+  .admin-sidebar { padding: 14px 10px !important; }
+  .admin-sidebar .brand { font-size: 0.92rem !important; margin-bottom: 16px !important; padding: 0 4px !important; }
+  .admin-sidebar nav button { padding: 9px 12px !important; font-size: 0.85rem !important; gap: 6px !important; }
+  .admin-header { margin-bottom: 18px !important; gap: 10px !important; }
+  .admin-header h1 { font-size: 1.25rem !important; }
+  .admin-login-card { padding: 24px 18px !important; border-radius: 16px !important; }
+  /* Toast: pin to bottom, smaller font */
+  .toast { font-size: 0.85rem; }
+  .toast .ti { font-size: 1.3rem; }
+  /* Calendar detail panel rows */
+  #dateDetailContent > div[style*="display:flex"][style*="gap:10px"] {
+    flex-direction: column !important;
+    align-items: stretch !important;
+  }
+  #dateDetailContent div[style*="min-width:54px"] {
+    min-width: 0 !important;
+  }
+  /* Admin kalender detail panel rows */
+  #admCalDetailContent > div[style*="display:flex"][style*="gap:10px"] {
+    flex-direction: column !important;
+  }
+  /* Reserve page — service slot picker rows */
+  #kw_times, #mkw_times { gap: 4px !important; }
+  .kw-time-chip { font-size: 0.82rem !important; padding: 5px 10px !important; }
+  /* Recap: byMonth breakdown table force-scroll */
+  .stat-grid + div .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  /* Pay options: stay side-by-side but smaller */
+  .pay-options { grid-template-columns: repeat(3, 1fr) !important; gap: 6px !important; }
+  .pay-option { padding: 10px 4px !important; font-size: 0.78rem !important; }
+  .pay-option .icn { font-size: 1.4rem !important; }
+  .pay-option small { font-size: 0.7rem !important; }
+  /* Settings: full-width upload preview */
+  .upload-preview { max-width: 100% !important; height: 100px !important; }
+  /* Reservation form: tighter padding */
+  .form-group { margin-bottom: 12px; }
+  .form-group label { font-size: 0.85rem; margin-bottom: 4px; }
+  /* Kwitansi form 2-column: stack */
+  #kwGrid { grid-template-columns: 1fr !important; gap: 16px !important; }
+  /* Receipt table: tighter */
+  .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  /* Detail row chips: don't break layout */
+  .chip-row { flex-wrap: wrap !important; }
+  /* Print receipt — scale down */
+  body { padding: 0 !important; }
+  /* Admin layout sidebar items — collapse into a single row of
+     compact buttons that wrap rather than overflow horizontally.
+     Each button gets ~30% so 3 fit per row (8 items → ~3 rows). */
+  .admin-sidebar nav { flex-direction: row !important; flex-wrap: wrap !important; gap: 6px !important; }
+  .admin-sidebar nav button { flex: 0 1 calc(33.333% - 4px) !important; min-width: 0 !important; padding: 8px 6px !important; font-size: 0.78rem !important; gap: 4px !important; justify-content: center; text-align: center; }
+  .admin-sidebar .brand { text-align: center; padding: 0 4px; }
+  .admin-sidebar > div:last-child { display: flex; gap: 6px; flex-direction: row !important; padding: 0 4px !important; }
+  .admin-sidebar > div:last-child button { flex: 1; }
+  /* Override grid-column:span 2 on contact-card so the layout
+     doesn't overflow on phones (auto-fit grid collapses to a
+     single column, then span 2 would extend past the edge). */
+  .contact-card[style*="grid-column:span 2"], .contact-card-wide { grid-column: span 1 !important; }
+  /* The "wide" cards span 2 cols on desktop via the rule below. */
+  .contact-grid .contact-card-wide { grid-column: span 2; }
+  /* Footer stack */
+  .footer-inner { flex-direction: column !important; text-align: center !important; gap: 8px !important; }
+  /* Section padding tighter */
+  footer { padding: 30px 16px !important; }
+  /* Hero visual (logo on right side) shrink further */
+  .hero-visual { max-width: 280px !important; margin: 0 auto !important; }
+  /* About section visual shrink */
+  .about-visual { font-size: 6rem !important; aspect-ratio: 1/1 !important; max-width: 320px !important; margin: 0 auto !important; }
+  /* Feature padding tighter */
+  .feature { padding: 20px 16px !important; }
+  /* Contact card padding tighter */
+  .contact-card { padding: 20px 14px !important; }
+  /* Testi card padding tighter */
+  .testi-card { padding: 20px 16px !important; }
+  /* Service card padding tighter */
+  .service-card { padding: 18px 14px !important; }
+  /* Calendar header (admin & public): stack nav and label */
+  .cal-header { flex-direction: column !important; align-items: stretch !important; }
+  .cal-header h3 { text-align: center; margin-bottom: 8px; }
+  .cal-nav { justify-content: center; }
 }
 
 /* ---------- HERO ---------- */
@@ -281,6 +434,20 @@ footer { padding: 40px 24px; background: var(--card); border-top: 1px solid var(
 .cal-legend .swatch.has-events { background: linear-gradient(135deg, var(--bg) 0%, var(--pink-50) 100%); }
 .cal-legend .swatch.full { background: #fde0e4; border-color: #c43050; }
 
+  /* Search box in kwitansi list */
+.kw-search { padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); min-width: 160px; max-width: 100%; }
+@media (max-width: 540px) { .kw-search { min-width: 0; width: 100%; } }
+
+/* Inline grid-template-columns "1fr 90px 70px 32px" from admin.js
+   (rebuildReceiptItems / mkwAddRow) — shrink columns for tiny
+   phones so the select + price tag + qty + delete button all fit
+   in a 320px viewport without horizontal scroll. */
+@media (max-width: 380px) {
+  div[style*="grid-template-columns:1fr 90px 70px 32px"] {
+    grid-template-columns: 1fr 70px 50px 28px !important;
+    gap: 4px !important;
+  }
+}
 /* ---------- ADMIN ---------- */
 .link-button { background: none; border: 0; padding: 0; color: var(--pink-600); font: inherit; font-weight: 700; text-decoration: underline; cursor: pointer; }
 .link-button:hover { color: var(--pink-700); }
