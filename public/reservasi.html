@@ -83,6 +83,20 @@
           <button type="button" class="add-btn" onclick="addCartItem()">+ Tambah Layanan</button>
         </div>
 
+        <!-- Service picker: grid of selectable tiles grouped by category.
+             This replaces the native <select> which wrapped text on long
+             service names like "Serenity Bump Package — Rp 115.000" and
+             made the reservation form hard to use on phones. The picker
+             shows every service as a tappable tile with name + price on
+             one line, and a check mark when selected. -->
+        <div class="svc-picker" id="svcPicker" style="display:none;">
+          <div class="svc-picker-head">
+            <strong>Pilih Layanan</strong>
+            <button type="button" class="svc-picker-close" onclick="closeSvcPicker()" aria-label="Tutup">×</button>
+          </div>
+          <div id="svcPickerBody"></div>
+        </div>
+
         <!-- SLOTS: multi-date/time -->
         <div class="cart-section">
           <h4>📅 Jadwal <small style="color:var(--text-soft);font-weight:500;">— tambah berapapun tanggal & jam yang dibutuhkan</small></h4>
@@ -182,9 +196,18 @@ async function bootstrap() {
   const today = new Date().toISOString().slice(0, 10);
   slots.push({ date: today, time: '09:00' });
   renderCart(); renderSlots(); updateSummary();
+  // If the first cart row is still empty (no pre-service from URL),
+  // open the service picker right away so the patient sees the
+  // available categories immediately rather than a "Pilih layanan"
+  // placeholder that's easy to miss.
+  if (!cart[0].name) {
+    setTimeout(() => openSvcPicker(0), 200);
+  }
 }
 
 function svcOptions(selected) {
+  // Native <select> kept as a hidden fallback for screen readers and
+  // for cases where the picker grid can't render (no SERVICES yet).
   let html = `<option value="">— pilih layanan —</option>`;
   SERVICES.forEach(c => {
     html += `<optgroup label="${c.cat}">`;
@@ -196,22 +219,97 @@ function svcOptions(selected) {
   return html;
 }
 
+// Render the cart rows. Each row is now a compact horizontal card
+// showing the picked service name + price + qty controls, plus a
+// "Ganti" button that opens the picker grid. This is dramatically
+// easier to scan than a native <select> dropdown on a phone.
 function renderCart() {
   const el = document.getElementById('cartItems');
   el.innerHTML = '';
   cart.forEach((it, i) => {
     const row = document.createElement('div');
     row.className = 'cart-row';
+    // Show a "Ganti" button only after at least one service is picked
+    // so the user can swap without deleting the whole row.
+    const picked = !!(it.name && it.price > 0);
     row.innerHTML = `
-      <select onchange="cart[${i}].name=this.value;cart[${i}].price=parseInt(this.options[this.selectedIndex].dataset.price)||0;updateSummary();">${svcOptions(it.name)}</select>
-      <input type="number" placeholder="Harga" value="${it.price || ''}" min="0" readonly aria-label="Harga layanan">
-      <input type="number" placeholder="Qty" value="${it.qty}" min="1" max="20" oninput="cart[${i}].qty=parseInt(this.value)||1;updateSummary();">
-      <button type="button" class="rm-btn" onclick="cart.splice(${i},1);renderCart();updateSummary();">×</button>
+      <div class="cart-pick" data-idx="${i}">
+        ${picked ? `
+          <div class="cart-pick-info">
+            <div class="cart-pick-name" title="${escHtml(it.name)}">${escHtml(it.name)}</div>
+            <div class="cart-pick-price">Rp ${(it.price || 0).toLocaleString('id-ID')} <span class="cart-pick-x">/layanan</span></div>
+          </div>
+          <button type="button" class="cart-pick-change" onclick="openSvcPicker(${i})" aria-label="Ganti layanan">Ganti</button>
+        ` : `
+          <button type="button" class="cart-pick-empty" onclick="openSvcPicker(${i})">
+            <span class="cart-pick-empty-icon">＋</span>
+            <span>Pilih layanan</span>
+          </button>
+        `}
+      </div>
+      <input type="number" class="cart-qty" value="${it.qty}" min="1" max="20" oninput="cart[${i}].qty=parseInt(this.value)||1;updateSummary();" aria-label="Jumlah qty">
+      <button type="button" class="rm-btn" onclick="cart.splice(${i},1);renderCart();updateSummary();" aria-label="Hapus baris">×</button>
     `;
     el.appendChild(row);
   });
 }
-function addCartItem() { cart.push({ name: '', price: 0, qty: 1 }); renderCart(); updateSummary(); }
+
+function escHtml(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+// Open the picker modal for the given cart index. The modal renders
+// every service grouped by category as a tappable tile; tapping a
+// tile writes name + price into the cart row at the given index.
+let _pickerTargetIdx = -1;
+function openSvcPicker(idx) {
+  _pickerTargetIdx = idx;
+  const body = document.getElementById('svcPickerBody');
+  body.innerHTML = SERVICES.map((c) => {
+    const itemsHtml = c.items.map((it) => {
+      return `<button type="button" class="svc-tile" data-name="${escHtml(it.name)}" data-price="${it.price}">
+        <span class="svc-tile-name">${escHtml(it.name)}</span>
+        <span class="svc-tile-price">Rp ${it.price.toLocaleString('id-ID')}</span>
+      </button>`;
+    }).join('');
+    return `<div class="svc-cat">
+      <div class="svc-cat-head">${escHtml(c.cat)}</div>
+      <div class="svc-cat-grid">${itemsHtml}</div>
+    </div>`;
+  }).join('');
+  // Wire up click handlers
+  body.querySelectorAll('.svc-tile').forEach((btn) => {
+    btn.onclick = () => {
+      const name = btn.dataset.name;
+      const price = parseInt(btn.dataset.price) || 0;
+      if (_pickerTargetIdx < 0 || _pickerTargetIdx >= cart.length) return;
+      cart[_pickerTargetIdx].name = name;
+      cart[_pickerTargetIdx].price = price;
+      cart[_pickerTargetIdx].qty = cart[_pickerTargetIdx].qty || 1;
+      closeSvcPicker();
+      renderCart();
+      updateSummary();
+    };
+  });
+  const picker = document.getElementById('svcPicker');
+  picker.style.display = 'block';
+  picker.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function closeSvcPicker() {
+  const picker = document.getElementById('svcPicker');
+  if (picker) picker.style.display = 'none';
+  _pickerTargetIdx = -1;
+}
+
+function addCartItem() {
+  cart.push({ name: '', price: 0, qty: 1 });
+  renderCart();
+  updateSummary();
+  // Auto-open picker for the new empty row so the patient can pick a
+  // service immediately. Saves one tap and reduces "blank row" confusion.
+  setTimeout(() => openSvcPicker(cart.length - 1), 50);
+}
 
 function renderSlots() {
   const el = document.getElementById('slotsList');
