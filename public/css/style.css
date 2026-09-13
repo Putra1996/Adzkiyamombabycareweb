@@ -682,256 +682,35 @@ footer { padding: 40px 24px; background: var(--card); border-top: 1px solid var(
   .invoice table th { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 }
 
+/* ---------- CART (Reservation) ---------- */
+.cart-section { background: var(--pink-50); padding: 20px; border-radius: var(--radius); border: 1px dashed var(--pink-200); margin-bottom: 18px; }
+.cart-section h4 { color: var(--primary); margin-bottom: 12px; font-size: 1rem; }
+.cart-row { display: grid; grid-template-columns: 1fr 110px 80px 36px; gap: 8px; margin-bottom: 8px; align-items: center; }
+/* Keep the service <select> compact and the option text on a single
+   line so long names like "Serenity Bump Package — Rp 115.000" no
+   longer wrap to two rows when the user opens the dropdown on a
+   phone. Native <select> dropdowns use each option's text as-is, so
+   `white-space: nowrap` here prevents wrap inside the closed control
+   while the option list itself still scrolls natively when opened. */
+.cart-row select { white-space: nowrap; text-overflow: ellipsis; }
+.cart-row select option { white-space: nowrap; }
+.cart-row select, .cart-row input { padding: 10px 12px; border: 1.5px solid var(--border); border-radius: 10px; background: var(--card); color: var(--text); font-family: inherit; font-size: 0.9rem; }
+.cart-row .rm-btn { background: #fde0e4; color: #c43050; border: none; border-radius: 8px; font-size: 1rem; cursor: pointer; height: 40px; }
+.slot-row { display: grid; grid-template-columns: 1fr 130px 36px; gap: 8px; margin-bottom: 8px; align-items: center; }
+.slot-row input { padding: 10px 12px; border: 1.5px solid var(--border); border-radius: 10px; background: var(--card); color: var(--text); font-family: inherit; font-size: 0.9rem; }
+.add-btn { background: var(--pink-100); color: var(--primary); border: 1.5px dashed var(--pink-300); padding: 10px 16px; border-radius: 10px; font-weight: 700; cursor: pointer; font-size: 0.88rem; width: 100%; margin-top: 4px; transition: all 0.15s; }
+.add-btn:hover { background: var(--pink-200); border-style: solid; }
+@media (max-width: 540px), (hover: none) and (pointer: coarse) and (max-width: 1024px) {
+  .cart-row { grid-template-columns: 1fr 90px 60px 32px; }
+  .slot-row { grid-template-columns: 1fr 110px 32px; }
+}
+
 /* ---------- UTIL ---------- */
 .text-center { text-align: center; }
 .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 200; padding: 20px; }
 .modal { background: var(--card); padding: 30px; border-radius: var(--radius); max-width: 600px; width: 100%; max-height: 90vh; overflow-y: auto; }
 .modal h3 { margin-bottom: 16px; }
 .tag { display: inline-block; padding: 3px 10px; background: var(--pink-100); color: var(--primary); border-radius: 999px; font-size: 0.78rem; font-weight: 600; margin: 2px; }
-
-/* ---------- CART (Reservation) ---------- */
-.cart-section { background: var(--pink-50); padding: 20px; border-radius: var(--radius); border: 1px dashed var(--pink-200); margin-bottom: 18px; }
-.cart-section h4 { color: var(--primary); margin-bottom: 12px; font-size: 1rem; }
-.cart-row {
-  display: grid;
-  /* Compact 3-col layout: pick-info (1fr) | qty (auto) | remove (auto).
-     No more "Rp 115.000" wrapping to a second line because the picker
-     tiles show name+price on one row. */
-  grid-template-columns: 1fr 72px 36px;
-  gap: 8px;
-  margin-bottom: 8px;
-  align-items: stretch;
-}
-.cart-row .cart-pick {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-  padding: 8px 10px;
-  background: var(--card);
-  border: 1.5px solid var(--border);
-  border-radius: 10px;
-  font-size: 0.9rem;
-  overflow: hidden;
-}
-.cart-row .cart-pick-info {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-.cart-row .cart-pick-name {
-  font-weight: 700;
-  color: var(--text);
-  /* Keep long names like "Serenity Bump Package" on one line so the
-     row stays compact. Full name shown on tap (title attr). */
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  font-size: 0.92rem;
-}
-.cart-row .cart-pick-price {
-  color: var(--primary);
-  font-weight: 800;
-  font-size: 0.86rem;
-  white-space: nowrap;
-}
-.cart-row .cart-pick-x {
-  color: var(--text-soft);
-  font-weight: 500;
-  font-size: 0.74rem;
-}
-.cart-row .cart-pick-change {
-  background: var(--pink-100);
-  color: var(--primary);
-  border: none;
-  border-radius: 8px;
-  padding: 6px 10px;
-  font-weight: 700;
-  font-size: 0.78rem;
-  cursor: pointer;
-  white-space: nowrap;
-  flex-shrink: 0;
-  font-family: inherit;
-}
-.cart-row .cart-pick-change:hover { background: var(--pink-200); }
-.cart-row .cart-pick-empty {
-  width: 100%;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  background: transparent;
-  border: 1.5px dashed var(--pink-200);
-  border-radius: 10px;
-  padding: 10px 12px;
-  color: var(--text-soft);
-  font-weight: 600;
-  cursor: pointer;
-  font-size: 0.9rem;
-  font-family: inherit;
-}
-.cart-row .cart-pick-empty:hover { background: var(--card); border-color: var(--primary); color: var(--primary); }
-.cart-row .cart-pick-empty-icon {
-  width: 24px; height: 24px;
-  background: var(--pink-100);
-  color: var(--primary);
-  border-radius: 50%;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-weight: 800;
-  font-size: 1rem;
-  line-height: 1;
-  flex-shrink: 0;
-}
-.cart-row .cart-qty {
-  padding: 8px 10px;
-  border: 1.5px solid var(--border);
-  border-radius: 10px;
-  background: var(--card);
-  color: var(--text);
-  font-family: inherit;
-  font-size: 0.95rem;
-  text-align: center;
-  min-width: 0;
-  /* hide spinner arrows on touch devices — they eat space */
-  -moz-appearance: textfield;
-}
-.cart-row .cart-qty::-webkit-outer-spin-button,
-.cart-row .cart-qty::-webkit-inner-spin-button {
-  -webkit-appearance: none;
-  margin: 0;
-}
-.cart-row select, .cart-row input { padding: 10px 12px; border: 1.5px solid var(--border); border-radius: 10px; background: var(--card); color: var(--text); font-family: inherit; font-size: 0.9rem; }
-.cart-row .rm-btn {
-  background: #fde0e4;
-  color: #c43050;
-  border: none;
-  border-radius: 8px;
-  font-size: 1.05rem;
-  cursor: pointer;
-  font-weight: 700;
-  font-family: inherit;
-  line-height: 1;
-}
-.slot-row { display: grid; grid-template-columns: 1fr 130px 36px; gap: 8px; margin-bottom: 8px; align-items: center; }
-.slot-row input { padding: 10px 12px; border: 1.5px solid var(--border); border-radius: 10px; background: var(--card); color: var(--text); font-family: inherit; font-size: 0.9rem; }
-.add-btn { background: var(--pink-100); color: var(--primary); border: 1.5px dashed var(--pink-300); padding: 10px 16px; border-radius: 10px; font-weight: 700; cursor: pointer; font-size: 0.88rem; width: 100%; margin-top: 4px; transition: all 0.15s; }
-.add-btn:hover { background: var(--pink-200); border-style: solid; }
-@media (max-width: 540px), (hover: none) and (pointer: coarse) and (max-width: 1024px) {
-  .cart-row { grid-template-columns: 1fr 64px 32px; gap: 6px; }
-  .cart-row .cart-pick { padding: 7px 8px; gap: 6px; }
-  .cart-row .cart-pick-name { font-size: 0.86rem; }
-  .cart-row .cart-pick-price { font-size: 0.8rem; }
-  .cart-row .cart-pick-change { padding: 5px 8px; font-size: 0.74rem; }
-  .cart-row .cart-qty { padding: 7px 6px; font-size: 0.88rem; }
-  .slot-row { grid-template-columns: 1fr 110px 32px; }
-}
-
-/* ---------- Service picker modal (used inside reservation form) ----------
-   The reservation form used to render every service as a <select>
-   option, but the native dropdown wrapped long names to two lines and
-   put the price on a separate line, making it hard to scan on phones.
-   This block styles a category-grouped grid of tappable tiles instead.
-   Each tile shows the service name + price on one row; tapping it
-   writes the chosen service back into the cart row that opened the
-   picker. */
-.svc-picker {
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: 14px;
-  padding: 14px;
-  margin-bottom: 14px;
-  box-shadow: var(--shadow);
-}
-.svc-picker-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 12px;
-  padding-bottom: 10px;
-  border-bottom: 1px dashed var(--border);
-  color: var(--primary);
-  font-weight: 800;
-  font-size: 1rem;
-}
-.svc-picker-close {
-  background: transparent;
-  border: none;
-  color: var(--text-soft);
-  font-size: 1.6rem;
-  line-height: 1;
-  width: 32px;
-  height: 32px;
-  border-radius: 50%;
-  cursor: pointer;
-  font-family: inherit;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-.svc-picker-close:hover { background: var(--pink-50); color: var(--primary); }
-.svc-cat { margin-bottom: 14px; }
-.svc-cat:last-child { margin-bottom: 0; }
-.svc-cat-head {
-  font-size: 0.78rem;
-  font-weight: 800;
-  color: var(--primary);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  margin-bottom: 8px;
-  padding-left: 4px;
-  display: inline-block;
-  background: var(--pink-50);
-  padding: 4px 10px;
-  border-radius: 999px;
-}
-.svc-cat-grid {
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 6px;
-}
-.svc-tile {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  width: 100%;
-  background: var(--bg);
-  border: 1.5px solid var(--border);
-  border-radius: 10px;
-  padding: 10px 12px;
-  cursor: pointer;
-  font-family: inherit;
-  text-align: left;
-  transition: all 0.15s;
-}
-.svc-tile:hover {
-  border-color: var(--primary);
-  background: var(--pink-50);
-}
-.svc-tile:active {
-  transform: scale(0.98);
-  background: var(--pink-100);
-}
-.svc-tile-name {
-  flex: 1;
-  min-width: 0;
-  font-weight: 600;
-  font-size: 0.92rem;
-  color: var(--text);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.svc-tile-price {
-  flex-shrink: 0;
-  font-weight: 800;
-  color: var(--primary);
-  font-size: 0.92rem;
-  white-space: nowrap;
-}
 
 /* ---------- ADMIN SETTINGS ---------- */
 .settings-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
