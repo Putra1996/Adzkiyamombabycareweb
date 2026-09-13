@@ -122,7 +122,24 @@ button, input, select, textarea {
   .section-head { margin-bottom: 30px; }
   .section-head h2 { font-size: 1.4rem; }
   .form-wrap { padding: 20px 16px; }
-  .cart-row { grid-template-columns: 1fr 90px 60px 32px !important; gap: 6px !important; }
+  /* Stack cart-row vertically on phones so the service <select>
+     doesn't get squashed to ~40px by the 90/60/32px fixed columns.
+     Each row gets its own line so the service name stays readable. */
+  .cart-row {
+    display: grid !important;
+    grid-template-columns: 1fr auto auto !important;
+    grid-template-areas: "select select select" "harga harga remove" "qty qty remove" !important;
+    gap: 8px !important;
+    padding: 10px !important;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    align-items: center !important;
+  }
+  .cart-row select { grid-area: select; min-width: 0; max-width: 100%; }
+  .cart-row .cart-price { grid-area: harga; min-width: 0; }
+  .cart-row .rm-btn { grid-area: remove; }
+  .cart-row input.cart-qty-mobile { grid-area: qty; }
   .slot-row { grid-template-columns: 1fr 110px 32px !important; gap: 6px !important; }
   .cart-row input, .cart-row select, .slot-row input { padding: 8px !important; font-size: 0.85rem !important; }
   .modal { padding: 20px 16px; max-height: 95vh; }
@@ -685,7 +702,7 @@ footer { padding: 40px 24px; background: var(--card); border-top: 1px solid var(
 /* ---------- CART (Reservation) ---------- */
 .cart-section { background: var(--pink-50); padding: 20px; border-radius: var(--radius); border: 1px dashed var(--pink-200); margin-bottom: 18px; }
 .cart-section h4 { color: var(--primary); margin-bottom: 12px; font-size: 1rem; }
-.cart-row { display: grid; grid-template-columns: 1fr 110px 80px 36px; gap: 8px; margin-bottom: 8px; align-items: center; }
+.cart-row { display: grid; grid-template-columns: 1fr 130px 80px 36px; gap: 8px; margin-bottom: 8px; align-items: center; }
 /* Keep the service <select> compact and the option text on a single
    line so long names like "Serenity Bump Package — Rp 115.000" no
    longer wrap to two rows when the user opens the dropdown on a
@@ -693,18 +710,23 @@ footer { padding: 40px 24px; background: var(--card); border-top: 1px solid var(
    `white-space: nowrap` here prevents wrap inside the closed control
    while the option list itself still scrolls natively when opened. */
 .cart-row select {
-  /* Allow long service names to wrap to 2 lines instead of being cut
-     off by the native select arrow on phones. Hide ellipsis truncation
-     so the full name stays readable after selection. */
+  /* Service <select>: don't aggressively break-word — let it wrap to
+     at most 2 lines normally, but allow the long selected option text
+     (e.g. "Adzkiya Glow Package — Rp 135.000") to wrap inside the
+     closed control without going character-by-character. The native
+     dropdown arrow gets its own padding column. */
   white-space: normal;
-  word-break: break-word;
-  padding-right: 28px; /* space for native arrow */
-  /* Native select arrow color */
+  overflow-wrap: anywhere;
+  line-height: 1.3;
+  padding: 10px 32px 10px 12px;
+  min-height: 42px;
+  /* Custom soft arrow replaces the native one (which on Android Chrome
+     sits inside the same row as the text and visually overlaps it). */
   appearance: none;
   -webkit-appearance: none;
   background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3e%3cpath d='M1 1l4 4 4-4' stroke='%238b6878' stroke-width='1.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3e%3c/svg%3e");
   background-repeat: no-repeat;
-  background-position: right 10px center;
+  background-position: right 12px center;
   background-size: 10px 6px;
 }
 /* Category divider rows inside the service <select>. Disabled so they
@@ -721,6 +743,27 @@ footer { padding: 40px 24px; background: var(--card); border-top: 1px solid var(
 }
 .cart-row select option { white-space: nowrap; }
 .cart-row select, .cart-row input { padding: 10px 12px; border: 1.5px solid var(--border); border-radius: 10px; background: var(--card); color: var(--text); font-family: inherit; font-size: 0.9rem; }
+/* Price readout — replaces the readonly <input> for service price.
+   Matches the visual size of the input fields next to it so the row
+   stays in one consistent line at desktop widths, and stacks cleanly
+   on mobile via the grid-area rule below. */
+.cart-row .cart-price {
+  padding: 10px 12px;
+  border: 1.5px solid var(--border);
+  border-radius: 10px;
+  background: var(--pink-50);
+  color: var(--primary);
+  font-family: inherit;
+  font-size: 0.9rem;
+  font-weight: 800;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  min-height: 40px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .cart-row .rm-btn { background: #fde0e4; color: #c43050; border: none; border-radius: 8px; font-size: 1rem; cursor: pointer; height: 40px; }
 .slot-row { display: grid; grid-template-columns: 1fr 130px 36px; gap: 8px; margin-bottom: 8px; align-items: center; }
 .slot-row input { padding: 10px 12px; border: 1.5px solid var(--border); border-radius: 10px; background: var(--card); color: var(--text); font-family: inherit; font-size: 0.9rem; }

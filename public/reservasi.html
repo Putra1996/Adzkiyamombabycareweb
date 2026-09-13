@@ -213,9 +213,9 @@ function renderCart() {
     const row = document.createElement('div');
     row.className = 'cart-row';
     row.innerHTML = `
-      <select onchange="cart[${i}].name=this.value;cart[${i}].price=parseInt(this.options[this.selectedIndex].dataset.price)||0;updateSummary();">${svcOptions(it.name)}</select>
-      <input type="number" placeholder="Harga" value="${it.price || ''}" min="0" readonly aria-label="Harga layanan">
-      <input type="number" placeholder="Qty" value="${it.qty}" min="1" max="20" oninput="cart[${i}].qty=parseInt(this.value)||1;updateSummary();">
+      <select onchange="cart[${i}].name=this.value;cart[${i}].price=parseInt(this.options[this.selectedIndex].dataset.price)||0;updateSummary();renderCart();" aria-label="Pilih layanan">${svcOptions(it.name)}</select>
+      <div class="cart-price" aria-label="Harga layanan">${it.price ? 'Rp ' + it.price.toLocaleString('id-ID') : '—'}</div>
+      <input type="number" class="cart-qty-mobile" placeholder="Qty" value="${it.qty}" min="1" max="20" oninput="cart[${i}].qty=parseInt(this.value)||1;updateSummary();" aria-label="Jumlah qty">
       <button type="button" class="rm-btn" onclick="cart.splice(${i},1);renderCart();updateSummary();">×</button>
     `;
     el.appendChild(row);
