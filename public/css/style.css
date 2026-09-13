@@ -472,11 +472,14 @@ footer { padding: 40px 24px; background: var(--card); border-top: 1px solid var(
    the real touch input and trigger the mobile layout anyway. */
 @media (max-width: 720px), (hover: none) and (pointer: coarse) and (max-width: 1024px) {
   body[data-table-mode="cards"] .data-table-wrap { display: none !important; }
-  body[data-table-mode="cards"] .card-list { display: block; }
+  body[data-table-mode="cards"] .card-list { display: block !important; }
 }
-@media (min-width: 721px) {
-  /* On desktop always show the table, hide the duplicate card
-     list — even if the JS forgot to set data-table-mode. */
+/* On real desktop (mouse + viewport >= 1025px), always show the
+   table and hide the duplicate card list. The (hover: hover) +
+   (pointer: fine) checks exclude touch devices (phones in Chrome
+   desktop mode still report 980px viewport but should NOT be
+   treated as desktop). */
+@media (min-width: 1025px), (hover: hover) and (pointer: fine) and (min-width: 721px) {
   body[data-table-mode="cards"] .card-list { display: none !important; }
 }
 
@@ -588,6 +591,59 @@ footer { padding: 40px 24px; background: var(--card); border-top: 1px solid var(
   .admin-sidebar nav { flex-direction: row; flex-wrap: wrap; }
   .admin-main { padding: 20px; }
   .table-scroll { overflow-x: auto; }
+}
+
+/* Touch-device override for "Situs desktop" mode (Chrome on phone).
+   The block above collapses the admin sidebar to a horizontal nav.
+   On truly narrow phones (≤540px) the nav wraps into 3 columns of
+   small buttons — fine for a 360px screen. But when the user has
+   Chrome's desktop toggle enabled, the inflated viewport (980px)
+   has plenty of horizontal space, so the cramped 3-col wrap looks
+   ugly. Here we override the nav to use a single horizontal-scrolling
+   row with normal-sized buttons. Same idea for the bottom theme/
+   logout row: don't `flex:1` the round theme-toggle or it stretches
+   into an oval. */
+@media (hover: none) and (pointer: coarse) and (min-width: 541px) and (max-width: 1024px) {
+  .admin-sidebar .brand { margin-bottom: 14px !important; padding: 0 4px !important; text-align: left !important; }
+  .admin-sidebar nav {
+    flex-wrap: nowrap !important;
+    overflow-x: auto !important;
+    -webkit-overflow-scrolling: touch !important;
+    gap: 4px !important;
+    padding-bottom: 4px !important;
+  }
+  .admin-sidebar nav button {
+    flex: 0 0 auto !important;
+    min-width: 130px !important;
+    padding: 9px 14px !important;
+    font-size: 0.85rem !important;
+    gap: 6px !important;
+    justify-content: flex-start !important;
+    text-align: left !important;
+    white-space: nowrap !important;
+  }
+  /* Bottom row: theme-toggle stays round (no flex:1), logout stretches. */
+  .admin-sidebar > div:last-child button.theme-toggle {
+    flex: 0 0 38px !important;
+    width: 38px !important;
+    min-width: 38px !important;
+    height: 38px !important;
+  }
+  .admin-sidebar > div:last-child button.btn-sm {
+    flex: 1 !important;
+  }
+  /* On 980px viewports there's enough horizontal space to keep
+     these 2-column grids as 2 columns — no need to stack them like
+     on a tiny phone. Force the desktop layout back on touch devices
+     that happen to be at inflated viewport widths. */
+  #kwGrid { grid-template-columns: 1fr 1fr !important; }
+  #recapCols { grid-template-columns: 1fr 1fr !important; }
+  #bkGrid { grid-template-columns: 1fr 1fr !important; }
+  #notifInner { grid-template-columns: 1fr 1fr !important; }
+  .settings-grid { grid-template-columns: 1fr 1fr !important; }
+  .charts-grid { grid-template-columns: 2fr 1fr !important; }
+  /* Hero stays stacked though — even 980px is too narrow for the
+     side-by-side hero layout when the user is on a phone. */
 }
 
 /* ---------- INVOICE / KWITANSI ---------- */
