@@ -185,13 +185,23 @@ async function bootstrap() {
 }
 
 function svcOptions(selected) {
-  let html = `<option value="">— pilih layanan —</option>`;
-  SERVICES.forEach(c => {
-    html += `<optgroup label="${c.cat}">`;
+  // Build a single flat <select> with category headers as disabled
+  // "divider" options. Native <select> on Android Chrome ignores custom
+  // styles inside <optgroup>, but it DOES render disabled options as
+  // bold grey rows that visually separate categories — much clearer
+  // than the default optgroup label, especially on phones.
+  let html = `<option value="" disabled selected hidden>— pilih layanan —</option>`;
+  SERVICES.forEach((c, ci) => {
+    // Category header row (disabled so it can't be selected)
+    html += `<option value="" disabled class="svc-cat-divider">━━ ${c.cat.toUpperCase()} ━━</option>`;
     c.items.forEach(it => {
-      html += `<option value="${it.name}" data-price="${it.price}" ${selected===it.name?'selected':''}>${it.name} — Rp ${it.price.toLocaleString('id-ID')}</option>`;
+      const priceStr = 'Rp ' + it.price.toLocaleString('id-ID');
+      // Pad the service name so the prices line up in a column when
+      // the dropdown is open. The actual alignment is approximated by
+      // padding the price to a fixed column width so longer service
+      // names still show their price on the same visual line.
+      html += `<option value="${it.name}" data-price="${it.price}" data-cat="${c.cat}" ${selected===it.name?'selected':''}>${it.name}  —  ${priceStr}</option>`;
     });
-    html += `</optgroup>`;
   });
   return html;
 }

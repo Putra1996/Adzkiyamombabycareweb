@@ -651,11 +651,7 @@ async function renderReceipts() {
           <h4 style="margin-bottom:10px;">Layanan</h4>
           <div id="kw_items"></div>
           <button onclick="addReceiptItem()" class="btn-sm btn-pay" style="margin-top:8px;">+ Tambah Layanan</button>
-          <div class="form-row" style="margin-top:16px;">
-            <div class="form-group"><label>Fee Transportasi</label><input type="number" id="kw_transport" value="0"></div>
-            <div class="form-group"><label>Diskon</label><input type="number" id="kw_discount" value="0"></div>
-          </div>
-          <div class="summary-card" id="kw_summary">
+          <div class="summary-card" id="kw_summary" style="margin-top:14px;">
             <div class="row"><span>Subtotal:</span><span id="kw_sub">Rp 0</span></div>
             <div class="row total"><span>Total:</span><span id="kw_total">Rp 0</span></div>
           </div>
@@ -743,7 +739,6 @@ function rebuildReceiptItems() {
     });
     wrap.appendChild(div);
   });
-  ['#kw_transport', '#kw_discount'].forEach(s => { const el = document.querySelector(s); if (el) el.oninput = updateReceiptTotal; });
   updateReceiptTotal();
 }
 
@@ -756,10 +751,9 @@ function onReceiptServiceChange(idx, sel) {
 }
 
 function updateReceiptTotal() {
+  // Subtotal = total (fee_transportasi & diskon dihapus dari form).
   const sub = receiptItems.reduce((s, it) => s + (it.price * it.qty), 0);
-  const trans = parseInt(document.getElementById('kw_transport')?.value) || 0;
-  const disc = parseInt(document.getElementById('kw_discount')?.value) || 0;
-  const total = sub + trans - disc;
+  const total = sub;
   if (document.getElementById('kw_sub')) document.getElementById('kw_sub').textContent = fmtRp(sub);
   if (document.getElementById('kw_total')) document.getElementById('kw_total').textContent = fmtRp(total);
 }
@@ -992,9 +986,7 @@ async function saveReceipt() {
     address: document.getElementById('kw_addr').value,
     service_date: allSameDate ? formDate : slots[0].date,
     service_slots: slots,
-    items,
-    transport_fee: parseInt(document.getElementById('kw_transport').value) || 0,
-    discount: parseInt(document.getElementById('kw_discount').value) || 0
+    items
   };
   const res = await api('/api/admin/receipts', { method: 'POST', body: JSON.stringify(body) });
   printReceipt({ ...body, invoice_no: res.invoice_no, subtotal: res.subtotal, total: res.total, created_at: new Date().toISOString() });
@@ -1393,10 +1385,6 @@ function openKwitansiModal() {
       <h4 style="margin-bottom:8px;">Layanan</h4>
       <div id="mkw_items"></div>
       <button type="button" onclick="mkwAddRow()" class="btn-sm btn-pay" style="margin-top:8px;">+ Tambah Layanan</button>
-      <div class="form-row" style="margin-top:14px;">
-        <div class="form-group"><label>Fee Transportasi</label><input type="number" id="mkw_transport" value="0"></div>
-        <div class="form-group"><label>Diskon</label><input type="number" id="mkw_discount" value="0"></div>
-      </div>
       <div class="summary-card" id="mkw_summary" style="margin-top:14px;">
         <div class="row"><span>Subtotal:</span><span id="mkw_sub">Rp 0</span></div>
         <div class="row total"><span>Total:</span><span id="mkw_total">Rp 0</span></div>
@@ -1432,7 +1420,6 @@ function mkwAddRow(item) {
     el.style.cssText = (el.style.cssText || '') + ';padding:8px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-family:inherit;font-size:0.88rem;';
   });
   wrap.appendChild(div);
-  ['#mkw_transport', '#mkw_discount'].forEach(s => { const el = document.querySelector(s); if (el) el.oninput = mkwUpdateTotal; });
   mkwUpdateTotal();
 }
 
@@ -1454,10 +1441,9 @@ function mkwOnServiceChange(idx, sel) {
 }
 
 function mkwUpdateTotal() {
+  // Subtotal = total (fee_transportasi & diskon dihapus dari form).
   const sub = receiptItems.reduce((s, it) => s + (it.price * it.qty), 0);
-  const trans = parseInt(document.getElementById('mkw_transport')?.value) || 0;
-  const disc = parseInt(document.getElementById('mkw_discount')?.value) || 0;
-  const total = sub + trans - disc;
+  const total = sub;
   if (document.getElementById('mkw_sub')) document.getElementById('mkw_sub').textContent = fmtRp(sub);
   if (document.getElementById('mkw_total')) document.getElementById('mkw_total').textContent = fmtRp(total);
 }
@@ -1485,9 +1471,7 @@ async function mkwSave() {
     address: document.getElementById('mkw_addr').value,
     service_date: allSameDate ? formDate : slots[0].date,
     service_slots: slots,
-    items,
-    transport_fee: parseInt(document.getElementById('mkw_transport').value) || 0,
-    discount: parseInt(document.getElementById('mkw_discount').value) || 0
+    items
   };
   try {
     const res = await api('/api/admin/receipts', { method: 'POST', body: JSON.stringify(body) });

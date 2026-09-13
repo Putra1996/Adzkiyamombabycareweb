@@ -692,7 +692,33 @@ footer { padding: 40px 24px; background: var(--card); border-top: 1px solid var(
    phone. Native <select> dropdowns use each option's text as-is, so
    `white-space: nowrap` here prevents wrap inside the closed control
    while the option list itself still scrolls natively when opened. */
-.cart-row select { white-space: nowrap; text-overflow: ellipsis; }
+.cart-row select {
+  /* Allow long service names to wrap to 2 lines instead of being cut
+     off by the native select arrow on phones. Hide ellipsis truncation
+     so the full name stays readable after selection. */
+  white-space: normal;
+  word-break: break-word;
+  padding-right: 28px; /* space for native arrow */
+  /* Native select arrow color */
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3e%3cpath d='M1 1l4 4 4-4' stroke='%238b6878' stroke-width='1.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3e%3c/svg%3e");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  background-size: 10px 6px;
+}
+/* Category divider rows inside the service <select>. Disabled so they
+   can't be picked, but they render as bold coloured rows that visually
+   separate one category from the next — much clearer than the default
+   <optgroup label> rendering on Android Chrome. */
+.cart-row select option.svc-cat-divider {
+  font-weight: 800;
+  color: var(--primary);
+  background: var(--pink-50);
+  letter-spacing: 0.5px;
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
 .cart-row select option { white-space: nowrap; }
 .cart-row select, .cart-row input { padding: 10px 12px; border: 1.5px solid var(--border); border-radius: 10px; background: var(--card); color: var(--text); font-family: inherit; font-size: 0.9rem; }
 .cart-row .rm-btn { background: #fde0e4; color: #c43050; border: none; border-radius: 8px; font-size: 1rem; cursor: pointer; height: 40px; }
