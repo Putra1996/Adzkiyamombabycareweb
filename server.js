@@ -2297,6 +2297,83 @@ app.post('/api/admin/restore', auth, restoreJsonParser, (req, res) => {
   }
 });
 
+// ===== ADMIN — PROFILE (email & password update) =====
+// Update the currently logged-in admin's email and/or password. Requires
+// the current password as confirmation (defense against an attacker who
+// got a hold of an open browser session). All fields are optional —
+// callers can update email only, password only, or both.
+app.put('/api/admin/profile', auth, (req, res) => {
+  try {
+    const { email, current_password, new_password } = req.body || {};
+    const admin = DB.admins.find((a) => a.id === req.user.id);
+    if (!admin) return res.status(404).json({ error: 'Akun admin tidak ditemukan' });
+
+    // Validate current password unless we're in a recovery flow
+    // (recovery handled separately by setting RESET_ADMIN_PASSWORD env
+    // and restarting the service — see seedAdmin above). For the
+    // everyday case, requiring the current password keeps the flow
+    // safe.
+    const wantsChange = !!(email || new_password);
+    if (!wantsChange) return res.status(400).json({ error: 'Tidak ada perubahan yang diminta' });
+
+    if (!current_password || !bcrypt.compareSync(String(current_password), admin.password_hash)) {
+      return res.status(401).json({ error: 'Password saat ini salah' });
+    }
+
+    const updates = {};
+
+    // Email change — must be unique, must look like an email.
+    if (email && typeof email === 'string') {
+      const trimmed = email.trim().toLowerCase();
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)) {
+        return res.status(400).json({ error: 'Format email tidak valid' });
+      }
+      const dup = DB.admins.find((a) => a.id !== admin.id && a.email.toLowerCase() === trimmed);
+      if (dup) return res.status(409).json({ error: 'Email sudah dipakai admin lain' });
+      if (trimmed !== admin.email) {
+        updates.email = trimmed;
+      }
+    }
+
+    // Password change — require 8+ chars (admin password is the gate
+    // to patient data; we want a reasonable minimum without being
+    // annoying). Reject if new_password equals current.
+    if (new_password && typeof new_password === 'string') {
+      if (new_password.length < 8) {
+        return res.status(400).json({ error: 'Password baru minimal 8 karakter' });
+      }
+      if (bcrypt.compareSync(new_password, admin.password_hash)) {
+        return res.status(400).json({ error: 'Password baru tidak boleh sama dengan yang lama' });
+      }
+      updates.password_hash = bcrypt.hashSync(new_password, 12);
+      updates.password_changed_at = new Date().toISOString();
+    }
+
+    if (!Object.keys(updates).length) {
+      return res.json({ ok: true, user: admin, changed: false });
+    }
+
+    Object.assign(admin, updates);
+    save();
+
+    // Return the updated admin record so the client can refresh its
+    // local copy. After an email change, the user must log in again
+    // with the new email — we surface this in the response so the
+    // frontend can show a "please log in again" toast if needed.
+    res.json({
+      ok: true,
+      changed: true,
+      email_changed: !!updates.email,
+      password_changed: !!updates.password_hash,
+      user: { id: admin.id, email: admin.email, name: admin.name, role: admin.role },
+      requires_relogin: !!updates.email
+    });
+  } catch (e) {
+    console.error('profile update error:', e);
+    res.status(500).json({ error: 'Gagal update profil: ' + e.message });
+  }
+});
+
 app.get('/admin', (req, res) => res.sendFile(path.join(__dirname, 'public', 'admin.html')));
 
 app.use((error, req, res, next) => {

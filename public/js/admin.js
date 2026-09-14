@@ -2177,10 +2177,34 @@ async function renderSettings() {
 
       <div class="setting-card">
         <h3>🔐 Profil Admin</h3>
-        <div class="form-group"><label>Nama</label><input type="text" value="${esc(USER?.name||'')}" disabled></div>
-        <div class="form-group"><label>Email</label><input type="email" value="${esc(USER?.email||'')}" disabled></div>
-        <div class="form-group"><label>Role</label><input type="text" value="${esc(USER?.role||'')}" disabled></div>
-        <button onclick="logout()" class="btn-sm btn-del" style="padding:10px 20px;margin-top:10px;">🚪 Logout</button>
+        <p style="color:var(--text-soft);font-size:0.85rem;margin-bottom:14px;">
+          Ubah email dan password login admin. Password saat ini wajib diisi untuk konfirmasi.
+        </p>
+        <div id="profileAlert"></div>
+        <div class="form-group">
+          <label>Nama (tidak bisa diubah dari sini)</label>
+          <input type="text" value="${esc(USER?.name||'')}" disabled>
+        </div>
+        <div class="form-group">
+          <label>Email Login</label>
+          <input type="email" id="pf_email" value="${esc(USER?.email||'')}" placeholder="admin@adzkiya.id" autocomplete="email">
+        </div>
+        <div class="form-group">
+          <label>Password Saat Ini <span style="color:var(--danger)">*</span></label>
+          <input type="password" id="pf_current" placeholder="Wajib diisi untuk konfirmasi" autocomplete="current-password">
+        </div>
+        <div class="form-group">
+          <label>Password Baru <small style="color:var(--text-soft);font-weight:500;">— kosongkan jika tidak ingin ganti</small></label>
+          <input type="password" id="pf_new" placeholder="Minimal 8 karakter" autocomplete="new-password" minlength="8">
+        </div>
+        <div class="form-group">
+          <label>Konfirmasi Password Baru</label>
+          <input type="password" id="pf_confirm" placeholder="Ketik ulang password baru" autocomplete="new-password">
+        </div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:6px;">
+          <button type="button" onclick="saveProfile()" class="btn btn-primary" id="pfSaveBtn">💾 Simpan Profil</button>
+          <button type="button" onclick="logout()" class="btn-sm btn-del" style="padding:10px 20px;">🚪 Logout</button>
+        </div>
       </div>
 
       <div class="setting-card">
@@ -2569,6 +2593,77 @@ async function saveAllSettings() {
   await api('/api/admin/settings', { method: 'PUT', body: JSON.stringify(body) });
   alert('✅ Pengaturan disimpan');
   await loadCache();
+}
+
+// Save admin profile (email + password). Validates inputs client-side
+// first so we get instant feedback; the server also re-validates and
+// checks the current password before making any change.
+async function saveProfile() {
+  const alertBox = document.getElementById('profileAlert');
+  const btn = document.getElementById('pfSaveBtn');
+  if (alertBox) alertBox.innerHTML = '';
+
+  const emailEl = document.getElementById('pf_email');
+  const curEl = document.getElementById('pf_current');
+  const newEl = document.getElementById('pf_new');
+  const confEl = document.getElementById('pf_confirm');
+
+  const email = (emailEl?.value || '').trim();
+  const current_password = curEl?.value || '';
+  const new_password = newEl?.value || '';
+  const confirm = confEl?.value || '';
+
+  if (!current_password) {
+    alertBox.innerHTML = '<div class="alert alert-error">❌ Password saat ini wajib diisi untuk konfirmasi.</div>';
+    curEl?.focus();
+    return;
+  }
+  if (new_password && new_password.length < 8) {
+    alertBox.innerHTML = '<div class="alert alert-error">❌ Password baru minimal 8 karakter.</div>';
+    newEl?.focus();
+    return;
+  }
+  if (new_password && new_password !== confirm) {
+    alertBox.innerHTML = '<div class="alert alert-error">❌ Konfirmasi password baru tidak cocok.</div>';
+    confEl?.focus();
+    return;
+  }
+  const emailChanged = email && email.toLowerCase() !== (USER?.email || '').toLowerCase();
+  const passwordChanged = !!new_password;
+  if (!emailChanged && !passwordChanged) {
+    alertBox.innerHTML = '<div class="alert alert-error">❌ Tidak ada perubahan. Edit email atau password baru dulu.</div>';
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = 'Menyimpan...';
+  try {
+    const body = { current_password };
+    if (emailChanged) body.email = email;
+    if (passwordChanged) body.new_password = new_password;
+    const data = await api('/api/admin/profile', { method: 'PUT', body: JSON.stringify(body) });
+
+    if (data.user) {
+      USER = data.user;
+      localStorage.setItem('adm_user', JSON.stringify(USER));
+    }
+
+    if (curEl) curEl.value = '';
+    if (newEl) newEl.value = '';
+    if (confEl) confEl.value = '';
+
+    const lines = [];
+    if (data.email_changed) lines.push('✅ Email diperbarui' + (data.requires_relogin ? ' (silakan login ulang dengan email baru)' : ''));
+    if (data.password_changed) lines.push('✅ Password diperbarui' + (data.requires_relogin ? '' : ' — gunakan password baru untuk login berikutnya'));
+    alertBox.innerHTML = '<div class="alert alert-success">' + lines.join('<br>') + '</div>';
+
+    renderSettings();
+  } catch (e) {
+    alertBox.innerHTML = '<div class="alert alert-error">❌ ' + esc(e.message) + '</div>';
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '💾 Simpan Profil';
+  }
 }
 
 // ---------- MODAL ----------
