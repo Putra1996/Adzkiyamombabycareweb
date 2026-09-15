@@ -9,7 +9,32 @@
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="css/style.css">
 <link rel="icon" href="img/logo.png">
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<!-- Chart.js with multi-CDN fallback. If the first CDN is blocked (some
+     Indonesian mobile ISPs throttle cdn.jsdelivr.net), the admin dashboard
+     still renders data via a simple HTML table fallback in admin.js.
+     We try the primary CDN, then unpkg as a backup; if neither loads
+     within 8s, the dashboard renders plain tables instead of charts. -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"
+        onerror="window.__chartJsFailed = (window.__chartJsFailed || 0) + 1; if (window.__chartJsFailed >= 2) { window.dispatchEvent(new Event('chartjs:unavailable')); }"></script>
+<script>
+  // Try a second CDN if the first fails (8s timeout). Each <script>
+  // gets crossorigin=anonymous so the browser can retry cross-domain
+  // without CORS grief. If BOTH fail, fire 'chartjs:unavailable' so
+  // admin.js can switch the dashboard to its table fallback.
+  (function loadChartWithFallback() {
+    if (window.Chart) return;
+    var s = document.createElement('script');
+    s.src = 'https://unpkg.com/chart.js@4.4.0/dist/chart.umd.min.js';
+    s.async = true;
+    s.crossOrigin = 'anonymous';
+    var done = false;
+    function fallback() { if (!done) { done = true; window.dispatchEvent(new Event('chartjs:unavailable')); } }
+    s.onload = function() { done = true; };
+    s.onerror = function() { fallback(); };
+    document.head.appendChild(s);
+    setTimeout(function() { if (!window.Chart && !done) fallback(); }, 8000);
+  })();
+</script>
 </head>
 <body>
 

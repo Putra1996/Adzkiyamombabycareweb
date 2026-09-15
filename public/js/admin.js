@@ -267,6 +267,14 @@ function renderItemsCompact(items) {
 }
 
 function drawCharts(d) {
+  // Fallback path: if Chart.js failed to load from both CDNs (mobile
+  // networks sometimes block cdn.jsdelivr.net or unpkg), render the
+  // same data as plain HTML tables. Functionally equivalent — every
+  // chart the admin wants to see is still there as tabular data.
+  if (typeof window.Chart !== 'function') {
+    renderChartsAsTables(d);
+    return;
+  }
   const pinkColors = ['#ee5a8a', '#ffb979', '#ffa6bf', '#ffd3a8', '#ee7ea4', '#ff7ea4', '#d63f70', '#ffd6e2'];
   // Omzet by day - line
   CHARTS.day = new Chart(document.getElementById('chOmzetDay'), {
@@ -319,6 +327,70 @@ function drawCharts(d) {
     },
     options: { ...chartOpts({}), indexAxis: 'y', plugins: { legend: { display: false } } }
   });
+}
+
+// Replace any of the canvas-based chart cards that don't have a
+// working chart with a plain HTML table of the same data. Called when
+// Chart.js fails to load from every CDN we tried. Each branch keeps the
+// data shape identical to the chart it replaces — only the visual
+// rendering changes (table instead of canvas).
+function renderChartsAsTables(d) {
+  const omzetDayEl = document.getElementById('chOmzetDay');
+  if (omzetDayEl) {
+    const wrap = omzetDayEl.closest('.chart-card');
+    if (wrap) wrap.innerHTML = '<h3>📈 Omzet 14 Hari Terakhir</h3>' +
+      renderMiniTable([['Tanggal', 'Omzet']].concat(d.omzetByDay.map((x) => [x.date, fmtRp(x.omzet)])));
+  }
+  const statusEl = document.getElementById('chStatus');
+  if (statusEl) {
+    const wrap = statusEl.closest('.chart-card');
+    if (wrap) wrap.innerHTML = '<h3>📊 Status Reservasi</h3>' +
+      renderMiniTable([['Status', 'Jumlah']].concat(Object.entries(d.statusCount || {})));
+  }
+  const monthEl = document.getElementById('chOmzetMonth');
+  if (monthEl) {
+    const wrap = monthEl.closest('.chart-card');
+    if (wrap) wrap.innerHTML = '<h3>💰 Omzet 6 Bulan</h3>' +
+      renderMiniTable([['Bulan', 'Omzet']].concat(d.omzetByMonth.map((x) => [x.month, fmtRp(x.omzet)])));
+  }
+  const payEl = document.getElementById('chPay');
+  if (payEl) {
+    const wrap = payEl.closest('.chart-card');
+    if (wrap) wrap.innerHTML = '<h3>💳 Metode Pembayaran</h3>' +
+      renderMiniTable([['Metode', 'Jumlah']].concat(Object.entries(d.payCount || {})));
+  }
+  const svcEl = document.getElementById('chServices');
+  if (svcEl) {
+    const wrap = svcEl.closest('.chart-card');
+    if (wrap) wrap.innerHTML = '<h3>🏆 Layanan Terpopuler</h3>' +
+      renderMiniTable([['Layanan', 'Booking']].concat(d.topServices.map((x) => [x.name, x.count])));
+  }
+  // Optionally notify the admin that charts are in table mode (so
+  // they understand why they don't look like usual charts).
+  const banner = document.getElementById('chartFallbackBanner');
+  if (!banner) {
+    const b = document.createElement('div');
+    b.id = 'chartFallbackBanner';
+    b.style.cssText = 'background:var(--pink-50);border:1px dashed var(--border);border-radius:10px;padding:10px 14px;margin-bottom:14px;font-size:0.85rem;color:var(--text-soft);';
+    b.textContent = '⚠️ Mode tabel aktif — grafik Chart.js gagal dimuat (CDN diblokir/koneksi lambat). Data tetap lengkap, hanya tampil dalam bentuk tabel.';
+    const header = document.querySelector('.admin-header');
+    if (header && header.parentElement) {
+      header.parentElement.insertBefore(b, header.nextSibling);
+    }
+  }
+}
+
+// Tiny helper used by renderChartsAsTables — return an HTML table
+// from a 2D array of cells.
+function renderMiniTable(rows) {
+  if (!rows.length) return '<p style="color:var(--text-soft);padding:14px;text-align:center;">Tidak ada data.</p>';
+  const headerRow = rows[0];
+  const bodyRows = rows.slice(1);
+  return '<div class="table-scroll" style="margin-top:8px;"><table class="data-table"><thead><tr>' +
+    headerRow.map((h) => '<th>' + h + '</th>').join('') +
+    '</tr></thead><tbody>' +
+    bodyRows.map((r) => '<tr>' + r.map((c) => '<td>' + c + '</td>').join('') + '</tr>').join('') +
+    '</tbody></table></div>';
 }
 function chartOpts(scales) {
   return {
@@ -2712,6 +2784,10 @@ if (API_BASE) {
   const favicon = document.querySelector('link[rel="icon"]');
   if (favicon) favicon.href = apiUrl('/api/logo');
 }
+// If admin.html's Chart.js multi-CDN fallback exhausts every option,
+// flip a global flag so drawCharts() can route to its HTML-table
+// fallback instead of trying to instantiate Chart() in vain.
+window.addEventListener('chartjs:unavailable', () => { window.__chartJsFailed = true; });
 if (TOKEN && USER) {
   api('/api/admin/stats').then(() => showApp()).catch(() => showLogin());
 } else {
