@@ -146,7 +146,7 @@ button, input, select, textarea {
   .stat-grid { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)) !important; gap: 10px !important; }
   .stat-card { padding: 14px; }
   .stat-card .value { font-size: 1.5rem; }
-  .charts-grid { gap: 12px; }
+  .charts-grid { gap: 12px; margin-bottom: 14px; }
   .invoice { padding: 20px 14px !important; }
   .invoice-header { flex-direction: column; align-items: flex-start; gap: 10px; }
   .invoice-header .meta { text-align: left; }
@@ -800,18 +800,18 @@ footer { padding: 40px 24px; background: var(--card); border-top: 1px solid var(
 .chart-card { background: var(--card); padding: 22px; border-radius: var(--radius); border: 1px solid var(--border); box-shadow: var(--shadow); }
 .chart-card h3 { font-size: 0.95rem; margin-bottom: 14px; color: var(--text-soft); font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; }
 .chart-canvas-wrap { position: relative; height: 240px; }
-/* On phones, hide the supplementary charts (status pie, monthly
-   omzet bar, payment pie, top-services bar) to keep the dashboard
-   short enough that the user can scroll past the most important info
-   (stats + recent reservations + main trend chart) without losing
-   context. The cards are still rendered so their charts are ready
-   the moment the layout returns to desktop sizing. */
-.chart-hide-mobile { display: none; }
-/* On real desktop with viewport >= 1025px the supplementary charts
-   come back. (Touch-device override at line ~[broadcaster] handles
-   the 541-1024px case where Chrome desktop mode inflates viewport.) */
-@media (min-width: 1025px), (hover: hover) and (pointer: fine) and (min-width: 721px) {
-  .chart-hide-mobile { display: block; }
+/* Phone-friendly chart sizing. The charts are kept in the DOM at all
+   viewport widths (no .chart-hide-mobile) so the information is never
+   stripped — instead they get shorter canvases on narrow screens so
+   the user can scroll through all five dashboards without losing
+   context. */
+@media (max-width: 540px), (hover: none) and (pointer: coarse) and (max-width: 1024px) {
+  .chart-card { padding: 14px 14px; }
+  .chart-card h3 { font-size: 0.82rem; margin-bottom: 10px; letter-spacing: 0.3px; }
+  .chart-canvas-wrap { height: 180px; }
+  /* Chart-specific: layanan terpopuler uses a bigger height — shrink
+     proportionally so the bar labels stay readable. */
+  .chart-canvas-wrap[style*="height:280px"] { height: 220px !important; }
 }
 
 /* Items multi-render in reservation cell */

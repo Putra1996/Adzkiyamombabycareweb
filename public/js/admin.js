@@ -192,20 +192,19 @@ async function renderDashboard() {
     </div>
 
     <div class="stat-grid" id="statGrid"><div class="notif-card" style="opacity:.5;">Memuat statistik…</div></div>
-    <!-- Chart utama: omzet 14 hari. Chart 2/3/4 disembunyikan di
-         mobile via class .chart-hide-mobile supaya dashboard tidak
-         terlalu panjang untuk di-scroll. -->
+    <!-- Chart utama: omzet 14 hari. Semua chart tampil di semua device —
+         layout & tinggi chart disesuaikan via CSS untuk layar kecil. -->
     <div class="chart-card" style="margin-bottom:14px;">
       <h3>📈 Omzet 14 Hari Terakhir</h3>
       <div class="chart-canvas-wrap"><canvas id="chOmzetDay"></canvas></div>
     </div>
     <div class="charts-grid">
-      <div class="chart-card chart-hide-mobile"><h3>📊 Status Reservasi</h3><div class="chart-canvas-wrap"><canvas id="chStatus"></canvas></div></div>
-      <div class="chart-card chart-hide-mobile"><h3>💰 Omzet 6 Bulan</h3><div class="chart-canvas-wrap"><canvas id="chOmzetMonth"></canvas></div></div>
+      <div class="chart-card"><h3>📊 Status Reservasi</h3><div class="chart-canvas-wrap"><canvas id="chStatus"></canvas></div></div>
+      <div class="chart-card"><h3>💰 Omzet 6 Bulan</h3><div class="chart-canvas-wrap"><canvas id="chOmzetMonth"></canvas></div></div>
     </div>
     <div class="charts-grid">
-      <div class="chart-card chart-hide-mobile"><h3>💳 Metode Pembayaran</h3><div class="chart-canvas-wrap"><canvas id="chPay"></canvas></div></div>
-      <div class="chart-card chart-hide-mobile"><h3>🏆 Layanan Terpopuler</h3><div class="chart-canvas-wrap" style="height:280px;"><canvas id="chServices"></canvas></div></div>
+      <div class="chart-card"><h3>💳 Metode Pembayaran</h3><div class="chart-canvas-wrap"><canvas id="chPay"></canvas></div></div>
+      <div class="chart-card"><h3>🏆 Layanan Terpopuler</h3><div class="chart-canvas-wrap" style="height:280px;"><canvas id="chServices"></canvas></div></div>
     </div>
   `;
   // Populate Reservasi Terbaru FIRST so it shows even before stats
