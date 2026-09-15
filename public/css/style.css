@@ -147,9 +147,12 @@ button, input, select, textarea {
   .stat-card { padding: 14px; }
   .stat-card .value { font-size: 1.5rem; }
   .charts-grid { gap: 12px; margin-bottom: 14px; }
-  .invoice { padding: 20px 14px !important; }
-  .invoice-header { flex-direction: column; align-items: flex-start; gap: 10px; }
-  .invoice-header .meta { text-align: left; }
+  .invoice { padding: 16px 12px !important; margin: 10px auto !important; }
+  .invoice-header { grid-template-columns: 1fr !important; }
+  .invoice-meta { text-align: left !important; }
+  .invoice-grid { grid-template-columns: 1fr !important; }
+  .invoice-block + .invoice-block { border-left: none !important; border-top: 1px dashed var(--border); }
+  .invoice .totals { min-width: 0 !important; max-width: none !important; }
   .data-table { font-size: 0.78rem; }
   .data-table th, .data-table td { padding: 8px 6px; }
   .toast { min-width: 0; max-width: calc(100vw - 32px); padding: 10px 14px; }
@@ -664,39 +667,139 @@ footer { padding: 40px 24px; background: var(--card); border-top: 1px solid var(
 }
 
 /* ---------- INVOICE / KWITANSI ---------- */
+/* Kwitansi dirancang supaya layoutnya identik di A4 portrait, A5
+   portrait, thermal roll 80mm, dan preview di HP. Kontainer .invoice
+   tidak punya lebar tetap — lebarnya max 760px di layar, tapi saat
+   @media print fire, container membentang penuh mengikuti ukuran kertas
+   yang dipilih pengguna. Tabel & totals pakai lebar 100% relatif jadi
+   proporsional di setiap ukuran kertas. */
 .invoice {
-  background: white; color: #2a1822; padding: 40px; max-width: 760px; margin: 0 auto;
+  background: white; color: #2a1822; padding: 30px; max-width: 760px; margin: 20px auto;
   font-family: 'Plus Jakarta Sans', sans-serif; border-radius: 12px; box-shadow: var(--shadow-lg);
+  box-sizing: border-box;
 }
-.invoice-header { display: flex; justify-content: space-between; align-items: start; margin-bottom: 30px; padding-bottom: 20px; border-bottom: 2px solid var(--pink-200); gap: 16px; }
-.invoice-header h2 { font-size: 1.4rem; color: var(--primary); }
-.invoice-header .meta { text-align: right; font-size: 0.85rem; min-width: 0; }
-/* Keep the invoice number on a single line so it never breaks mid-token.
-   Without this, long invoice numbers like "INV-20260911-001" wrap to a
-   second line in narrow right columns, making them look like the
-   trailing "001" repeats. */
-.invoice-header .meta > span { display: inline-block; white-space: nowrap; word-break: keep-all; max-width: 100%; font-weight: 700; font-size: 1.05rem; color: var(--primary); }
-.invoice-block { margin-bottom: 24px; }
-.invoice-block h4 { font-size: 0.78rem; text-transform: uppercase; color: #8b6878; letter-spacing: 1px; margin-bottom: 6px; }
-.invoice table { width: 100%; border-collapse: collapse; margin: 16px 0; }
-.invoice table th { background: linear-gradient(180deg, #ffeef3 0%, #ffe0e9 100%); padding: 10px; text-align: left; font-size: 0.82rem; color: #6b1f3a; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 2px solid #ee5a8a; }
-.invoice table td { padding: 10px; border-bottom: 1px solid #ffeaef; font-size: 0.9rem; }
-/* Zebra striping — alternating row colors make the table easy to read */
-.invoice table tbody tr:nth-child(even) td { background: #fff8fb; }
-.invoice table tbody tr:nth-child(odd) td { background: #ffffff; }
-.invoice table tbody tr:hover td { background: #ffeef3; }
-.invoice .totals { margin-left: auto; max-width: 320px; background: #fff8fb; padding: 14px 18px; border-radius: 10px; border: 1px solid #ffe0e9; }
-.invoice .totals .row { display: flex; justify-content: space-between; padding: 6px 0; font-size: 0.9rem; }
-.invoice .totals .row.grand { font-weight: 800; font-size: 1.15rem; color: var(--primary); border-top: 2px solid var(--pink-200); padding-top: 10px; margin-top: 10px; }
-.invoice-footer { text-align: center; margin-top: 30px; padding-top: 16px; border-top: 1px dashed #ffd0dd; font-size: 0.8rem; color: #8b6878; }
+.invoice-header {
+  display: grid; grid-template-columns: 1fr auto; gap: 20px; align-items: start;
+  margin-bottom: 24px; padding-bottom: 18px; border-bottom: 2px solid var(--pink-200);
+}
+.invoice-brand { display: flex; align-items: center; gap: 14px; min-width: 0; }
+.invoice-brand img { width: 60px; height: 60px; object-fit: contain; flex-shrink: 0; }
+.invoice-brand h2 { font-size: 1.3rem; color: var(--primary); margin: 0; word-break: keep-all; }
+.invoice-brand small { font-size: 0.82rem; color: var(--text-soft); line-height: 1.55; word-break: keep-all; }
+.invoice-meta { text-align: right; min-width: 0; }
+.invoice-meta > strong { font-size: 1.05rem; color: var(--primary); letter-spacing: 1px; display: block; margin-bottom: 4px; }
+.invoice-meta-no {
+  display: inline-block; white-space: nowrap; word-break: keep-all; max-width: 100%;
+  font-weight: 800; font-size: 1.05rem; color: var(--primary); letter-spacing: 0.3px;
+  background: var(--pink-50); padding: 4px 12px; border-radius: 8px;
+}
+.invoice-meta > small { font-size: 0.78rem; color: var(--text-soft); display: block; margin-top: 4px; }
 
+/* Two-column info block: Kepada | Tanggal & Waktu. Equal weight, equal
+   border so both columns look balanced. */
+.invoice-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 0;
+  background: var(--bg); border-radius: 10px; overflow: hidden;
+  border: 1px solid var(--border); margin-bottom: 18px;
+}
+.invoice-block { padding: 14px 18px; }
+.invoice-block + .invoice-block { border-left: 1px dashed var(--border); }
+.invoice-block h4 {
+  font-size: 0.74rem; text-transform: uppercase; color: var(--primary);
+  letter-spacing: 1.2px; margin-bottom: 8px; font-weight: 800;
+}
+.invoice-block-body { font-size: 0.92rem; line-height: 1.5; margin: 0; word-break: keep-all; }
+.kwitansi-time-row { display: inline-flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.kwitansi-time-chip {
+  display: inline-block; padding: 3px 10px; background: #fff0f5;
+  border: 1px solid #ffd1de; border-radius: 999px;
+  font-size: 0.84rem; font-weight: 700; color: #c43050;
+}
+
+/* Services table: full-width, numeric columns right-aligned with
+   explicit width so Harga & Subtotal align regardless of digit count.
+   Avoid `text-align: right` only — it shoves long names to the right
+   when wrapped. */
+.invoice-table { width: 100%; border-collapse: collapse; margin-bottom: 14px; font-size: 0.92rem; }
+.invoice-table th, .invoice-table td { padding: 9px 10px; border-bottom: 1px solid #ffeaef; vertical-align: middle; }
+.invoice-table th {
+  background: linear-gradient(180deg, #ffeef3 0%, #ffe0e9 100%);
+  text-align: left; font-size: 0.78rem; color: #6b1f3a;
+  font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px;
+  border-bottom: 2px solid #ee5a8a;
+}
+.invoice-table th.num, .invoice-table td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.invoice-table th.num { text-align: center; }
+/* Zebra striping for easy scanning. */
+.invoice-table tbody tr:nth-child(even) td { background: #fff8fb; }
+.invoice-table tbody tr:nth-child(odd) td { background: #ffffff; }
+
+/* Totals block sits flush right, ~50% width — matches the proportions
+   of the rest of the invoice (logo block on left, totals on right). */
+.invoice .totals {
+  margin: 8px 0 0 auto; max-width: 360px; min-width: 280px;
+  background: #fff8fb; padding: 14px 18px; border-radius: 10px;
+  border: 1px solid #ffe0e9;
+}
+.invoice .totals .row { display: flex; justify-content: space-between; padding: 5px 0; font-size: 0.9rem; gap: 12px; }
+.invoice .totals .row > span:first-child { color: var(--text-soft); }
+.invoice .totals .row > span:last-child { font-weight: 700; }
+.invoice .totals .row.grand {
+  font-weight: 800; font-size: 1.15rem; color: var(--primary);
+  border-top: 2px solid var(--pink-200); padding-top: 10px; margin-top: 10px;
+}
+.invoice .totals .row.grand > span:last-child { color: var(--primary); }
+
+.invoice-footer {
+  text-align: center; margin-top: 28px; padding-top: 16px;
+  border-top: 1px dashed var(--pink-200);
+  font-size: 0.82rem; color: var(--text-soft); line-height: 1.6;
+}
+.invoice-footer em { font-style: italic; color: var(--primary); font-weight: 700; }
+
+/* Print rules — designed to work across common printer setups:
+   A4 portrait (210×297mm), A5 portrait (148×210mm), 80mm thermal roll
+   (continuous form), and US Letter. No fixed widths so the invoice
+   scales to whatever paper the user picks in the Print dialog. */
 @media print {
-  body { background: white; }
+  /* Strip the on-screen backdrop and padding so the invoice fills
+     whatever paper the user prints on. */
+  html, body { background: white !important; padding: 0 !important; margin: 0 !important; }
   .nav, footer, .no-print { display: none !important; }
-  .invoice { box-shadow: none; max-width: none; padding: 30px; }
-  /* Keep zebra striping in print */
-  .invoice table tbody tr:nth-child(even) td { background: #f5f5f5 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-  .invoice table th { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+
+  .invoice {
+    box-shadow: none !important; border-radius: 0 !important;
+    margin: 0 !important; padding: 12mm !important; max-width: none !important;
+    /* width: 100% so it fills paper width without horizontal scroll */
+    width: 100%;
+  }
+
+  /* Make the colors actually print. Browsers strip background colors
+     by default in print mode to save ink. These directives tell the
+     printer to honor the background colors we use for branding
+     (table headers, totals block, time chips, invoice number pill). */
+  * {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+    color-adjust: exact !important;
+  }
+
+  /* Keep zebra striping visible in print, but lighter ink so it
+     doesn't dominate the receipt. */
+  .invoice-table tbody tr:nth-child(even) td {
+    background: #faf3f7 !important;
+  }
+
+  /* Avoid page breaks inside a table row or inside the totals block —
+     a split page would otherwise cut a service in half. */
+  .invoice-table tr, .invoice-block, .invoice .totals, .invoice-footer {
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+
+  /* If the kwitansi is rendered into a tab opened via window.open,
+     hide everything except the .invoice element. */
+  body > *:not(.invoice):not(.print-actions) { display: none !important; }
 }
 
 /* ---------- CART (Reservation) ---------- */
@@ -800,6 +903,22 @@ footer { padding: 40px 24px; background: var(--card); border-top: 1px solid var(
 .chart-card { background: var(--card); padding: 22px; border-radius: var(--radius); border: 1px solid var(--border); box-shadow: var(--shadow); }
 .chart-card h3 { font-size: 0.95rem; margin-bottom: 14px; color: var(--text-soft); font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; }
 .chart-canvas-wrap { position: relative; height: 240px; }
+/* Inline fallback when a chart can't render (no data, fetch error).
+   Replaces the empty canvas so users see why the chart is empty
+   instead of wondering if the page is broken. */
+.chart-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  font-size: 0.9rem;
+  color: var(--text-soft);
+  background: var(--bg);
+  border-radius: 10px;
+  padding: 14px;
+}
 /* Phone-friendly chart sizing. The charts are kept in the DOM at all
    viewport widths (no .chart-hide-mobile) so the information is never
    stripped — instead they get shorter canvases on narrow screens so

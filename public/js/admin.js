@@ -111,6 +111,17 @@ async function showApp() {
   await loadCache();
   navigate('dashboard');
   startNotifPolling();
+  // Re-layout every Chart.js instance when the viewport changes — without
+  // this charts can render at 0×0 inside their .chart-canvas-wrap after
+  // the device rotates or Chrome's "Situs desktop" toggle inflates the
+  // viewport. Debounced so we only resize once after a burst of events.
+  let _chartResizeTimer = null;
+  window.addEventListener('resize', () => {
+    clearTimeout(_chartResizeTimer);
+    _chartResizeTimer = setTimeout(() => {
+      Object.values(CHARTS).forEach((c) => { try { c.resize(); } catch {} });
+    }, 120);
+  });
 }
 async function loadCache() {
   try {
@@ -1235,55 +1246,70 @@ function printReceipt(r) {
     ? r.service_times
     : (r.service_time ? [r.service_time] : []);
   const timesHtml = times.length
-    ? times.map((t) => `<span style="display:inline-block;margin:2px 4px 2px 0;padding:3px 10px;background:#fff0f5;border:1px solid #ffd1de;border-radius:999px;font-size:0.86rem;font-weight:700;color:#c43050;">⏰ ${esc(t)} WIB</span>`).join('')
+    ? times.map((t) => `<span class="kwitansi-time-chip">⏰ ${esc(t)} WIB</span>`).join('')
     : '<span style="color:var(--text-soft);">—</span>';
   const sessionsLabel = times.length > 1 ? `<strong style="color:var(--primary);">${times.length} sesi</strong>` : '';
+  // Kwitansi rendered into a standalone tab. Uses the same .invoice
+  // CSS classes as the in-app receipt preview, so the print result
+  // matches exactly what's shown on-screen.
   const html = `<!doctype html><html><head><title>Kwitansi ${r.invoice_no}</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="${PAGE_STYLESHEET}">
-    <style>body{background:#f7f2f4;padding:30px;font-family:'Plus Jakarta Sans',sans-serif;}@media print{body{background:white;padding:0;}.print-actions{display:none;}}</style>
+    <style>
+      body{background:#f7f2f4;padding:30px;font-family:'Plus Jakarta Sans',sans-serif;margin:0;}
+      .print-actions{display:flex;justify-content:center;gap:10px;margin-bottom:20px;flex-wrap:wrap;}
+      .print-actions button{padding:10px 20px;color:white;border:none;border-radius:999px;font-weight:700;cursor:pointer;font-size:0.95rem;font-family:inherit;}
+      @media print{body{background:white;padding:0;margin:0;}.print-actions{display:none !important;}}
+    </style>
     </head><body>
-    <div class="print-actions" style="text-align:center;margin-bottom:20px;">
-      <button onclick="window.print()" style="padding:10px 24px;background:#ee5a8a;color:white;border:none;border-radius:999px;font-weight:700;cursor:pointer;font-size:1rem;">🖨️ Cetak / Save PDF</button>
+    <div class="print-actions">
+      <button onclick="window.print()" style="background:#ee5a8a;">🖨️ Cetak / Save PDF</button>
+      <button onclick="window.close()" style="background:var(--card);color:var(--text);border:1px solid var(--border);">✕ Tutup</button>
     </div>
     <div class="invoice">
       <div class="invoice-header">
-        <div style="display:flex;align-items:center;gap:14px;">
-          ${logoSrc ? `<img src="${logoSrc}" style="width:70px;height:70px;object-fit:contain;">` : '<span style="font-size:2.4rem;">🌸</span>'}
+        <div class="invoice-brand">
+          ${logoSrc ? `<img src="${logoSrc}" alt="">` : '<span style="font-size:2.4rem;">🌸</span>'}
           <div>
-            <h2 style="margin:0;">${esc(biz.business_name || 'Adzkiya Mom Baby Care')}</h2>
+            <h2>${esc(biz.business_name || 'Adzkiya Mom Baby Care')}</h2>
             <small>${esc(biz.tagline || 'Layanan Kesehatan Ibu & Anak Terpercaya')}<br>
             ${esc(biz.address || '')}<br>
             WA: ${esc(biz.phone || '085887018194')}</small>
           </div>
         </div>
-        <div class="meta">
-          <strong style="font-size:1.1rem;">KWITANSI</strong><br>
-          <span>${r.invoice_no}</span><br>
+        <div class="invoice-meta">
+          <strong>KWITANSI</strong>
+          <span class="invoice-meta-no">${r.invoice_no}</span>
           <small>${new Date(r.created_at).toLocaleDateString('id-ID', { day:'2-digit', month:'long', year:'numeric' })}</small>
         </div>
       </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;">
+      <div class="invoice-grid">
         <div class="invoice-block">
           <h4>Kepada</h4>
-          <strong>${esc(r.patient_name || '-')}</strong><br>
-          ${esc(r.whatsapp || '')}<br>
-          ${esc(r.address || '')}
+          <p class="invoice-block-body">
+            <strong>${esc(r.patient_name || '-')}</strong><br>
+            ${esc(r.whatsapp || '')}<br>
+            ${esc(r.address || '')}
+          </p>
         </div>
         <div class="invoice-block">
           <h4>Tanggal & Waktu Layanan ${sessionsLabel}</h4>
-          ${r.service_date ? new Date(r.service_date).toLocaleDateString('id-ID', { day:'2-digit', month:'long', year:'numeric' }) : '-'}
-          <div style="margin-top:6px;line-height:1.6;">${timesHtml}</div>
+          <p class="invoice-block-body">
+            ${r.service_date ? new Date(r.service_date).toLocaleDateString('id-ID', { day:'2-digit', month:'long', year:'numeric' }) : '-'}
+            <span class="kwitansi-time-row">${timesHtml}</span>
+          </p>
         </div>
       </div>
-      <table>
-        <thead><tr><th>Layanan</th><th style="text-align:center;">Qty</th><th style="text-align:right;">Harga</th><th style="text-align:right;">Subtotal</th></tr></thead>
+      <table class="invoice-table">
+        <thead><tr><th>Layanan</th><th class="num">Qty</th><th class="num">Harga</th><th class="num">Subtotal</th></tr></thead>
         <tbody>
           ${items.map(it => `<tr>
             <td>${esc(it.name)}</td>
-            <td style="text-align:center;">${it.qty}</td>
-            <td style="text-align:right;">${fmtRp(it.price)}</td>
-            <td style="text-align:right;">${fmtRp(it.price * it.qty)}</td>
+            <td class="num">${it.qty}</td>
+            <td class="num">${fmtRp(it.price)}</td>
+            <td class="num">${fmtRp(it.price * it.qty)}</td>
           </tr>`).join('')}
         </tbody>
       </table>
@@ -1301,6 +1327,10 @@ function printReceipt(r) {
     </body></html>`;
   const w = window.open('', '_blank');
   w.document.write(html); w.document.close();
+  // Focus the new tab once the layout is computed so the user is
+  // immediately on the preview tab and can press ⌘/Ctrl+P without
+  // reaching for the new window.
+  setTimeout(() => { try { w.focus(); } catch {} }, 50);
 }
 
 // ---------- RECAP ----------
