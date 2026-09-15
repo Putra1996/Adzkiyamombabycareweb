@@ -180,24 +180,46 @@ async function renderDashboard() {
       </div>
       <button onclick="renderDashboard()" class="btn btn-outline">🔄 Refresh</button>
     </div>
-    <div class="stat-grid" id="statGrid"><div>Loading...</div></div>
-    <div class="charts-grid">
-      <div class="chart-card"><h3>📈 Omzet 14 Hari Terakhir</h3><div class="chart-canvas-wrap"><canvas id="chOmzetDay"></canvas></div></div>
-      <div class="chart-card"><h3>📊 Status Reservasi</h3><div class="chart-canvas-wrap"><canvas id="chStatus"></canvas></div></div>
+
+    <!-- Reservasi Terbaru — dipindah ke ATAS chart supaya di mobile
+         (yang viewport-nya sempit) info ini tetap kelihatan tanpa harus
+         scroll jauh ke bawah melwati chart. -->
+    <div class="setting-card" id="recentCard" style="margin-bottom:18px;">
+      <h3 style="margin-bottom:14px;display:flex;align-items:center;gap:8px;">📋 Reservasi Terbaru <small id="recentCount" style="color:var(--text-soft);font-weight:500;font-size:0.85rem;"></small></h3>
+      <div id="recentSkeleton" style="display:grid;gap:8px;">
+        <div class="notif-card" style="opacity:.5;">Memuat reservasi…</div>
+      </div>
+    </div>
+
+    <div class="stat-grid" id="statGrid"><div class="notif-card" style="opacity:.5;">Memuat statistik…</div></div>
+    <!-- Chart utama: omzet 14 hari. Chart 2/3/4 disembunyikan di
+         mobile via class .chart-hide-mobile supaya dashboard tidak
+         terlalu panjang untuk di-scroll. -->
+    <div class="chart-card" style="margin-bottom:14px;">
+      <h3>📈 Omzet 14 Hari Terakhir</h3>
+      <div class="chart-canvas-wrap"><canvas id="chOmzetDay"></canvas></div>
     </div>
     <div class="charts-grid">
-      <div class="chart-card"><h3>💰 Omzet 6 Bulan</h3><div class="chart-canvas-wrap"><canvas id="chOmzetMonth"></canvas></div></div>
-      <div class="chart-card"><h3>💳 Metode Pembayaran</h3><div class="chart-canvas-wrap"><canvas id="chPay"></canvas></div></div>
+      <div class="chart-card chart-hide-mobile"><h3>📊 Status Reservasi</h3><div class="chart-canvas-wrap"><canvas id="chStatus"></canvas></div></div>
+      <div class="chart-card chart-hide-mobile"><h3>💰 Omzet 6 Bulan</h3><div class="chart-canvas-wrap"><canvas id="chOmzetMonth"></canvas></div></div>
     </div>
-    <div class="chart-card" style="margin-bottom:20px;"><h3>🏆 Layanan Terpopuler</h3><div class="chart-canvas-wrap" style="height:280px;"><canvas id="chServices"></canvas></div></div>
-    <h3 style="margin: 24px 0 14px;">📋 Reservasi Terbaru</h3>
-    <div id="recentList"></div>
+    <div class="charts-grid">
+      <div class="chart-card chart-hide-mobile"><h3>💳 Metode Pembayaran</h3><div class="chart-canvas-wrap"><canvas id="chPay"></canvas></div></div>
+      <div class="chart-card chart-hide-mobile"><h3>🏆 Layanan Terpopuler</h3><div class="chart-canvas-wrap" style="height:280px;"><canvas id="chServices"></canvas></div></div>
+    </div>
   `;
+  // Populate Reservasi Terbaru FIRST so it shows even before stats
+  // resolve — at least the section is anchored at the top of the page.
   try {
-    const [stats, charts, rows] = await Promise.all([
+    const rows = await api('/api/admin/reservations');
+    renderRecentList(rows.slice(0, 8));
+  } catch (e) {
+    document.getElementById('recentSkeleton').innerHTML = '<div class="alert alert-error">' + e.message + '</div>';
+  }
+  try {
+    const [stats, charts] = await Promise.all([
       api('/api/admin/stats'),
-      api('/api/admin/charts'),
-      api('/api/admin/reservations')
+      api('/api/admin/charts')
     ]);
     document.getElementById('statGrid').innerHTML = `
       <div class="stat-card"><div class="label">Pending</div><div class="value">${stats.pending}</div></div>
@@ -207,25 +229,35 @@ async function renderDashboard() {
       <div class="stat-card"><div class="label">Total Reservasi</div><div class="value">${stats.total}</div></div>
     `;
     drawCharts(charts);
-
-    const recent = rows.slice(0, 8);
-    document.getElementById('recentList').innerHTML = recent.length ? `
-      <div class="data-table-wrap">
-        <div class="table-scroll"><table class="data-table"><thead>
-          <tr><th>Pasien</th><th>Layanan</th><th>Sesi</th><th>Status</th><th>Bayar</th><th>Total</th></tr>
-        </thead><tbody>
-        ${recent.map(r => `<tr>
-          <td><strong>${esc(r.patient_name)}</strong><br><small style="color:var(--text-soft)">${esc(r.whatsapp)}</small></td>
-          <td>${renderItemsCompact(r.items)}</td>
-          <td>${(r.slots || []).length} sesi</td>
-          <td><span class="badge badge-${r.status}">${r.status}</span></td>
-          <td><span class="badge badge-${r.payment_status}">${r.payment_status}</span></td>
-          <td><strong>${fmtRp(r.total)}</strong></td>
-        </tr>`).join('')}
-        </tbody></table></div>
-      </div>
-    ` : '<p style="color:var(--text-soft);text-align:center;padding:20px;">Belum ada reservasi.</p>';
   } catch (e) { document.getElementById('statGrid').innerHTML = `<div class="alert alert-error">${e.message}</div>`; }
+}
+
+// Render the recent-reservations list in a card format. Shows a count
+// pill next to the heading so the admin can see at-a-glance how many
+// latest reservations are listed, even before scrolling into the list.
+function renderRecentList(rows) {
+  const skel = document.getElementById('recentSkeleton');
+  const count = document.getElementById('recentCount');
+  if (count) count.textContent = rows.length ? `(${rows.length} terbaru)` : '';
+  if (!skel) return;
+  if (!rows.length) {
+    skel.innerHTML = '<p style="color:var(--text-soft);text-align:center;padding:14px;">Belum ada reservasi.</p>';
+    return;
+  }
+  // On phones render compact card list, on desktop render the table.
+  // Cards are mobile-first because they fit a 360px-wide viewport.
+  skel.innerHTML = `
+    <div class="card-list" aria-label="Reservasi terbaru (tampilan kartu untuk HP)">
+      ${rows.map(r => `<div class="card-list-item">
+        <div class="cli-head">${esc(r.patient_name || '-')} <small style="color:var(--text-soft);font-weight:500;font-size:0.82rem;">· #${r.id}</small></div>
+        <div class="cli-meta">📅 ${(r.slots || []).map(s => `${s.date} ${s.time}`).join(', ') || '—'}</div>
+        <div class="cli-row"><span class="cli-label">Layanan</span><span class="cli-value" style="text-align:left;font-weight:500;">${(r.items || []).map(it => `${esc(it.name)} ×${it.qty}`).join(', ') || '-'}</span></div>
+        <div class="cli-row"><span class="cli-label">Status</span><span class="cli-value"><span class="badge badge-${r.status}">${r.status}</span></span></div>
+        <div class="cli-row"><span class="cli-label">Bayar</span><span class="cli-value"><span class="badge badge-${r.payment_status}">${r.payment_status}</span></span></div>
+        <div class="cli-row"><span class="cli-label">Total</span><span class="cli-value"><strong>${fmtRp(r.total)}</strong></span></div>
+      </div>`).join('')}
+    </div>
+  `;
 }
 
 function renderItemsCompact(items) {

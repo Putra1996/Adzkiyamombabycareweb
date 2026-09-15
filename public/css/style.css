@@ -800,6 +800,19 @@ footer { padding: 40px 24px; background: var(--card); border-top: 1px solid var(
 .chart-card { background: var(--card); padding: 22px; border-radius: var(--radius); border: 1px solid var(--border); box-shadow: var(--shadow); }
 .chart-card h3 { font-size: 0.95rem; margin-bottom: 14px; color: var(--text-soft); font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; }
 .chart-canvas-wrap { position: relative; height: 240px; }
+/* On phones, hide the supplementary charts (status pie, monthly
+   omzet bar, payment pie, top-services bar) to keep the dashboard
+   short enough that the user can scroll past the most important info
+   (stats + recent reservations + main trend chart) without losing
+   context. The cards are still rendered so their charts are ready
+   the moment the layout returns to desktop sizing. */
+.chart-hide-mobile { display: none; }
+/* On real desktop with viewport >= 1025px the supplementary charts
+   come back. (Touch-device override at line ~[broadcaster] handles
+   the 541-1024px case where Chrome desktop mode inflates viewport.) */
+@media (min-width: 1025px), (hover: hover) and (pointer: fine) and (min-width: 721px) {
+  .chart-hide-mobile { display: block; }
+}
 
 /* Items multi-render in reservation cell */
 .items-list { font-size: 0.82rem; line-height: 1.5; }
