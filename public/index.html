@@ -4,12 +4,57 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Adzkiya Mom Baby Care — Layanan Kesehatan Ibu & Anak Terpercaya</title>
-<meta name="description" content="Spa & treatment khusus ibu hamil, nifas, bayi, dan balita. Home service area Nusawungu, Cilacap. Bidan profesional bersertifikat.">
+<meta name="description" content="Layanan spa, massage, dan perawatan profesional ibu hamil, nifas, bayi, balita & kids. Home service area Nusawungu, Cilacap. Bidan A.Md. Keb., CBME bersertifikat reservasi via WhatsApp.">
+<meta name="keywords" content="mom baby care Cilacap, pijat ibu hamil Nusawungu, baby massage Cilacap, newborn care home service, bidan praktik Cilacap, spa ibu hamil, pijat laktasi, mom spa Nusawungu">
+<meta name="author" content="Adzkiya Mom Baby Care">
+<meta name="robots" content="index, follow">
+<meta name="geo.region" content="ID-JT">
+<meta name="geo.placename" content="Cilacap, Nusawungu">
+<meta name="geo.position" content="-7.7136;109.0077">
+<meta name="geo.placename" content="Nusawungu">
+<meta name="ICBM" content="-7.7136, 109.0077">
+<link rel="canonical" href="https://adzkiyamombabycareweb-production.up.railway.app/">
+<link rel="alternate" hreflang="id" href="https://adzkiyamombabycareweb-production.up.railway.app/?lang=id">
+<link rel="alternate" hreflang="en" href="https://adzkiyamombabycareweb-production.up.railway.app/?lang=en">
+<link rel="alternate" hreflang="x-default" href="https://adzkiyamombabycareweb-production.up.railway.app/">
+<!-- Theme color: match brand pink so mobile browser chrome (Safari,
+     Chrome Android) and PWA splash screen blend with the page. The
+     `media="(prefers-color-scheme: dark)"` variant flips to the dark
+     brand color so the system status bar stays legible on both
+     themes. -->
+<meta name="theme-color" content="#ee5a8a" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#1c1118" media="(prefers-color-scheme: dark)">
+<!-- iOS PWA: allow fullscreen + colored status bar. Once a user adds
+     the site to home screen, these tags make it launch like a native
+     app instead of a Safari tab. -->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Adzkiya">
+<!-- Standard social preview card (used when sharing on WA, FB, etc). -->
+<meta property="og:title" content="Adzkiya Mom Baby Care — Layanan Ibu & Anak">
+<meta property="og:description" content="Spa, massage, dan perawatan profesional ibu hamil, nifas, bayi & balita. Home service Nusawungu, Cilacap.">
+<meta property="og:type" content="website">
+<meta property="og:image" content="/api/logo">
+<meta property="og:url" content="/">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Playfair+Display:wght@600;700&display=swap" rel="stylesheet">
+<!-- Google Fonts loaded non-blocking: media="print" trick lets the
+     browser render the page with the system font immediately, then
+     swap to Plus Jakarta Sans once the font stylesheet finishes. The
+     flash is barely perceptible and the page is interactive ~1s
+     earlier on slow 3G. -->
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Playfair+Display:wght@600;700&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
 <link rel="stylesheet" href="/css/style.css">
 <link rel="icon" href="/api/logo">
+<!-- Preload the hero logo so it's already in the cache when the
+     browser reaches the LCP measurement point. Without this, the
+     logo image download is the bottleneck for first-contentful-paint
+     metrics on slow 3G. We deliberately omit `type=` because the
+     uploaded logo may be PNG, JPEG, or WebP — letting the browser
+     sniff the real type avoids a wrong-type preload (which the
+     browser would discard anyway and could even delay discovery of
+     the real one). -->
+<link rel="preload" href="/api/logo" as="image" fetchpriority="high">
 </head>
 <body>
 
@@ -17,23 +62,24 @@
   <div class="nav-inner">
     <a href="/" class="brand">
       <div class="brand-logo" id="brandLogoImg">
-        <img src="/api/logo" alt="Adzkiya" onerror="this.parentElement.innerHTML='🌸';this.parentElement.classList.add('fallback');" style="width:100%;height:100%;object-fit:contain;">
+        <img src="/api/logo" alt="Adzkiya Mom Baby Care" loading="lazy" decoding="async" onerror="this.parentElement.innerHTML='🌸';this.parentElement.classList.add('fallback');" style="width:100%;height:100%;object-fit:contain;">
       </div>
       <div class="brand-text">
         <span id="brandName">Adzkiya Mom Baby Care</span>
         <small>Mom & Baby Care</small>
       </div>
     </a>
-    <button class="mobile-toggle" onclick="document.getElementById('navLinks').classList.toggle('open')">☰</button>
+    <button class="mobile-toggle" onclick="document.getElementById('navLinks').classList.toggle('open')" aria-label="Buka menu navigasi" aria-expanded="false">☰</button>
     <div class="nav-links" id="navLinks">
-      <a href="#beranda" class="active">Beranda</a>
-      <a href="#layanan">Layanan</a>
-      <a href="#tentang">Tentang</a>
-      <a href="#testimoni">Testimoni</a>
-      <a href="/kalender.html">Kalender</a>
-      <a href="#kontak">Kontak</a>
-      <button class="theme-toggle" id="themeToggle" title="Toggle theme">🌙</button>
-      <a href="/reservasi.html" class="btn-nav">Reservasi</a>
+      <a href="#beranda" class="active" data-i18n="nav.beranda">Beranda</a>
+      <a href="#layanan" data-i18n="nav.layanan">Layanan</a>
+      <a href="#tentang" data-i18n="nav.tentang">Tentang</a>
+      <a href="#testimoni" data-i18n="nav.testimoni">Testimoni</a>
+      <a href="/kalender.html" data-i18n="nav.kalender">Kalender</a>
+      <a href="#kontak" data-i18n="nav.kontak">Kontak</a>
+      <button class="theme-toggle" id="themeToggle" title="Toggle tema gelap/terang" aria-label="Toggle tema">🌙</button>
+      <button class="lang-toggle" id="langToggle" type="button" data-i18n-attr="aria-label:nav.language_toggle">🌐 EN</button>
+      <a href="/reservasi.html" class="btn-nav" data-i18n="nav.reservasi">Reservasi</a>
     </div>
   </div>
 </nav>
@@ -43,26 +89,26 @@
   <div class="hero-bg" id="heroBg"></div>
   <div class="hero-inner">
     <div>
-      <span class="eyebrow">✨ Home Service Nusawungu — Cilacap</span>
-      <h1>Sentuhan Lembut untuk <span>Bunda & Si Kecil</span></h1>
-      <p class="lead" id="heroTagline">Spa, massage, dan perawatan profesional khusus ibu hamil, nifas, bayi, balita & kids. Dipandu bidan tersertifikasi langsung ke rumah Anda.</p>
+      <span class="eyebrow" data-i18n="home.eyebrow">✨ Home Service Nusawungu — Cilacap</span>
+      <h1><span data-i18n="home.hero_h1_pre">Sentuhan Lembut untuk</span> <span data-i18n="home.hero_h1_post">Bunda & Si Kecil</span></h1>
+      <p class="lead" id="heroTagline" data-i18n="home.hero_lead">Spa, massage, dan perawatan profesional khusus ibu hamil, nifas, bayi, balita & kids. Dipandu bidan tersertifikasi langsung ke rumah Anda.</p>
       <div class="hero-ctas">
-        <a href="/reservasi.html" class="btn btn-primary">📅 Reservasi Sekarang</a>
-        <a href="https://wa.me/6285887018194?text=Halo%20Adzkiya%20Mom%20Baby%20Care%2C%20saya%20ingin%20bertanya" target="_blank" class="btn btn-wa">💬 Chat WhatsApp</a>
+        <a href="/reservasi.html" class="btn btn-primary" data-i18n="home.hero_cta">📅 Reservasi Sekarang</a>
+        <a href="https://wa.me/6285887018194?text=Halo%20Adzkiya%20Mom%20Baby%20Care%2C%20saya%20ingin%20bertanya" target="_blank" class="btn btn-wa" id="heroWaBtn" data-i18n="home.hero_wa">💬 Chat WhatsApp</a>
       </div>
       <div class="hero-stats">
-        <div><strong>40+</strong><span>Jenis Layanan</span></div>
-        <div><strong>100%</strong><span>Home Service</span></div>
-        <div><strong>CBME</strong><span>Bidan Bersertifikat</span></div>
+        <div><strong>40+</strong><span data-i18n="home.hero_stat1_label">Jenis Layanan</span></div>
+        <div><strong>100%</strong><span data-i18n="home.hero_stat2_label">Home Service</span></div>
+        <div><strong>CBME</strong><span data-i18n="home.hero_stat3_label">Bidan Bersertifikat</span></div>
       </div>
     </div>
     <div class="hero-visual" id="heroVisual">
       <div class="hero-blob"></div>
       <div class="hero-logo-wrap" id="heroLogoWrap">
-        <img src="/api/logo" alt="Adzkiya" id="heroLogoImg" onerror="document.getElementById('heroLogoWrap').innerHTML='<div class=hero-emoji>🤱</div>'">
+        <img src="/api/logo" alt="Adzkiya Mom Baby Care" id="heroLogoImg" fetchpriority="high" decoding="async" onerror="document.getElementById('heroLogoWrap').innerHTML='<div class=hero-emoji>🤱</div>'">
       </div>
-      <div class="float-card fc1"><div class="ic" style="background:var(--pink-400)">💆</div>Mom Spa<br><small style="color:var(--text-soft);font-weight:500">Mulai 80rb</small></div>
-      <div class="float-card fc2"><div class="ic" style="background:var(--peach-300)">👶</div>Baby Treatment<br><small style="color:var(--text-soft);font-weight:500">Mulai 25rb</small></div>
+      <div class="float-card fc1"><div class="ic" style="background:var(--pink-400)">💆</div><span data-i18n="home.fc1_title">Mom Spa</span><br><small style="color:var(--text-soft);font-weight:500" data-i18n="home.fc1_sub">Mulai 80rb</small></div>
+      <div class="float-card fc2"><div class="ic" style="background:var(--peach-300)">👶</div><span data-i18n="home.fc2_title">Baby Treatment</span><br><small style="color:var(--text-soft);font-weight:500" data-i18n="home.fc2_sub">Mulai 25rb</small></div>
     </div>
   </div>
 </section>
@@ -71,15 +117,15 @@
 <section class="section">
   <div class="container">
     <div class="section-head">
-      <span class="section-eyebrow">Mengapa Memilih Kami</span>
-      <h2>Perawatan yang Bisa Dipercaya</h2>
-      <p>Dirancang dengan kelembutan, dijalankan dengan keahlian. Setiap sesi disesuaikan dengan kebutuhan ibu dan buah hati.</p>
+      <span class="section-eyebrow" data-i18n="home.whyus_eyebrow">Mengapa Memilih Kami</span>
+      <h2 data-i18n="home.whyus_h2">Perawatan yang Bisa Dipercaya</h2>
+      <p data-i18n="home.whyus_p">Dirancang dengan kelembutan, dijalankan dengan keahlian. Setiap sesi disesuaikan dengan kebutuhan ibu dan buah hati.</p>
     </div>
     <div class="features">
-      <div class="feature"><div class="icn">🏠</div><h3>Home Service</h3><p>Bidan datang langsung ke rumah, Bunda cukup rebahan dan menikmati perawatan.</p></div>
-      <div class="feature"><div class="icn">🎓</div><h3>Bidan Bersertifikat</h3><p>Ditangani A.Md. Keb., CBME (Certified Baby Massage Educator) yang berpengalaman.</p></div>
-      <div class="feature"><div class="icn">🌿</div><h3>Bahan Alami</h3><p>Menggunakan minyak & produk aman bagi ibu hamil, ibu menyusui, dan bayi.</p></div>
-      <div class="feature"><div class="icn">⏰</div><h3>Fleksibel</h3><p>Jadwal bisa disesuaikan dengan kenyamanan Bunda, termasuk akhir pekan.</p></div>
+      <div class="feature"><div class="icn">🏠</div><h3 data-i18n="home.feat_home_h">Home Service</h3><p data-i18n="home.feat_home_p">Bidan datang langsung ke rumah, Bunda cukup rebahan dan menikmati perawatan.</p></div>
+      <div class="feature"><div class="icn">🎓</div><h3 data-i18n="home.feat_cert_h">Bidan Bersertifikat</h3><p data-i18n="home.feat_cert_p">Ditangani A.Md. Keb., CBME (Certified Baby Massage Educator) yang berpengalaman.</p></div>
+      <div class="feature"><div class="icn">🌿</div><h3 data-i18n="home.feat_alami_h">Bahan Alami</h3><p data-i18n="home.feat_alami_p">Menggunakan minyak & produk aman bagi ibu hamil, ibu menyusui, dan bayi.</p></div>
+      <div class="feature"><div class="icn">⏰</div><h3 data-i18n="home.feat_flex_h">Fleksibel</h3><p data-i18n="home.feat_flex_p">Jadwal bisa disesuaikan dengan kenyamanan Bunda, termasuk akhir pekan.</p></div>
     </div>
   </div>
 </section>
@@ -88,9 +134,9 @@
 <section class="section" id="layanan">
   <div class="container">
     <div class="section-head">
-      <span class="section-eyebrow">Daftar Layanan</span>
-      <h2>Pilih Perawatan Favoritmu</h2>
-      <p>Mulai dari pijat ibu hamil sampai newborn care, semuanya tersedia di sini.</p>
+      <span class="section-eyebrow" data-i18n="home.services_eyebrow">Daftar Layanan</span>
+      <h2 data-i18n="home.services_h2">Pilih Perawatan Favoritmu</h2>
+      <p data-i18n="home.services_p">Mulai dari pijat ibu hamil sampai newborn care, semuanya tersedia di sini.</p>
     </div>
     <div class="cat-tabs" id="catTabs"></div>
     <div class="service-grid" id="serviceGrid"></div>
@@ -102,18 +148,18 @@
   <div class="container">
     <div class="about-grid">
       <div class="about-visual" id="aboutVisual">
-        <img src="/api/logo" alt="Adzkiya" onerror="this.parentElement.innerHTML='🌷'" style="width:65%;height:auto;object-fit:contain;">
+        <img src="/api/logo" alt="Adzkiya Mom Baby Care" loading="lazy" decoding="async" onerror="this.parentElement.innerHTML='🌷'" style="width:65%;height:auto;object-fit:contain;">
       </div>
       <div class="about-content">
-        <span class="section-eyebrow">Tentang Adzkiya</span>
-        <h2>Mom & Baby Care Profesional di Nusawungu</h2>
-        <p>Adzkiya Mom Baby Care hadir untuk menemani perjalanan Bunda — sejak kehamilan, masa nifas, menyusui, hingga tumbuh kembang si kecil. Kami percaya setiap ibu berhak mendapat perawatan yang lembut, aman, dan profesional di lingkungan rumahnya sendiri.</p>
-        <p>Dengan layanan home service, kami siap melayani area <strong>Nusawungu, Cilacap</strong> dan sekitarnya.</p>
+        <span class="section-eyebrow" data-i18n="home.about_eyebrow">Tentang Adzkiya</span>
+        <h2 data-i18n="home.about_h2">Mom & Baby Care Profesional di Nusawungu</h2>
+        <p data-i18n="home.about_p1">Adzkiya Mom Baby Care hadir untuk menemani perjalanan Bunda — sejak kehamilan, masa nifas, menyusui, hingga tumbuh kembang si kecil. Kami percaya setiap ibu berhak mendapat perawatan yang lembut, aman, dan profesional di lingkungan rumahnya sendiri.</p>
+        <p data-i18n="home.about_p2">Dengan layanan home service, kami siap melayani area <strong>Nusawungu, Cilacap</strong> dan sekitarnya.</p>
         <div class="bidan-card">
           <div class="bidan-avatar">👩‍⚕️</div>
           <div>
             <h4 id="practitionerName">Tasya Hanifah Pramesti</h4>
-            <div class="role">A.Md. Keb., CBME — Bidan Praktisi</div>
+            <div class="role" data-i18n="home.bidan_role">A.Md. Keb., CBME — Bidan Praktisi</div>
           </div>
         </div>
       </div>
@@ -125,15 +171,15 @@
 <section class="section" id="testimoni" style="background:linear-gradient(180deg, var(--pink-50) 0%, var(--bg) 100%);">
   <div class="container">
     <div class="section-head">
-      <span class="section-eyebrow">Apa Kata Bunda</span>
-      <h2>Testimoni Pelanggan</h2>
-      <p>Cerita nyata dari ibu-ibu yang sudah mempercayakan perawatan kepada kami.</p>
+      <span class="section-eyebrow" data-i18n="home.testi_eyebrow">Apa Kata Bunda</span>
+      <h2 data-i18n="home.testi_h2">Testimoni Pelanggan</h2>
+      <p data-i18n="home.testi_p">Cerita nyata dari ibu-ibu yang sudah mempercayakan perawatan kepada kami.</p>
     </div>
     <div class="testi-grid" id="testiGrid">
-      <div style="text-align:center;color:var(--text-soft);grid-column:1/-1;padding:30px;">Memuat testimoni...</div>
+      <div style="text-align:center;color:var(--text-soft);grid-column:1/-1;padding:30px;" data-i18n="home.testi_loading">Memuat testimoni...</div>
     </div>
     <div style="text-align:center;margin-top:30px;">
-      <a id="gmapsBtn" href="https://maps.app.goo.gl/V5RcUDQbep3T5ryp7" target="_blank" rel="noopener" class="btn btn-primary">
+      <a id="gmapsBtn" href="https://maps.app.goo.gl/V5RcUDQbep3T5ryp7" target="_blank" rel="noopener" class="btn btn-primary" data-i18n="home.testi_btn">
         ⭐ Lihat Semua Ulasan di Google Maps
       </a>
     </div>
@@ -144,30 +190,30 @@
 <section class="section" id="kontak">
   <div class="container">
     <div class="section-head">
-      <span class="section-eyebrow">Hubungi Kami</span>
-      <h2>Siap Melayani Bunda</h2>
-      <p>Hubungi kami untuk konsultasi gratis atau langsung lakukan reservasi.</p>
+      <span class="section-eyebrow" data-i18n="home.contact_eyebrow">Hubungi Kami</span>
+      <h2 data-i18n="home.contact_h2">Siap Melayani Bunda</h2>
+      <p data-i18n="home.contact_p">Hubungi kami untuk konsultasi gratis atau langsung lakukan reservasi.</p>
     </div>
     <div class="contact-grid">
-      <div class="contact-card"><div class="icn">📍</div><strong>Alamat</strong><span id="contactAddress">Dusun Klumprit Kulon No. 217, RT 1 RW 1 Klumprit, Nusawungu, Cilacap 53283</span></div>
-      <div class="contact-card"><div class="icn">📞</div><strong>WhatsApp</strong><span id="contactPhone"><a href="https://wa.me/6285887018194" target="_blank">085887018194</a></span></div>
-      <div class="contact-card"><div class="icn">🗺️</div><strong>Wilayah Layanan</strong><span id="contactArea">Nusawungu, Cilacap & sekitarnya</span></div>
-      <div class="contact-card"><div class="icn">🚗</div><strong>Jenis Layanan</strong><span>Home Service (Bidan ke rumah)</span></div>
-      <div class="contact-card" style="grid-column:span 2;">
-        <div class="icn">🕒</div><strong>Jam Operasional</strong>
-        <div id="hoursList" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:6px;margin-top:8px;width:100%;font-size:0.88rem;text-align:left;">Memuat...</div>
+      <div class="contact-card"><div class="icn">📍</div><strong data-i18n="home.contact_addr">Alamat</strong><span id="contactAddress">Dusun Klumprit Kulon No. 217, RT 1 RW 1 Klumprit, Nusawungu, Cilacap 53283</span></div>
+      <div class="contact-card"><div class="icn">📞</div><strong data-i18n="home.contact_wa">WhatsApp</strong><span id="contactPhone"><a href="https://wa.me/6285887018194" target="_blank">085887018194</a></span></div>
+      <div class="contact-card"><div class="icn">🗺️</div><strong data-i18n="home.contact_area">Wilayah Layanan</strong><span id="contactArea">Nusawungu, Cilacap & sekitarnya</span></div>
+      <div class="contact-card"><div class="icn">🚗</div><strong data-i18n="home.contact_type">Jenis Layanan</strong><span data-i18n="home.contact_type_val">Home Service (Bidan ke rumah)</span></div>
+      <div class="contact-card contact-card-wide">
+        <div class="icn">🕒</div><strong data-i18n="home.contact_hours">Jam Operasional</strong>
+        <div id="hoursList" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:6px;margin-top:8px;width:100%;font-size:0.85rem;text-align:left;" data-i18n="home.contact_hours_loading">Memuat...</div>
       </div>
-      <div class="contact-card" style="grid-column:span 2;" id="socialContactCard" style="display:none;">
-        <div class="icn">🌐</div><strong>Media Sosial</strong>
+      <div class="contact-card contact-card-wide" id="socialContactCard" style="display:none;">
+        <div class="icn">🌐</div><strong data-i18n="home.contact_social">Media Sosial</strong>
         <div id="socialContactList" style="display:flex;gap:10px;flex-wrap:wrap;margin-top:8px;justify-content:center;"></div>
       </div>
-      <div class="contact-card" style="grid-column:span 2;" id="gmapsCard">
-        <div class="icn">📍</div><strong>Lokasi di Google Maps</strong>
+      <div class="contact-card contact-card-wide" id="gmapsCard">
+        <div class="icn">📍</div><strong data-i18n="home.contact_gmaps">Lokasi di Google Maps</strong>
         <div id="gmapsWrap" style="width:100%;margin-top:10px;border-radius:14px;overflow:hidden;"></div>
       </div>
     </div>
     <div style="text-align:center; margin-top:40px;">
-      <a href="/reservasi.html" class="btn btn-primary">📅 Reservasi Sekarang</a>
+      <a href="/reservasi.html" class="btn btn-primary" data-i18n="home.hero_cta">📅 Reservasi Sekarang</a>
     </div>
   </div>
 </section>
@@ -175,23 +221,87 @@
 <footer>
   <div class="footer-inner">
     <div>
-      © 2026 <span id="footerBrand">Adzkiya Mom Baby Care</span> · Layanan Kesehatan Ibu & Anak Terpercaya
+      © 2026 <span id="footerBrand">Adzkiya Mom Baby Care</span> · <span data-i18n="home.footer_brand_suffix">Layanan Kesehatan Ibu & Anak Terpercaya</span>
       <div id="socialLinks" style="display:flex;gap:12px;margin-top:10px;flex-wrap:wrap;"></div>
     </div>
-    <div><a href="/admin">Admin Login</a></div>
+    <div><a href="/admin" data-i18n="nav.admin">Admin Login</a></div>
   </div>
 </footer>
 
-<script src="/js/main.js"></script>
-<script>
-// Load business settings to update name/contact/hero
-fetch('/api/public-settings').then(r => r.json()).then(s => {
+<!-- JSON-LD Structured Data for Google rich results. Renders a
+     MedicalBusiness / Health & Beauty business card so Google
+     Search can show ratings/price/hours inside results. We hydrate
+     the placeholders with the live DB.settings right after
+     /api/public-settings returns (see the script below), so
+     business name / address / hours always reflect the admin's
+     latest edit. Static defaults are kept here so the very first
+     byte Google crawls already has structured data to read. -->
+<script type="application/ld+json" id="ldjson-business">
+{
+  "@context": "https://schema.org",
+  "@type": "HealthAndBeautyBusiness",
+  "name": "Adzkiya Mom Baby Care",
+  "alternateName": "Adzkiya Mom & Baby Care",
+  "description": "Layanan spa, massage, dan perawatan profesional untuk ibu hamil, nifas, bayi, balita & kids. Home service area Nusawungu, Cilacap.",
+  "image": "/api/logo",
+  "url": "/",
+  "telephone": "+62-858-8701-8194",
+  "priceRange": "Rp 25.000 - Rp 1.400.000",
+  "currenciesAccepted": "IDR",
+  "paymentAccepted": "Tunai, Transfer Bank, QRIS",
+  "address": {
+    "@type": "PostalAddress",
+    "streetAddress": "Dusun Klumprit Kulon No. 217, RT 1 RW 1",
+    "addressLocality": "Klumprit",
+    "addressRegion": "Jawa Tengah",
+    "addressCountry": "ID",
+    "postalCode": "53283"
+  },
+  "areaServed": [
+    { "@type": "City", "name": "Cilacap" },
+    { "@type": "City", "name": "Nusawungu" }
+  ],
+  "openingHoursSpecification": [
+    { "@type": "OpeningHoursSpecification", "dayOfWeek": ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"], "opens": "08:00", "closes": "20:00" },
+    { "@type": "OpeningHoursSpecification", "dayOfWeek": "Sunday", "opens": "09:00", "closes": "17:00" }
+  ],
+  "medicalSpecialty": ["Midwifery", "Pediatric Massage", "Postnatal Care"],
+  "hasOfferCatalog": {
+    "@type": "OfferCatalog",
+    "name": "Layanan Perawatan Ibu & Anak",
+    "itemListElement": [
+      { "@type": "OfferCatalog", "name": "Massage Ibu Hamil", "itemListElement": [] }
+    ]
+  }
+}
+</script>
+
+<script defer src="/js/i18n.js"></script>
+<script defer src="/js/main.js"></script>
+<script defer>
+// Load business settings to update name/contact/hero. Cached on a
+// window-level var so re-rendering after i18n:apply doesn't refetch.
+let PUBLIC_SETTINGS_CACHE = null;
+async function loadPublicSettings() {
+  if (PUBLIC_SETTINGS_CACHE) return PUBLIC_SETTINGS_CACHE;
+  const res = await fetch('/api/public-settings');
+  PUBLIC_SETTINGS_CACHE = await res.json();
+  return PUBLIC_SETTINGS_CACHE;
+}
+async function applyPublicSettings() {
+  const s = await loadPublicSettings();
   if (s.business_name) {
     document.getElementById('brandName').textContent = s.business_name;
     document.getElementById('footerBrand').textContent = s.business_name;
     document.title = `${s.business_name} — ${s.tagline || ''}`;
   }
-  if (s.tagline) document.getElementById('heroTagline').textContent = s.tagline;
+  // Tagline — but ONLY if it isn't already handled by data-i18n. We
+  // re-write from server values so the admin's tagline wins, but we
+  // translate to English when lang=en for nicer SEO.
+  if (s.tagline) {
+    const taglineEl = document.getElementById('heroTagline');
+    if (taglineEl) taglineEl.textContent = (window.getLang && window.getLang() === 'en' && s.tagline_en) ? s.tagline_en : s.tagline;
+  }
   if (s.address) document.getElementById('contactAddress').textContent = s.address;
   if (s.phone) {
     const intl = s.phone.replace(/[^\d]/g, '').replace(/^0/, '62');
@@ -203,13 +313,18 @@ fetch('/api/public-settings').then(r => r.json()).then(s => {
     document.getElementById('heroBg').style.backgroundImage = `url(/api/hero)`;
     document.getElementById('heroBg').classList.add('active');
   }
+  if (s.gmaps_url) {
+    const btn = document.getElementById('gmapsBtn');
+    if (btn) btn.href = s.gmaps_url;
+  }
 
-  // Testimoni
+  // Translate testimonials. We re-fetch each time settings/lang change
+  // so a late load (admin edited copy) propagates without a hard reload.
   const tg = document.getElementById('testiGrid');
   const list = Array.isArray(s.testimonials) ? s.testimonials : [];
   if (tg) {
     if (!list.length) {
-      tg.innerHTML = '<div style="text-align:center;color:var(--text-soft);grid-column:1/-1;padding:30px;">Belum ada testimoni.</div>';
+      tg.innerHTML = `<div style="text-align:center;color:var(--text-soft);grid-column:1/-1;padding:30px;" data-i18n="home.testi_empty">${window.t('home.testi_empty')}</div>`;
     } else {
       tg.innerHTML = list.map(t => {
         const stars = '★'.repeat(t.rating || 5) + '☆'.repeat(5 - (t.rating || 5));
@@ -231,19 +346,18 @@ fetch('/api/public-settings').then(r => r.json()).then(s => {
       }).join('');
     }
   }
-  if (s.gmaps_url) {
-    const btn = document.getElementById('gmapsBtn');
-    if (btn) btn.href = s.gmaps_url;
-  }
 
-  // Jam Operasional
+  // Jam Operasional — server-controlled (day names, open/close hours).
+  // UI chrome (closed label, today label, loading text) is translated.
   const hEl = document.getElementById('hoursList');
   if (hEl && Array.isArray(s.hours) && s.hours.length) {
     const todayIdx = (new Date().getDay() + 6) % 7; // 0=Senin
+    const closedLabel = window.t('home.contact_closed');
+    const todaySuffix = window.t('home.contact_today');
     hEl.innerHTML = s.hours.map((h, i) => `
       <div style="display:flex;justify-content:space-between;padding:6px 10px;border-radius:8px;${i === todayIdx ? 'background:var(--pink-100);font-weight:700;color:var(--pink-700);' : ''}">
-        <span>${h.day}${i === todayIdx ? ' (Hari ini)' : ''}</span>
-        <span>${h.closed ? '<em style="color:#c43050;">Tutup</em>' : `${h.open} – ${h.close}`}</span>
+        <span>${h.day}${i === todayIdx ? todaySuffix : ''}</span>
+        <span>${h.closed ? `<em style="color:#c43050;">${closedLabel}</em>` : `${h.open} – ${h.close}`}</span>
       </div>
     `).join('');
   }
@@ -252,7 +366,6 @@ fetch('/api/public-settings').then(r => r.json()).then(s => {
   const gw = document.getElementById('gmapsWrap');
   const gcard = document.getElementById('gmapsCard');
   if (s.gmaps_embed && gw) {
-    // Sanitize: keep only iframe tag
     const m = s.gmaps_embed.match(/<iframe[^>]*src=["']([^"']+)["'][^>]*><\/iframe>/i);
     if (m) {
       gw.innerHTML = `<iframe src="${m[1]}" style="width:100%;height:280px;border:0;" loading="lazy" referrerpolicy="no-referrer-when-downgrade"></iframe>`;
@@ -260,14 +373,14 @@ fetch('/api/public-settings').then(r => r.json()).then(s => {
       gw.innerHTML = s.gmaps_embed;
     }
   } else if (s.gmaps_url && gw) {
-    gw.innerHTML = `<a href="${s.gmaps_url}" target="_blank" rel="noopener" style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:30px;background:linear-gradient(135deg,#ffe2ed,#fff1e1);border-radius:14px;text-decoration:none;color:var(--pink-700);font-weight:700;">🗺️ Buka di Google Maps →</a>`;
+    const btnLabel = window.t('home.contact_gmaps_btn');
+    gw.innerHTML = `<a href="${s.gmaps_url}" target="_blank" rel="noopener" style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:30px;background:linear-gradient(135deg,#ffe2ed,#fff1e1);border-radius:14px;text-decoration:none;color:var(--pink-700);font-weight:700;">${btnLabel}</a>`;
   } else if (gcard) {
     gcard.style.display = 'none';
   }
 
   // Socials (footer + contact)
   const socials = Array.isArray(s.socials) ? s.socials.filter(x => x && x.url) : [];
-  // Auto-add IG legacy field if present and not duplicated
   if (s.instagram && !socials.find(x => /instagram/i.test(x.platform))) {
     let url = s.instagram.trim();
     if (!/^https?:\/\//i.test(url)) url = 'https://instagram.com/' + url.replace(/^@/, '');
@@ -278,9 +391,11 @@ fetch('/api/public-settings').then(r => r.json()).then(s => {
   const contactCard = document.getElementById('socialContactCard');
   if (socials.length) {
     const html = socials.map(soc => {
-      const icon = soc.icon || '🌐';
       const url = soc.url.startsWith('http') ? soc.url : 'https://' + soc.url;
-      return `<a href="${url}" target="_blank" rel="noopener" title="${soc.platform}" style="display:inline-flex;align-items:center;gap:6px;padding:8px 14px;background:var(--pink-100);color:var(--pink-700);border-radius:999px;text-decoration:none;font-weight:700;font-size:0.88rem;transition:all .15s;">${icon} ${soc.platform}</a>`;
+      const avatar = soc.icon_url
+        ? `<img src="${soc.icon_url}" alt="" style="width:22px;height:22px;border-radius:50%;object-fit:cover;flex-shrink:0;background:var(--pink-100);">`
+        : `<span style="font-size:1rem;line-height:1;">${soc.icon || '🌐'}</span>`;
+      return `<a href="${url}" target="_blank" rel="noopener" title="${soc.platform}" style="display:inline-flex;align-items:center;gap:8px;padding:6px 14px 6px 6px;background:var(--pink-100);color:var(--pink-700);border-radius:999px;text-decoration:none;font-weight:700;font-size:0.88rem;transition:all .15s;">${avatar}<span>${soc.platform}</span></a>`;
     }).join('');
     if (footerSocial) footerSocial.innerHTML = html;
     if (contactSocial) contactSocial.innerHTML = html;
@@ -288,7 +403,40 @@ fetch('/api/public-settings').then(r => r.json()).then(s => {
   } else {
     if (contactCard) contactCard.style.display = 'none';
   }
+}
+loadPublicSettings().then((s) => {
+  applyPublicSettings(s);
+  // Hydrate the JSON-LD with live settings so Google's structured
+  // data matches whatever the admin has configured. Static defaults
+  // are already inside the <script type="application/ld+json">
+  // above; we just patch the fields that change at runtime.
+  try {
+    const ld = JSON.parse(document.getElementById('ldjson-business').textContent);
+    if (s.business_name) ld.name = s.business_name;
+    if (s.address) {
+      const match = s.address.match(/^(.+?),\s*(?:RT\s*\d+\s*RW\s*\d+\s*)?(.+?),\s*(?:Kecamatan\s+)?(.+?),\s*(.+)$/);
+      if (match) {
+        ld.address.streetAddress = match[1].trim();
+        ld.address.addressLocality = (match[2] || '').split(',')[0].trim();
+        ld.address.addressRegion = match[3] ? match[3].trim() : '';
+      }
+    }
+    if (s.phone) ld.telephone = '+62-' + s.phone.replace(/\D/g, '').replace(/^620*/, '62');
+    if (s.hours && Array.isArray(s.hours)) {
+      ld.openingHoursSpecification = s.hours
+        .filter((h) => !h.closed && h.open && h.close)
+        .map((h) => {
+          const days = { 'Senin': 'Monday', 'Selasa': 'Tuesday', 'Rabu': 'Wednesday',
+            'Kamis': 'Thursday', 'Jumat': 'Friday', 'Sabtu': 'Saturday', 'Minggu': 'Sunday' };
+          return { '@type': 'OpeningHoursSpecification', 'dayOfWeek': days[h.day] || h.day, 'opens': h.open, 'closes': h.close };
+        });
+    }
+    document.getElementById('ldjson-business').textContent = JSON.stringify(ld, null, 2);
+  } catch {}
 });
+// Re-apply on language change so testimonials / hours / Gmaps button
+// update without a page reload. The i18n module dispatches this event.
+document.addEventListener('i18n:applied', () => applyPublicSettings());
 </script>
 </body>
 </html>

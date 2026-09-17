@@ -4,9 +4,23 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Reservasi — Adzkiya Mom Baby Care</title>
+<link rel="alternate" hreflang="id" href="/reservasi.html?lang=id">
+<link rel="alternate" hreflang="en" href="/reservasi.html?lang=en">
+<link rel="alternate" hreflang="x-default" href="/reservasi.html">
+<meta name="description" content="Booking layanan home service Adzkiya Mom Baby Care di Nusawungu, Cilacap. Pilih layanan, jadwal, dan metode pembayaran online.">
+<meta name="theme-color" content="#ee5a8a" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#1c1118" media="(prefers-color-scheme: dark)">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Reservasi Adzkiya">
+<meta property="og:title" content="Reservasi Adzkiya Mom Baby Care">
+<meta property="og:description" content="Booking layanan home service bidan bersertifikat untuk ibu & anak di Nusawungu, Cilacap.">
+<meta property="og:image" content="/api/logo">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<!-- Non-blocking font load: page renders with system font, then
+     swaps to Plus Jakarta Sans when stylesheet finishes. -->
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
 <link rel="stylesheet" href="css/style.css">
 <link rel="icon" href="img/logo.png">
 </head>
@@ -15,16 +29,17 @@
 <nav class="nav">
   <div class="nav-inner">
     <a href="index.html" class="brand">
-      <div class="brand-logo"><img src="img/logo.png" alt="" onerror="this.parentElement.innerHTML='🌸';this.parentElement.classList.add('fallback');" style="width:100%;height:100%;object-fit:contain;"></div>
+      <div class="brand-logo"><img src="img/logo.png" alt="Adzkiya Mom Baby Care" loading="lazy" decoding="async" onerror="this.parentElement.innerHTML='🌸';this.parentElement.classList.add('fallback');" style="width:100%;height:100%;object-fit:contain;"></div>
       <div class="brand-text"><span id="brandName">Adzkiya Mom Baby Care</span><small>Mom & Baby Care</small></div>
     </a>
-    <button class="mobile-toggle" onclick="document.getElementById('navLinks').classList.toggle('open')">☰</button>
+    <button class="mobile-toggle" onclick="document.getElementById('navLinks').classList.toggle('open')" aria-label="Buka menu">☰</button>
     <div class="nav-links" id="navLinks">
-      <a href="index.html">Beranda</a>
-      <a href="index.html#layanan">Layanan</a>
-      <a href="kalender.html">Kalender</a>
-      <a href="index.html#kontak">Kontak</a>
-      <button class="theme-toggle" id="themeToggle">🌙</button>
+      <a href="index.html" data-i18n="nav.beranda">Beranda</a>
+      <a href="index.html#layanan" data-i18n="nav.layanan">Layanan</a>
+      <a href="kalender.html" data-i18n="nav.kalender">Kalender</a>
+      <a href="index.html#kontak" data-i18n="nav.kontak">Kontak</a>
+      <button class="theme-toggle" id="themeToggle" aria-label="Toggle tema">🌙</button>
+      <button class="lang-toggle" id="langToggle" type="button" data-i18n-attr="aria-label:nav.language_toggle">🌐 EN</button>
     </div>
   </div>
 </nav>
@@ -33,8 +48,27 @@
   <div class="container">
     <div class="section-head" style="margin-bottom: 30px;">
       <span class="section-eyebrow">Formulir Reservasi</span>
-      <h2>📅 Booking Layanan</h2>
-      <p>Pilih beberapa layanan & tentukan beberapa jadwal sekaligus.</p>
+      <h2 data-i18n="form.title">📅 Booking Layanan</h2>
+      <p data-i18n="form.subtitle">Pilih beberapa layanan & tentukan beberapa jadwal sekaligus.</p>
+    </div>
+
+    <!-- Compact calendar: pasien bisa lihat ketersediaan sebelum booking -->
+    <div class="calendar-wrap cal-compact" style="margin-bottom: 24px;">
+      <div class="cal-header">
+        <h3 id="calLabel">—</h3>
+        <div class="cal-nav">
+          <button onclick="prevMonth()" title="Bulan sebelumnya" aria-label="Bulan sebelumnya">‹</button>
+          <button onclick="todayBtn()" aria-label="Ke bulan ini">Hari ini</button>
+          <button onclick="nextMonth()" title="Bulan berikutnya" aria-label="Bulan berikutnya">›</button>
+        </div>
+      </div>
+      <div class="cal-grid" id="calGrid"></div>
+      <div class="cal-legend">
+        <span><span class="swatch today"></span>Hari ini</span>
+        <span><span class="swatch has-events"></span>Ada treatment</span>
+        <span><span class="swatch full"></span>Penuh</span>
+        <span>💡 Penuh = sudah banyak yg reservasi, pilih hari lain</span>
+      </div>
     </div>
 
     <div class="form-wrap">
@@ -42,41 +76,41 @@
 
       <form id="reservasiForm">
         <div class="form-group">
-          <label>👤 Nama Pasien <span style="color:var(--danger)">*</span></label>
-          <input type="text" name="patient_name" required placeholder="Nama lengkap Bunda / Bayi">
+          <label data-i18n="form.patient_name_label">👤 Nama Pasien <span style="color:var(--danger)">*</span></label>
+          <input type="text" name="patient_name" required placeholder="Nama lengkap Bunda / Bayi" data-i18n-attr="placeholder:form.patient_name_ph">
         </div>
 
         <div class="form-row">
           <div class="form-group">
-            <label>📱 Nomor WhatsApp <span style="color:var(--danger)">*</span></label>
-            <input type="tel" name="whatsapp" required placeholder="08xxxxxxxxxx" pattern="[0-9+ -]{8,16}">
+            <label data-i18n="form.whatsapp_label">📱 Nomor WhatsApp <span style="color:var(--danger)">*</span></label>
+            <input type="tel" name="whatsapp" required placeholder="08xxxxxxxxxx" pattern="[0-9+ -]{8,16}" data-i18n-attr="placeholder:form.whatsapp_ph">
           </div>
           <div class="form-group">
-            <label>📍 Alamat Lengkap <span style="color:var(--danger)">*</span></label>
-            <input type="text" name="address" required placeholder="Dusun, RT/RW, Desa">
+            <label data-i18n="form.address_label">📍 Alamat Lengkap <span style="color:var(--danger)">*</span></label>
+            <input type="text" name="address" required placeholder="Dusun, RT/RW, Desa" data-i18n-attr="placeholder:form.address_ph">
           </div>
         </div>
 
         <!-- CART: multi-services -->
         <div class="cart-section">
-          <h4>💆 Pilih Layanan <small style="color:var(--text-soft);font-weight:500;">— bisa lebih dari satu, atur qty masing-masing</small></h4>
+          <h4>💆 <span data-i18n="form.items_label">Pilih Layanan</span> <small style="color:var(--text-soft);font-weight:500;">— bisa lebih dari satu, atur qty masing-masing</small></h4>
           <div id="cartItems"></div>
-          <button type="button" class="add-btn" onclick="addCartItem()">+ Tambah Layanan</button>
+          <button type="button" class="add-btn" onclick="addCartItem()" data-i18n="form.items_add">+ Tambah Layanan</button>
         </div>
 
         <!-- SLOTS: multi-date/time -->
         <div class="cart-section">
-          <h4>📅 Jadwal <small style="color:var(--text-soft);font-weight:500;">— tambah berapapun tanggal & jam yang dibutuhkan</small></h4>
+          <h4>📅 <span data-i18n="form.slots_label">Jadwal</span> <small style="color:var(--text-soft);font-weight:500;" data-i18n="form.slots_sub">— tambah berapapun tanggal & jam yang dibutuhkan</small></h4>
           <div id="slotsList"></div>
-          <button type="button" class="add-btn" onclick="addSlot()">+ Tambah Jadwal</button>
+          <button type="button" class="add-btn" onclick="addSlot()" data-i18n="form.slots_add">+ Tambah Jadwal</button>
         </div>
 
         <div class="form-group">
-          <label>💳 Metode Pembayaran <span style="color:var(--danger)">*</span></label>
+          <label data-i18n="form.payment_method">💳 Metode Pembayaran <span style="color:var(--danger)">*</span></label>
           <div class="pay-options" id="payOptions">
-            <div class="pay-option" data-method="COD"><span class="icn">💵</span>COD<br><small>Bayar di Tempat</small></div>
-            <div class="pay-option" data-method="Transfer"><span class="icn">🏦</span>Transfer<br><small>Bank</small></div>
-            <div class="pay-option" data-method="QRIS"><span class="icn">📱</span>QRIS<br><small>Scan QR</small></div>
+            <div class="pay-option" data-method="COD"><span class="icn">💵</span><span data-i18n="form.payment_cod">COD</span><br><small data-i18n="form.payment_cod_desc">Bayar di Tempat</small></div>
+            <div class="pay-option" data-method="Transfer"><span class="icn">🏦</span><span data-i18n="form.payment_transfer">Transfer</span><br><small data-i18n="form.payment_transfer_desc">Bank</small></div>
+            <div class="pay-option" data-method="QRIS"><span class="icn">📱</span><span data-i18n="form.payment_qris">QRIS</span><br><small data-i18n="form.payment_qris_desc">Scan QR</small></div>
           </div>
           <input type="hidden" name="payment_method" id="payMethod" required>
         </div>
@@ -91,8 +125,8 @@
         </div>
 
         <div class="form-group">
-          <label>📝 Catatan Tambahan (opsional)</label>
-          <textarea name="notes" rows="2" placeholder="Mis. usia bayi, keluhan, patokan rumah, dll"></textarea>
+          <label data-i18n="form.notes_label">📝 Catatan Tambahan (opsional)</label>
+          <textarea name="notes" rows="2" placeholder="Mis. usia bayi, keluhan, patokan rumah, dll" data-i18n-attr="placeholder:form.notes_ph"></textarea>
         </div>
 
         <div class="summary-card" id="summary">
@@ -102,7 +136,7 @@
           <div class="row total"><span>Total Estimasi:</span><span id="sumGrand">Rp 0</span></div>
         </div>
 
-        <button type="submit" class="btn btn-primary" style="width:100%;justify-content:center;" id="submitBtn">
+        <button type="submit" class="btn btn-primary" style="width:100%;justify-content:center;" id="submitBtn" data-i18n="form.submit">
           ✨ Kirim Reservasi
         </button>
         <p class="help-text" style="text-align:center;margin-top:14px;">
@@ -120,15 +154,34 @@
   </div>
 </footer>
 
-<script src="js/api-config.js"></script>
-<script src="js/main.js"></script>
-<script>
+<script defer src="js/api-config.js"></script>
+<!-- i18n.js MUST load before any page script that calls window.t()
+     or window.i18n.bindToggle(). Scripts run in document order
+     when defer'd, so place it first. -->
+<script defer src="js/i18n.js"></script>
+<script defer src="js/main.js"></script>
+<script defer src="js/kalender.js"></script>
+<script defer>
 let SERVICES = [];
 let SETTINGS = {};
 let cart = []; // {name, price, qty}
 let slots = []; // {date, time}
 const reservationApiBase = String(window.ADZKIYA_API_BASE || '').replace(/\/$/, '');
 const reservationApiUrl = path => reservationApiBase + (path.startsWith('/') ? path : '/' + path);
+
+// Blackout dates — admin-configured "hari libur". Cached client-side
+// after the bootstrap fetch. We use a Set for O(1) membership checks
+// so the validation on each user keystroke stays cheap even when the
+// admin has marked many dates.
+let BLACKOUT_DATES = new Set();
+let BLACKOUT_NOTES = {};
+
+function isBlackoutDate(dateStr) {
+  return BLACKOUT_DATES.has(dateStr);
+}
+function blackoutNote(dateStr) {
+  return (BLACKOUT_NOTES && BLACKOUT_NOTES[dateStr]) || '';
+}
 
 async function bootstrap() {
   try {
@@ -142,8 +195,11 @@ async function bootstrap() {
   } catch (error) {
     if (typeof SERVICES_DATA !== 'undefined') SERVICES = SERVICES_DATA;
     if (typeof SETTINGS_DATA !== 'undefined') SETTINGS = SETTINGS_DATA;
-    document.getElementById('alertBox').innerHTML = '<div class="alert alert-error">Koneksi server sedang lambat. Data harga cadangan ditampilkan; coba kirim kembali beberapa saat lagi.</div>';
+    document.getElementById('alertBox').innerHTML = '<div class="alert alert-error">' + window.t('form.alert_offline') + '</div>';
   }
+  // Cache blackout dates for fast lookups during form rendering.
+  BLACKOUT_DATES = new Set(Array.isArray(SETTINGS.blackout_dates) ? SETTINGS.blackout_dates : []);
+  BLACKOUT_NOTES = (SETTINGS.blackout_notes && typeof SETTINGS.blackout_notes === 'object') ? SETTINGS.blackout_notes : {};
   if (SETTINGS.business_name) document.getElementById('brandName').textContent = SETTINGS.business_name;
   if (SETTINGS.has_logo) {
     const brandLogo = document.querySelector('.brand-logo img');
@@ -158,20 +214,36 @@ async function bootstrap() {
   const catalogItem = SERVICES.flatMap(category => category.items || []).find(item => item.name === preService);
   if (catalogItem) cart.push({ name: catalogItem.name, price: catalogItem.price, qty: 1 });
   if (!cart.length) cart.push({ name: '', price: 0, qty: 1 });
-  // Default 1 slot today 09:00
+  // Default 1 slot today 09:00 — skip ahead if "today" is a blackout
+  // date so the form opens with a valid date already selected.
   const today = new Date().toISOString().slice(0, 10);
-  slots.push({ date: today, time: '09:00' });
+  let defaultDate = today;
+  for (let i = 0; i < 30 && isBlackoutDate(defaultDate); i++) {
+    const d = new Date(defaultDate); d.setDate(d.getDate() + 1);
+    defaultDate = d.toISOString().slice(0, 10);
+  }
+  slots.push({ date: defaultDate, time: '09:00' });
   renderCart(); renderSlots(); updateSummary();
 }
 
 function svcOptions(selected) {
-  let html = `<option value="">— pilih layanan —</option>`;
-  SERVICES.forEach(c => {
-    html += `<optgroup label="${c.cat}">`;
+  // Build a single flat <select> with category headers as disabled
+  // "divider" options. Native <select> on Android Chrome ignores custom
+  // styles inside <optgroup>, but it DOES render disabled options as
+  // bold grey rows that visually separate categories — much clearer
+  // than the default optgroup label, especially on phones.
+  let html = `<option value="" disabled selected hidden>— pilih layanan —</option>`;
+  SERVICES.forEach((c, ci) => {
+    // Category header row (disabled so it can't be selected)
+    html += `<option value="" disabled class="svc-cat-divider">━━ ${c.cat.toUpperCase()} ━━</option>`;
     c.items.forEach(it => {
-      html += `<option value="${it.name}" data-price="${it.price}" ${selected===it.name?'selected':''}>${it.name} — Rp ${it.price.toLocaleString('id-ID')}</option>`;
+      const priceStr = 'Rp ' + it.price.toLocaleString('id-ID');
+      // Pad the service name so the prices line up in a column when
+      // the dropdown is open. The actual alignment is approximated by
+      // padding the price to a fixed column width so longer service
+      // names still show their price on the same visual line.
+      html += `<option value="${it.name}" data-price="${it.price}" data-cat="${c.cat}" ${selected===it.name?'selected':''}>${it.name}  —  ${priceStr}</option>`;
     });
-    html += `</optgroup>`;
   });
   return html;
 }
@@ -183,9 +255,9 @@ function renderCart() {
     const row = document.createElement('div');
     row.className = 'cart-row';
     row.innerHTML = `
-      <select onchange="cart[${i}].name=this.value;cart[${i}].price=parseInt(this.options[this.selectedIndex].dataset.price)||0;updateSummary();">${svcOptions(it.name)}</select>
-      <input type="number" placeholder="Harga" value="${it.price || ''}" min="0" readonly aria-label="Harga layanan">
-      <input type="number" placeholder="Qty" value="${it.qty}" min="1" max="20" oninput="cart[${i}].qty=parseInt(this.value)||1;updateSummary();">
+      <select onchange="cart[${i}].name=this.value;cart[${i}].price=parseInt(this.options[this.selectedIndex].dataset.price)||0;updateSummary();renderCart();" aria-label="Pilih layanan">${svcOptions(it.name)}</select>
+      <div class="cart-price" aria-label="Harga layanan">${it.price ? 'Rp ' + it.price.toLocaleString('id-ID') : '—'}</div>
+      <input type="number" class="cart-qty-mobile" placeholder="Qty" value="${it.qty}" min="1" max="20" oninput="cart[${i}].qty=parseInt(this.value)||1;updateSummary();" aria-label="Jumlah qty">
       <button type="button" class="rm-btn" onclick="cart.splice(${i},1);renderCart();updateSummary();">×</button>
     `;
     el.appendChild(row);
@@ -198,12 +270,18 @@ function renderSlots() {
   el.innerHTML = '';
   const today = new Date().toISOString().slice(0, 10);
   slots.forEach((s, i) => {
+    const isBlackout = isBlackoutDate(s.date);
+    const blackoutHint = isBlackout ? `🚫 Libur${blackoutNote(s.date) ? ' (' + blackoutNote(s.date) + ')' : ''}` : '';
     const row = document.createElement('div');
     row.className = 'slot-row';
     row.innerHTML = `
-      <input type="date" value="${s.date}" min="${today}" oninput="slots[${i}].date=this.value;updateSummary();">
+      <input type="date" value="${s.date}" min="${today}" data-slot-idx="${i}"
+        oninput="slots[${i}].date=this.value;renderSlots();updateSummary();"
+        onchange="slots[${i}].date=this.value;renderSlots();updateSummary();"
+        style="${isBlackout ? 'border-color:#c43050;background:#fde0e4;' : ''}">
       <input type="time" value="${s.time}" oninput="slots[${i}].time=this.value;updateSummary();">
       <button type="button" class="rm-btn" onclick="slots.splice(${i},1);renderSlots();updateSummary();">×</button>
+      ${isBlackout ? `<div style="grid-column:1/-1;font-size:0.78rem;color:#c43050;font-weight:600;padding:4px 0 0;">${blackoutHint} — tanggal tidak tersedia. Silakan pilih tanggal lain.</div>` : ''}
     `;
     el.appendChild(row);
   });
@@ -211,10 +289,15 @@ function renderSlots() {
 function addSlot() {
   const last = slots[slots.length - 1];
   const next = last ? { date: last.date, time: last.time } : { date: new Date().toISOString().slice(0,10), time: '09:00' };
-  // increment date by 1 if more than one slot to avoid duplicates
+  // increment date by 1 if more than one slot to avoid duplicates.
+  // Skip past any blackout dates so the new slot opens on a valid day.
   if (slots.length >= 1) {
-    const d = new Date(next.date); d.setDate(d.getDate() + 1);
-    next.date = d.toISOString().slice(0, 10);
+    for (let i = 0; i < 30; i++) {
+      const d = new Date(next.date); d.setDate(d.getDate() + 1);
+      const candidate = d.toISOString().slice(0, 10);
+      if (!isBlackoutDate(candidate)) { next.date = candidate; break; }
+      next.date = candidate; // last attempt
+    }
   }
   slots.push(next);
   renderSlots(); updateSummary();
@@ -259,31 +342,48 @@ document.getElementById('reservasiForm').addEventListener('submit', async (e) =>
   alertBox.innerHTML = '';
   const validItems = cart.filter(it => it.name && it.price > 0);
   const validSlots = slots.filter(s => s.date && s.time);
-  if (!validItems.length) { alertBox.innerHTML = '<div class="alert alert-error">Pilih minimal 1 layanan</div>'; return; }
-  if (!validSlots.length) { alertBox.innerHTML = '<div class="alert alert-error">Tambah minimal 1 jadwal</div>'; return; }
-  if (!document.getElementById('payMethod').value) { alertBox.innerHTML = '<div class="alert alert-error">Pilih metode pembayaran</div>'; return; }
+  if (!validItems.length) { alertBox.innerHTML = '<div class="alert alert-error">' + window.t('form.error_items') + '</div>'; return; }
+  if (!validSlots.length) { alertBox.innerHTML = '<div class="alert alert-error">' + window.t('form.error_slots') + '</div>'; return; }
+  if (!document.getElementById('payMethod').value) { alertBox.innerHTML = '<div class="alert alert-error">' + window.t('form.payment_required') + '</div>'; return; }
+
+  // Refuse blacked-out dates client-side so the user gets instant
+  // feedback (the server re-validates and is the source of truth).
+  const conflict = validSlots.find((s) => isBlackoutDate(s.date));
+  if (conflict) {
+    const note = blackoutNote(conflict.date);
+    const locale = (window.getLang && window.getLang() === 'en') ? 'en-US' : 'id-ID';
+    const formatted = new Date(conflict.date + 'T00:00:00').toLocaleDateString(locale, { weekday: 'long', day: '2-digit', month: 'long', year: 'numeric' });
+    alertBox.innerHTML = `<div class="alert alert-error">${window.t('form.error_blackout', { date: formatted })}${note ? ` <em>(${note})</em>` : ''}</div>`;
+    renderSlots();
+    return;
+  }
 
   const fd = new FormData(e.target);
   fd.set('items', JSON.stringify(validItems));
   fd.set('slots', JSON.stringify(validSlots));
 
   const btn = document.getElementById('submitBtn');
-  btn.disabled = true; btn.textContent = 'Mengirim...';
+  btn.disabled = true; btn.textContent = window.t('form.sending');
   try {
     const res = await fetch(reservationApiUrl('/api/reservations'), { method: 'POST', body: fd });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Gagal');
     alertBox.innerHTML = `<div class="alert alert-success">
-      ✅ Reservasi #${data.id} berhasil dikirim (total: ${fmtRp(data.total)})! Admin akan menghubungi Anda via WhatsApp.
+      ${window.t('form.success_top', { id: data.id, total: fmtRp(data.total) })}
     </div>`;
     setTimeout(() => {
       const phone = (SETTINGS.phone || '085887018194').replace(/\D/g,'').replace(/^0/, '62');
       const wa = `https://wa.me/${phone}?text=${encodeURIComponent('Halo Admin, saya baru saja reservasi #' + data.id + ' atas nama ' + fd.get('patient_name'))}`;
-      alertBox.innerHTML += `<div class="alert alert-success">📲 <a href="${wa}" target="_blank" style="text-decoration:underline">Klik di sini untuk lanjut chat WhatsApp ke admin →</a></div>`;
+      alertBox.innerHTML += `<div class="alert alert-success">📲 <a href="${wa}" target="_blank" style="text-decoration:underline">${window.t('form.success_wa')}</a></div>`;
     }, 100);
     e.target.reset();
     cart = [{ name: '', price: 0, qty: 1 }];
-    slots = [{ date: new Date().toISOString().slice(0,10), time: '09:00' }];
+    let resetDate = new Date().toISOString().slice(0, 10);
+    for (let i = 0; i < 30 && isBlackoutDate(resetDate); i++) {
+      const d = new Date(resetDate); d.setDate(d.getDate() + 1);
+      resetDate = d.toISOString().slice(0, 10);
+    }
+    slots = [{ date: resetDate, time: '09:00' }];
     renderCart(); renderSlots(); updateSummary();
     document.querySelectorAll('.pay-option').forEach(x => x.classList.remove('selected'));
     document.getElementById('paymentInfo').style.display = 'none';
@@ -291,11 +391,19 @@ document.getElementById('reservasiForm').addEventListener('submit', async (e) =>
   } catch (err) {
     alertBox.innerHTML = `<div class="alert alert-error">❌ ${err.message}</div>`;
   } finally {
-    btn.disabled = false; btn.innerHTML = '✨ Kirim Reservasi';
+    btn.disabled = false; btn.innerHTML = window.t('form.submit');
   }
 });
 
 bootstrap();
+// Bind language toggle + re-render form labels on lang change
+document.addEventListener('DOMContentLoaded', () => {
+  if (window.i18n) {
+    window.i18n.bindToggle(document.getElementById('langToggle'));
+    // Re-render slot rows so blackout hints switch to the new language.
+    document.addEventListener('i18n:applied', () => { renderCart(); renderSlots(); });
+  }
+});
 </script>
 </body>
 </html>

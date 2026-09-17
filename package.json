@@ -15,11 +15,14 @@
   },
   "dependencies": {
     "bcryptjs": "3.0.3",
+    "compression": "^1.8.1",
     "exceljs": "4.4.0",
     "express": "4.22.2",
+    "express-rate-limit": "^8.6.2",
     "jsonwebtoken": "9.0.3",
     "multer": "2.2.0",
     "mysql2": "3.23.4",
+    "pdf-parse": "^2.4.5",
     "pg": "8.23.0"
   },
   "overrides": {

@@ -4,12 +4,47 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Admin — Adzkiya Mom Baby Care</title>
+<meta name="theme-color" content="#1c1118" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#ee5a8a" media="(prefers-color-scheme: light)">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Adzkiya Admin">
+<meta name="robots" content="noindex,nofollow"><!-- admin pages shouldn't be indexed -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="dns-prefetch" href="https://cdn.jsdelivr.net">
+<link rel="dns-prefetch" href="https://unpkg.com">
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
 <link rel="stylesheet" href="css/style.css">
 <link rel="icon" href="img/logo.png">
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<!-- Chart.js with multi-CDN fallback. Loaded with defer so it doesn't
+     block first paint — the dashboard renders table-mode immediately and
+     swaps to chart-mode when Chart.js finishes loading. If the primary
+     CDN is blocked (some Indonesian mobile ISPs throttle cdn.jsdelivr.net),
+     unpkg.com is loaded as a backup. If neither loads within 8s, the
+     dashboard stays in table-mode for the rest of the session. -->
+<script defer src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"
+        onerror="window.__chartJsFailed = (window.__chartJsFailed || 0) + 1; if (window.__chartJsFailed >= 2) { window.dispatchEvent(new Event('chartjs:unavailable')); }"></script>
+<script>
+  // Try a second CDN if the first fails (8s timeout). Each <script>
+  // gets crossorigin=anonymous so the browser can retry cross-domain
+  // without CORS grief. If BOTH fail, fire 'chartjs:unavailable' so
+  // admin.js can switch the dashboard to its table fallback.
+  (function loadChartWithFallback() {
+    if (window.Chart) return;
+    var s = document.createElement('script');
+    s.src = 'https://unpkg.com/chart.js@4.4.0/dist/chart.umd.min.js';
+    s.async = true;
+    s.defer = true;
+    s.crossOrigin = 'anonymous';
+    var done = false;
+    function fallback() { if (!done) { done = true; window.dispatchEvent(new Event('chartjs:unavailable')); } }
+    s.onload = function() { done = true; };
+    s.onerror = function() { fallback(); };
+    document.head.appendChild(s);
+    setTimeout(function() { if (!window.Chart && !done) fallback(); }, 8000);
+  })();
+</script>
 </head>
 <body>
 
@@ -25,12 +60,12 @@
     <div id="loginAlert"></div>
     <form id="loginForm">
       <div class="form-group">
-        <label>📧 Email</label>
-        <input type="email" name="email" required autocomplete="off" placeholder="masukkan email admin">
+        <label for="loginEmail">📧 Email</label>
+        <input id="loginEmail" type="email" name="email" required autocomplete="username" placeholder="masukkan email admin">
       </div>
       <div class="form-group">
-        <label>🔒 Password</label>
-        <input type="password" name="password" required autocomplete="off" placeholder="masukkan password">
+        <label for="loginPassword">🔒 Password</label>
+        <input id="loginPassword" type="password" name="password" required autocomplete="current-password" placeholder="masukkan password">
       </div>
       <button type="submit" class="btn btn-primary" style="width:100%;justify-content:center;">Masuk →</button>
     </form>
@@ -46,18 +81,21 @@
       <div class="brand-text">Adzkiya<small>Admin Panel</small></div>
     </div>
     <nav>
-      <button class="active" data-page="dashboard">📊 Dashboard</button>
-      <button data-page="reservations">📅 Reservasi</button>
-      <button data-page="notifications" style="position:relative;">🔔 Notifikasi<span id="navNotifBadge" class="nav-badge" style="display:none;">0</span></button>
-      <button data-page="calendar">🗓️ Kalender</button>
-      <button data-page="receipts">🧾 Kwitansi</button>
-      <button data-page="recap">📈 Rekap Bulanan</button>
-      <button data-page="backup">💾 Backup/Restore</button>
-      <button data-page="settings">⚙️ Pengaturan</button>
+      <button class="active" data-page="dashboard" aria-label="Dashboard">📊 Dashboard</button>
+      <button data-page="reservations" aria-label="Reservasi">📅 Reservasi</button>
+      <button data-page="notifications" style="position:relative;" aria-label="Notifikasi">🔔 Notifikasi<span id="navNotifBadge" class="nav-badge" style="display:none;" aria-label="Notifikasi belum dibaca">0</span></button>
+      <button data-page="calendar" aria-label="Kalender">🗓️ Kalender</button>
+      <button data-page="receipts" aria-label="Kwitansi">🧾 Kwitansi</button>
+      <button data-page="recap" aria-label="Rekap Bulanan">📈 Rekap Bulanan</button>
+      <button data-page="broadcast" aria-label="Broadcast WhatsApp">📢 Broadcast WA</button>
+      <button data-page="customers" aria-label="CRM Mini Pelanggan">👥 Pelanggan</button>
+      <button data-page="accounting" aria-label="Akunting P&L">💰 Akunting</button>
+      <button data-page="backup" aria-label="Backup dan Restore">💾 Backup/Restore</button>
+      <button data-page="settings" aria-label="Pengaturan">⚙️ Pengaturan</button>
     </nav>
     <div style="margin-top:30px;padding:0 8px;">
-      <button class="theme-toggle" id="themeToggle" style="margin-bottom:10px;">🌙</button>
-      <button onclick="logout()" class="btn-sm btn-del" style="width:100%;padding:10px;">🚪 Logout</button>
+      <button class="theme-toggle" id="themeToggle" style="margin-bottom:10px;" aria-label="Toggle tema gelap/terang">🌙</button>
+      <button onclick="logout()" class="btn-sm btn-del" style="width:100%;padding:10px;" aria-label="Logout">🚪 Logout</button>
     </div>
   </aside>
   <main class="admin-main">
@@ -69,11 +107,17 @@
 <!-- Modal Container -->
 <div id="modalRoot"></div>
 
-<!-- Toast Container -->
-<div id="toastRoot" style="position:fixed;top:20px;right:20px;z-index:9999;display:flex;flex-direction:column;gap:10px;max-width:380px;"></div>
+<!-- Toast Container. max-width uses calc() so it never overflows
+     on phones narrower than 380px (the previous fixed max caused
+     horizontal scroll on small screens). -->
+<div id="toastRoot" style="position:fixed;top:14px;right:14px;left:14px;z-index:9999;display:flex;flex-direction:column;gap:10px;max-width:calc(100vw - 28px);"></div>
 
-<script src="js/api-config.js"></script>
-<script src="js/main.js"></script>
-<script src="js/admin.js"></script>
+<!-- All admin scripts use `defer` so they download in parallel and
+     execute in order after the HTML is parsed. This avoids the classic
+     render-blocking <script> pattern that makes the login form feel
+     sluggish on slow networks. Order is preserved automatically. -->
+<script defer src="js/api-config.js"></script>
+<script defer src="js/main.js"></script>
+<script defer src="js/admin.js"></script>
 </body>
 </html>
