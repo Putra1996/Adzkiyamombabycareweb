@@ -1532,7 +1532,7 @@ function printReceipt(r) {
     </style>
     </head><body>
     <div class="print-actions">
-      <button id="printBtn" onclick="window.print()" style="background:#ee5a8a;">🖨️ Cetak / Save PDF</button>
+      <button id="printBtn" onclick="embedSigAndPrint()" style="background:#ee5a8a;">🖨️ Cetak / Save PDF</button>
       <button id="clearBtn" onclick="if(window.__sigPad && window.__sigPad._clearSig) window.__sigPad._clearSig()" style="background:#f4a83a;color:white;">✏️ Ulangi TTD</button>
       <button onclick="window.close()" style="background:var(--card);color:var(--text);border:1px solid var(--border);">✕ Tutup</button>
     </div>
@@ -1606,7 +1606,8 @@ function printReceipt(r) {
         <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:24px;flex-wrap:wrap;text-align:left;">
           <div style="flex:1;min-width:200px;">
             <div style="font-size:0.82rem;color:var(--text-soft);">Penerima,</div>
-            <div style="margin-top:50px;border-top:1px solid #2a1822;padding-top:6px;font-weight:700;">${esc(r.patient_name || '-')}</div>
+            <img id="sigEmbed" alt="" style="display:none;max-height:80px;max-width:240px;margin-top:6px;margin-bottom:6px;background:transparent;" />
+            <div id="sigEmbedPlaceholder" style="margin-top:50px;border-top:1px solid #2a1822;padding-top:6px;font-weight:700;">${esc(r.patient_name || '-')}</div>
             <div style="font-size:0.78rem;color:var(--text-soft);">Nama jelas & tanda tangan</div>
           </div>
           <div style="flex:1;min-width:200px;text-align:right;">
@@ -1719,6 +1720,35 @@ function printReceipt(r) {
       // so a stale signature doesn't sneak into the printed PDF.
       const inc = document.getElementById('sigInclude');
       if (inc) inc.addEventListener('change', () => { if (!inc.checked) canvas._clearSig(); });
+
+      // Capture the signature as a PNG and embed it into the invoice's
+      // "Penerima," block right before the user triggers window.print().
+      // Without this, the signature stays on the canvas but never ends
+      // up in the printed/Save-as-PDF output. The <img id="sigEmbed"> is
+      // hidden by default — show it only when we actually have a
+      // non-empty signature AND the "Sertakan di kwitansi" checkbox is
+      // still checked. We collapse the nama placeholder's margin-top
+      // so the rendered TTD sits cleanly above the underline border.
+      function embedSigAndPrint() {
+        const img = document.getElementById('sigEmbed');
+        const placeholder = document.getElementById('sigEmbedPlaceholder');
+        const include = inc && inc.checked;
+        const dataUrl = canvas._getSigDataUrl();
+        if (include && dataUrl) {
+          img.src = dataUrl;
+          img.style.display = 'block';
+          if (placeholder) placeholder.style.marginTop = '8px';
+        } else {
+          img.removeAttribute('src');
+          img.style.display = 'none';
+          if (placeholder) placeholder.style.marginTop = '50px';
+        }
+        window.print();
+      }
+      // Expose to window so the inline onclick="embedSigAndPrint()" on
+      // the printBtn (rendered before the script runs, but in the
+      // same window) can resolve the function by name.
+      window.embedSigAndPrint = embedSigAndPrint;
     })();
     <\/script>
     </body></html>`;
