@@ -5052,11 +5052,15 @@ async function saveKwitansiAsPDF(r, paperSize) {
     pageHeightMm = ps.height;
   }
 
-  // Step 7: instantiate jsPDF with the right format. For custom
-  // sizes (thermal) we use explicit width/height; for standard
-  // sizes we use the format name.
+  // Step 7: instantiate jsPDF with the right format. Different rules
+  // per size:
+  //   • jsPDF native formats ('a4', 'a5') → pass the name directly
+  //   • Custom sizes (F4, Thermal) → pass an explicit [w, h] array
+  // jsPDF does NOT recognize 'f4' as a known format name — passing it
+  // as a string would silently fall back to Letter size, producing a
+  // wrong-sized PDF. Always pass F4 as an explicit width/height array.
   let pdf;
-  if (isThermal) {
+  if (isThermal || paperSize === 'F4') {
     pdf = new jsPDF({
       unit: 'mm',
       format: [pageWidthMm, pageHeightMm],
@@ -5065,7 +5069,7 @@ async function saveKwitansiAsPDF(r, paperSize) {
   } else {
     pdf = new jsPDF({
       unit: 'mm',
-      format: paperSize.toLowerCase(), // 'a5', 'a4', 'f4' (custom F4)
+      format: paperSize.toLowerCase(), // 'a5' or 'a4' — both are jsPDF native
       orientation: 'portrait'
     });
   }
