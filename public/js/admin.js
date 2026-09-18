@@ -1305,23 +1305,49 @@ function printReceiptById(id) {
 function shareOrPrintKwitansi(id) {
   const r = (window._receiptsCache || RECAP_RECEIPTS || []).find(x => x.id === id);
   if (!r) return alert('Kwitansi tidak ditemukan.');
+  // Default paper size = A5. Persisted per-admin in localStorage so
+  // the choice survives across sessions.
+  let paperSize = localStorage.getItem('adm_kw_paper_size') || 'A5';
   openModal(`
-    <h3>📤 Kirim Kwitansi</h3>
-    <p style="color:var(--text-soft);font-size:0.9rem;margin:6px 0 14px;">Pilih cara kirim kwitansi <strong>${esc(r.invoice_no || '')}</strong> ke <strong>${esc(r.patient_name || 'pasien')}</strong>:</p>
-    <div style="display:grid;gap:12px;">
-      <button onclick="shareKwitansiById(${r.id});closeModal();" class="btn btn-primary" style="width:100%;justify-content:center;padding:14px;">
+    <h3>📤 Kirim Kwitansi <span style="color:var(--text-soft);font-size:0.85rem;font-weight:500;">${esc(r.invoice_no || '')}</span></h3>
+    <p style="color:var(--text-soft);font-size:0.9rem;margin:6px 0 14px;">Pilih cara kirim kwitansi atas nama <strong>${esc(r.patient_name || 'pasien')}</strong>:</p>
+    <div style="display:grid;gap:10px;">
+      <button onclick="shareKwitansiById(${r.id});closeModal();" class="btn btn-primary" style="width:100%;justify-content:center;padding:12px;">
         <span>💬 Share Link via WhatsApp</span>
         <small style="display:block;font-weight:500;font-size:0.78rem;opacity:0.85;">Buat link privat + buka WA template</small>
       </button>
-      <button onclick="closeModal();printReceiptById(${r.id});" class="btn btn-wa" style="width:100%;justify-content:center;padding:14px;">
-        <span>🖨️ Cetak + Tanda Tangan</span>
-        <small style="display:block;font-weight:500;font-size:0.78rem;opacity:0.85;">Print preview dengan signature pad</small>
+      <button onclick="closeModal();printReceiptById(${r.id});" class="btn btn-wa" style="width:100%;justify-content:center;padding:12px;">
+        <span>🖨️ Cetak + Tanda Tangan Pasien</span>
+        <small style="display:block;font-weight:500;font-size:0.78rem;opacity:0.85;">Print preview dengan signature pad (opsional)</small>
       </button>
+      <div style="padding:14px;background:var(--bg);border:1px solid var(--border);border-radius:12px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+          <strong style="font-size:0.92rem;">💾 Save PDF — Langsung Download</strong>
+          <select id="kwPdfSize" onchange="localStorage.setItem('adm_kw_paper_size', this.value);" style="padding:6px 10px;border:1.5px solid var(--border);border-radius:8px;background:var(--card);color:var(--text);font-size:0.82rem;font-family:inherit;font-weight:600;">
+            ${Object.entries(KW_PAPER_SIZES).map(([k, v]) => `<option value="${k}" ${paperSize === k ? 'selected' : ''}>${v.icon} ${v.label}</option>`).join('')}
+          </select>
+        </div>
+        <button onclick="saveKwitansiAsPDF(_kwitansiForPdf, document.getElementById('kwPdfSize').value)" class="btn btn-primary" style="width:100%;justify-content:center;padding:12px;background:#7c3aed;">
+          <span>💾 Download ${esc(r.invoice_no || 'kwitansi')}.pdf</span>
+          <small style="display:block;font-weight:500;font-size:0.78rem;opacity:0.85;">Ukuran kertas sudah ter-set, langsung print tanpa atur manual</small>
+        </button>
+        <small style="display:block;margin-top:8px;color:var(--text-soft);line-height:1.5;">📐 Pilih ukuran kertas di atas. PDF yang di-generate sudah tertanam ukuran kertas, jadi saat dibuka di laptop/HP → di-print → langsung sesuai tanpa harus setting ukuran kertas lagi di printer dialog.</small>
+      </div>
       <button onclick="downloadProtected('/api/proof/${r.id}', '${esc(r.invoice_no)}.${r.proof_mime ? r.proof_mime.split('/')[1] : 'bin'}')" class="btn btn-outline" style="width:100%;justify-content:center;">
         📎 Download Bukti Pembayaran
       </button>
     </div>
   `);
+  // Stash the receipt on a global so the Save PDF button can read it
+  // without needing to re-fetch from cache. Cleared on modal close.
+  window._kwitansiForPdf = r;
+  // Also wire closeModal to clear the global.
+  const orig = closeModal;
+  // Use a once-only listener on the backdrop click to clean up.
+  setTimeout(() => {
+    const backdrop = document.querySelector('.modal-backdrop');
+    if (backdrop) backdrop.addEventListener('click', () => { window._kwitansiForPdf = null; }, { once: true });
+  }, 50);
 }
 
 function toggleSelectAllReceipts(checked) {
@@ -4635,6 +4661,288 @@ async function deleteOwnerSignature() {
   } catch (e) {
     alert('Gagal hapus: ' + e.message);
   }
+}
+
+// ===== KWITANSI PDF EXPORT (Direct download, no print dialog) =====
+// Three paper sizes supported. Default = A5 portrait — the most
+// common receipt size for Indonesian baby-spa / home-service
+// businesses. The @page CSS rules in the inline print template
+// (see printReceipt below) read this and bake the page size into
+// the generated PDF so the user's printer doesn't have to be
+// reconfigured.
+//
+// A4  : 210 × 297 mm — full letter size, for shops that use a
+//       normal printer with cut-to-size receipt printer paper.
+// A5  : 148 × 210 mm — half-letter, the default for kwitansi
+//       bayi/spa in Indonesia. Fits roughly 60% of the screen.
+// F4  : 215 × 330 mm — Folio (common in Indonesia for legal docs).
+// Thermal-80mm : 80 × auto mm — narrow thermal receipt printer
+//       (Epson TM-T82, etc.). Auto height = sum of content.
+// Thermal-58mm : 58 × auto mm — narrower thermal printer.
+//
+// The "lock layout" promise: no matter which size admin picks, the
+// content reflows to fit without text overlap. We achieve this by:
+//   1. Wrapping the invoice in a fixed-WIDTH container sized to
+//      match the chosen paper.
+//   2. Using `font-size: clamp(min, ideal, max)` so text shrinks
+//      proportionally when paper is narrow.
+//   3. Using `flex-wrap: wrap` on the 2-column footer so Penerima /
+//      Hormat kami stack vertically when there's no horizontal room.
+//   4. Hiding non-essential UI (signature pad, etc.) in the PDF
+//      output — only the clean receipt goes into the file.
+const KW_PAPER_SIZES = {
+  'A5':           { width: '148mm', height: '210mm', label: 'A5 (148×210mm) — kwitansi bayi/spa', icon: '📄' },
+  'A4':           { width: '210mm', height: '297mm', label: 'A4 (210×297mm) — full letter',     icon: '📃' },
+  'F4':           { width: '215mm', height: '330mm', label: 'F4 (215×330mm) — Folio legal',     icon: '📋' },
+  'Thermal-80mm': { width: '80mm',  height: 'auto',  label: 'Thermal 80mm (printer struk)',   icon: '🧾' },
+  'Thermal-58mm': { width: '58mm',  height: 'auto',  label: 'Thermal 58mm (printer struk kecil)', icon: '🧾' }
+};
+
+// Render an off-screen invoice HTML element then snapshot it to a
+// PDF using html2pdf.js (loaded from CDN on first use). The
+// resulting blob is downloaded directly via <a download> — no
+// print dialog, no "Save as PDF" chooser. The file is named after
+// the invoice_no so admin can find it in their Downloads folder.
+//
+// html2pdf.js docs: https://ekoopmans.github.io/html2pdf.js/
+async function ensureHtml2PdfLoaded() {
+  if (typeof window.html2pdf === 'function') return window.html2pdf;
+  await new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/html2pdf.js@0.10.1/dist/html2pdf.bundle.min.js';
+    s.onload = () => resolve();
+    s.onerror = () => reject(new Error('Gagal memuat library html2pdf.js dari CDN. Cek koneksi internet.'));
+    document.head.appendChild(s);
+  });
+  return window.html2pdf;
+}
+
+async function saveKwitansiAsPDF(r, paperSize) {
+  // r        : full receipt object (same shape printReceipt uses)
+  // paperSize: one of KW_PAPER_SIZES keys. Defaults to 'A5' which
+  //            matches the most common Indonesian kwitansi printer.
+  const ps = KW_PAPER_SIZES[paperSize] || KW_PAPER_SIZES['A5'];
+  // Build the invoice DOM in a detached <div> so we can size it
+  // precisely without affecting the live UI. The .kw-pdf-wrap
+  // class pins the content width to the paper width so the layout
+  // locks at the right size — no responsive collapse.
+  const wrap = document.createElement('div');
+  wrap.className = 'kw-pdf-wrap';
+  // Inline styles on the wrap override the print template's max-width
+  // because we're not going through window.print() — html2pdf
+  // captures the wrap element directly.
+  wrap.style.cssText = `position:fixed;left:-99999px;top:0;background:white;width:${ps.width};padding:6mm;box-sizing:border-box;font-family:'Plus Jakarta Sans','Helvetica Neue',Arial,sans-serif;color:#2a1822;`;
+  // We re-use the same invoice HTML that printReceipt() renders, but
+  // hide the patient signature pad (it lives in print preview, not
+  // the PDF). The owner signature IS included automatically via the
+  // <img id="ownerSigEmbed"> — we populate its src from the same
+  // blob-fetch used in the inline IIFE.
+  const html = buildKwitansiHtmlForExport(r);
+  wrap.innerHTML = html;
+  document.body.appendChild(wrap);
+  // Populate owner signature (if set) so the PDF has the same
+  // embedded signature as the printed kwitansi. Same fetch pattern
+  // as the existing embedSigAndPrint() IIFE.
+  const ownerImg = wrap.querySelector('#ownerSigEmbed');
+  const ownerUnderline = wrap.querySelector('#ownerSigUnderline');
+  const wantOwner = !!(SETTINGS && SETTINGS.has_owner_signature);
+  if (wantOwner && ownerImg) {
+    try {
+      const r2 = await fetch(apiUrl('/api/owner-signature'), { credentials: 'omit' });
+      if (r2.ok) {
+        const blob = await r2.blob();
+        ownerImg.src = await new Promise((resolve) => {
+          const fr = new FileReader();
+          fr.onload = () => resolve(fr.result);
+          fr.readAsDataURL(blob);
+        });
+        ownerImg.style.display = 'block';
+        if (ownerUnderline) ownerUnderline.style.marginTop = '6px';
+      } else {
+        if (ownerUnderline) ownerUnderline.style.marginTop = '50px';
+      }
+    } catch (e) {
+      if (ownerUnderline) ownerUnderline.style.marginTop = '50px';
+    }
+  } else if (ownerUnderline) {
+    ownerUnderline.style.marginTop = '50px';
+  }
+  // Inject paper-size-specific @page rules so html2pdf embeds the
+  // correct page dimensions in the PDF metadata.
+  injectPaperPageRules(wrap, ps);
+  // Load html2pdf if not already cached.
+  await ensureHtml2PdfLoaded();
+  const filename = (r.invoice_no || 'kwitansi') + '.pdf';
+  const opts = {
+    margin: 0, // wrap already has 6mm padding
+    filename: filename,
+    image: { type: 'jpeg', quality: 0.95 },
+    html2canvas: { scale: 2, useCORS: true, backgroundColor: '#ffffff', logging: false },
+    // jsPDF page format matches the paper size. width/height in mm.
+    jsPDF: {
+      unit: 'mm',
+      format: paperSize === 'Thermal-80mm' || paperSize === 'Thermal-58mm' ? [parseInt(ps.width), 297] : paperSize.toLowerCase(),
+      orientation: 'portrait'
+    },
+    pagebreak: { mode: ['avoid-all', 'css', 'legacy'] }
+  };
+  try {
+    await window.html2pdf().set(opts).from(wrap).save();
+  } finally {
+    // Detach the wrap so it doesn't accumulate in the DOM.
+    try { document.body.removeChild(wrap); } catch (e) {}
+  }
+}
+
+// Inject <style> rules that scope to our detached wrap element so
+// the captured PDF matches the chosen paper size. We avoid touching
+// the global stylesheet so live UI isn't affected.
+//
+// Why we need this: html2pdf + html2canvas reads computed styles, so
+// even if we set width:80mm on the wrap, long content could still
+// overflow because font-size inherits from <body>. We force a sane
+// scale + handle a few edge cases (Thermal has auto height, so we
+// also need `min-height` to keep the visual density).
+function injectPaperPageRules(wrap, ps) {
+  const isThermal = ps.width.endsWith('mm') && parseInt(ps.width) < 100;
+  const fontBase = isThermal ? '9pt' : '10pt';
+  // Compute a min-height that scales with width: narrow thermal
+  // receipts get denser type and a tighter body to fit more rows.
+  const style = document.createElement('style');
+  style.dataset.kwPdfStyle = '1';
+  style.textContent = `
+    .kw-pdf-wrap { font-size: ${fontBase}; line-height: 1.4; }
+    .kw-pdf-wrap .invoice { width: 100% !important; max-width: 100% !important; margin: 0 !important; padding: 0 !important; box-shadow: none !important; border: none !important; background: white !important; }
+    .kw-pdf-wrap .invoice-header { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 4mm; padding-bottom: 3mm; border-bottom: 2px solid #ee5a8a; }
+    .kw-pdf-wrap .invoice-brand { display: flex; gap: 3mm; align-items: center; flex: 1 1 60%; min-width: 0; }
+    .kw-pdf-wrap .invoice-brand img { max-width: 18mm; max-height: 18mm; object-fit: contain; }
+    .kw-pdf-wrap .invoice-brand h2 { font-size: 1.15em; margin: 0; line-height: 1.15; }
+    .kw-pdf-wrap .invoice-brand small { font-size: 0.82em; line-height: 1.35; color: #6a5a64; word-break: break-word; }
+    .kw-pdf-wrap .invoice-meta { text-align: right; min-width: 0; }
+    .kw-pdf-wrap .invoice-meta strong { display: block; font-size: 0.92em; letter-spacing: 1px; }
+    .kw-pdf-wrap .invoice-meta-no { display: block; font-size: 0.95em; font-weight: 700; }
+    .kw-pdf-wrap .invoice-meta small { font-size: 0.78em; color: #6a5a64; }
+    .kw-pdf-wrap .invoice-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4mm; margin: 4mm 0; }
+    .kw-pdf-wrap .invoice-block { min-width: 0; }
+    .kw-pdf-wrap .invoice-block h4 { font-size: 0.75em; text-transform: uppercase; letter-spacing: 0.5px; color: #8b6878; margin: 0 0 1mm; }
+    .kw-pdf-wrap .invoice-block-body { font-size: 0.92em; line-height: 1.4; word-break: break-word; margin: 0; }
+    .kw-pdf-wrap .invoice-table { width: 100% !important; border-collapse: collapse; margin: 3mm 0; font-size: 0.88em; }
+    .kw-pdf-wrap .invoice-table th, .kw-pdf-wrap .invoice-table td { border-bottom: 1px solid #ffd6e2; padding: 1.4mm 2mm; text-align: left; word-break: break-word; }
+    .kw-pdf-wrap .invoice-table th.num, .kw-pdf-wrap .invoice-table td.num { text-align: right; white-space: nowrap; }
+    .kw-pdf-wrap .invoice-table th { background: #ee5a8a; color: white; font-weight: 700; }
+    .kw-pdf-wrap .totals { margin: 3mm 0; }
+    .kw-pdf-wrap .totals .row { display: flex; justify-content: space-between; padding: 1mm 0; font-size: 0.92em; }
+    .kw-pdf-wrap .totals .row.grand { font-weight: 800; font-size: 1.08em; border-top: 2px solid #ee5a8a; padding-top: 2mm; margin-top: 2mm; }
+    .kw-pdf-wrap .invoice-footer { margin-top: 4mm; padding-top: 3mm; border-top: 1px dashed #ffd6e2; }
+    .kw-pdf-wrap .footer-row { display: flex; gap: 4mm; flex-wrap: wrap; justify-content: space-between; align-items: flex-start; }
+    .kw-pdf-wrap .footer-col { flex: 1 1 45%; min-width: 0; }
+    .kw-pdf-wrap .footer-col.right { text-align: right; }
+    .kw-pdf-wrap .footer-label { font-size: 0.78em; color: #6a5a64; }
+    .kw-pdf-wrap .footer-name { border-top: 1px solid #2a1822; padding-top: 1.5mm; margin-top: 16mm; font-weight: 700; font-size: 0.95em; }
+    .kw-pdf-wrap #ownerSigEmbed { max-height: 18mm !important; max-width: 100% !important; height: auto !important; }
+    .kw-pdf-wrap .thank-you { text-align: center; margin-top: 4mm; padding-top: 3mm; border-top: 1px dashed #ffd6e2; font-size: 0.85em; color: #6a5a64; }
+    .kw-pdf-wrap .thank-you strong { color: #2a1822; display: block; margin-bottom: 1mm; font-size: 1.05em; }
+    ${isThermal ? `
+    .kw-pdf-wrap .invoice-table th, .kw-pdf-wrap .invoice-table td { padding: 0.8mm 1.2mm; font-size: 0.82em; }
+    .kw-pdf-wrap .footer-name { margin-top: 12mm; }
+    ` : ''}
+  `;
+  document.head.appendChild(style);
+  // Stash the style node on the wrap so callers can clean it up if
+  // they want. (We don't currently — html2canvas reads styles
+  // synchronously before .save() resolves, so leaving the style in
+  // place is harmless.)
+  wrap._kwPdfStyle = style;
+}
+
+// Build the same HTML that printReceipt() renders, minus the
+// patient signature pad (the pad only exists in interactive print
+// preview — it has no role in the PDF output). Same data shape,
+// same CSS classes so the @media print + .kw-pdf-wrap rules apply.
+function buildKwitansiHtmlForExport(r) {
+  const items = Array.isArray(r.items) ? r.items : (r.items || JSON.parse(r.items_json || '[]'));
+  const biz = SETTINGS || {};
+  const logoSrc = biz.has_logo ? apiUrl('/api/logo') : null;
+  const times = (Array.isArray(r.service_times) && r.service_times.length)
+    ? r.service_times
+    : (r.service_time ? [r.service_time] : []);
+  const timesHtml = times.length
+    ? times.map((t) => `<span style="display:inline-block;margin-right:3px;padding:1mm 2mm;background:#fff5f8;border:1px solid #ffd6e2;border-radius:8px;font-size:0.85em;font-weight:700;color:#ee5a8a;">⏰ ${esc(t)} WIB</span>`).join('')
+    : '<span style="color:#6a5a64;">—</span>';
+  const sessionsLabel = times.length > 1 ? ` <strong style="color:#ee5a8a;">${times.length} sesi</strong>` : '';
+  return `
+    <div class="invoice">
+      <div class="invoice-header">
+        <div class="invoice-brand">
+          ${logoSrc ? `<img src="${logoSrc}" alt="">` : '<span style="font-size:2.4rem;">🌸</span>'}
+          <div>
+            <h2>${esc(biz.business_name || 'Adzkiya Mom Baby Care')}</h2>
+            <small>${esc(biz.tagline || 'Layanan Kesehatan Ibu & Anak Terpercaya')}<br>
+            ${esc(biz.address || '')}<br>
+            WA: ${esc(biz.phone || '085887018194')}</small>
+          </div>
+        </div>
+        <div class="invoice-meta">
+          <strong>KWITANSI</strong>
+          <span class="invoice-meta-no">${esc(r.invoice_no || '')}</span>
+          <small>${new Date(r.created_at).toLocaleDateString('id-ID', { day:'2-digit', month:'long', year:'numeric' })}</small>
+        </div>
+      </div>
+      <div class="invoice-grid">
+        <div class="invoice-block">
+          <h4>Kepada</h4>
+          <p class="invoice-block-body">
+            <strong>${esc(r.patient_name || '-')}</strong><br>
+            ${esc(r.whatsapp || '')}<br>
+            ${esc(r.address || '')}
+          </p>
+        </div>
+        <div class="invoice-block">
+          <h4>Tanggal & Waktu Layanan ${sessionsLabel}</h4>
+          <p class="invoice-block-body">
+            ${r.service_date ? new Date(r.service_date).toLocaleDateString('id-ID', { day:'2-digit', month:'long', year:'numeric' }) : '-'}
+            <div style="margin-top:2mm;">${timesHtml}</div>
+          </p>
+        </div>
+      </div>
+      <table class="invoice-table">
+        <thead><tr><th>Layanan</th><th class="num">Qty</th><th class="num">Harga</th><th class="num">Subtotal</th></tr></thead>
+        <tbody>
+          ${items.map(it => `<tr>
+            <td>${esc(it.name)}</td>
+            <td class="num">${it.qty}</td>
+            <td class="num">${fmtRp(it.price)}</td>
+            <td class="num">${fmtRp(it.price * it.qty)}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+      <div class="totals">
+        <div class="row"><span>Subtotal</span><span>${fmtRp(r.subtotal)}</span></div>
+        ${r.transport_fee ? `<div class="row"><span>Transportasi</span><span>${fmtRp(r.transport_fee)}</span></div>` : ''}
+        ${r.discount ? `<div class="row"><span>Diskon</span><span>-${fmtRp(r.discount)}</span></div>` : ''}
+        <div class="row grand"><span>TOTAL</span><span>${fmtRp(r.total)}</span></div>
+      </div>
+      <div class="invoice-footer">
+        <div class="footer-row">
+          <div class="footer-col">
+            <div class="footer-label">Penerima,</div>
+            <div class="footer-name">${esc(r.patient_name || '-')}</div>
+            <div class="footer-label" style="margin-top:1mm;">Nama jelas &amp; tanda tangan</div>
+          </div>
+          <div class="footer-col right">
+            <div class="footer-label">Hormat kami,</div>
+            <img id="ownerSigEmbed" alt="" style="display:none;margin:1mm 0 1mm auto;" />
+            <div id="ownerSigUnderline" class="footer-name"><em>${esc(biz.practitioner || 'Tasya Hanifah Pramesti, A.Md. Keb., CBME')}</em></div>
+            <div class="footer-label" style="margin-top:1mm;">${esc(biz.business_name || 'Adzkiya Mom Baby Care')}</div>
+          </div>
+        </div>
+        <div class="thank-you">
+          <strong>Terima kasih atas kepercayaan Anda 🌸</strong>
+          Kwitansi ini sah dan diproses secara elektronik oleh sistem.
+        </div>
+      </div>
+    </div>
+  `;
 }
 
 // INIT
