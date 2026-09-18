@@ -12,6 +12,50 @@ const apiUrl = (path) => /^https?:\/\//i.test(path) ? path : `${API_BASE}${path.
 const fmtDate = (s) => s ? new Date(s).toLocaleDateString('id-ID', { day: '2-digit', month: 'short', year: 'numeric' }) : '-';
 const fmtDateTime = (s) => s ? new Date(s).toLocaleString('id-ID', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '-';
 
+// Detect touch-primary devices (phones, tablets). Even when the user
+// has Chrome's "Situs desktop" toggle on, this still returns true —
+// `pointer:coarse` + `hover:none` is independent of the reported
+// viewport width. Combined with CSS media queries of the same name,
+// this keeps the mobile-friendly layout active on touch devices
+// regardless of what the viewport meta / desktop toggle lies about.
+function isTouchDevice() {
+  if (typeof window === 'undefined') return false;
+  // The matchMedia call works in all evergreen browsers; the inner
+  // property checks are fallback for older mobile browsers that don't
+  // expose the matchMedia query yet (rare these days).
+  if (window.matchMedia) {
+    return window.matchMedia('(hover: none) and (pointer: coarse)').matches
+      || window.matchMedia('(hover: none) and (pointer: coarse) and (max-width: 1024px)').matches;
+  }
+  return ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
+}
+
+// isNarrowView() returns true when the viewport is narrow by either
+// (a) physical width or (b) being a touch device with Chrome's
+// "Situs desktop" toggle enabled (which inflates innerWidth to 980).
+// Used by JS that needs to choose between rendering the table or the
+// card list — CSS does the final swap via body[data-table-mode].
+function isNarrowView() {
+  if (window.innerWidth <= 720) return true;
+  if (isTouchDevice() && window.innerWidth <= 1024) return true;
+  return false;
+}
+
+// Set the body's data-table-mode attribute early so that even pages
+// which never call setAttribute (e.g. dashboard before any list
+// renders) pick the right CSS rule on touch devices. On desktop the
+// attribute is a no-op (CSS hides the duplicate card list).
+if (isNarrowView()) {
+  try { document.body.setAttribute('data-table-mode', 'cards'); } catch {}
+}
+// And re-evaluate when the viewport changes (Chrome's "Situs desktop"
+// toggle can flip at runtime when the user pulls down the menu).
+window.addEventListener('resize', () => {
+  if (isNarrowView()) {
+    document.body.setAttribute('data-table-mode', 'cards');
+  }
+});
+
 async function api(path, opts = {}) {
   const headers = { 'Content-Type': 'application/json', ...(opts.headers || {}) };
   if (TOKEN) headers.Authorization = 'Bearer ' + TOKEN;
@@ -67,6 +111,17 @@ async function showApp() {
   await loadCache();
   navigate('dashboard');
   startNotifPolling();
+  // Re-layout every Chart.js instance when the viewport changes — without
+  // this charts can render at 0×0 inside their .chart-canvas-wrap after
+  // the device rotates or Chrome's "Situs desktop" toggle inflates the
+  // viewport. Debounced so we only resize once after a burst of events.
+  let _chartResizeTimer = null;
+  window.addEventListener('resize', () => {
+    clearTimeout(_chartResizeTimer);
+    _chartResizeTimer = setTimeout(() => {
+      Object.values(CHARTS).forEach((c) => { try { c.resize(); } catch {} });
+    }, 120);
+  });
 }
 async function loadCache() {
   try {
@@ -119,6 +174,9 @@ function navigate(page) {
     recap: renderRecap,
     backup: renderBackup,
     settings: renderSettings,
+    broadcast: renderBroadcast,
+    customers: renderCustomers,
+    accounting: renderAccounting,
   };
   (handlers[page] || renderDashboard)();
 }
@@ -136,24 +194,45 @@ async function renderDashboard() {
       </div>
       <button onclick="renderDashboard()" class="btn btn-outline">🔄 Refresh</button>
     </div>
-    <div class="stat-grid" id="statGrid"><div>Loading...</div></div>
+
+    <!-- Reservasi Terbaru — dipindah ke ATAS chart supaya di mobile
+         (yang viewport-nya sempit) info ini tetap kelihatan tanpa harus
+         scroll jauh ke bawah melwati chart. -->
+    <div class="setting-card" id="recentCard" style="margin-bottom:18px;">
+      <h3 style="margin-bottom:14px;display:flex;align-items:center;gap:8px;">📋 Reservasi Terbaru <small id="recentCount" style="color:var(--text-soft);font-weight:500;font-size:0.85rem;"></small></h3>
+      <div id="recentSkeleton" style="display:grid;gap:8px;">
+        <div class="notif-card" style="opacity:.5;">Memuat reservasi…</div>
+      </div>
+    </div>
+
+    <div class="stat-grid" id="statGrid"><div class="notif-card" style="opacity:.5;">Memuat statistik…</div></div>
+    <!-- Chart utama: omzet 14 hari. Semua chart tampil di semua device —
+         layout & tinggi chart disesuaikan via CSS untuk layar kecil. -->
+    <div class="chart-card" style="margin-bottom:14px;">
+      <h3>📈 Omzet 14 Hari Terakhir</h3>
+      <div class="chart-canvas-wrap"><canvas id="chOmzetDay"></canvas></div>
+    </div>
     <div class="charts-grid">
-      <div class="chart-card"><h3>📈 Omzet 14 Hari Terakhir</h3><div class="chart-canvas-wrap"><canvas id="chOmzetDay"></canvas></div></div>
       <div class="chart-card"><h3>📊 Status Reservasi</h3><div class="chart-canvas-wrap"><canvas id="chStatus"></canvas></div></div>
+      <div class="chart-card"><h3>💰 Omzet 6 Bulan</h3><div class="chart-canvas-wrap"><canvas id="chOmzetMonth"></canvas></div></div>
     </div>
     <div class="charts-grid">
-      <div class="chart-card"><h3>💰 Omzet 6 Bulan</h3><div class="chart-canvas-wrap"><canvas id="chOmzetMonth"></canvas></div></div>
       <div class="chart-card"><h3>💳 Metode Pembayaran</h3><div class="chart-canvas-wrap"><canvas id="chPay"></canvas></div></div>
+      <div class="chart-card"><h3>🏆 Layanan Terpopuler</h3><div class="chart-canvas-wrap" style="height:280px;"><canvas id="chServices"></canvas></div></div>
     </div>
-    <div class="chart-card" style="margin-bottom:20px;"><h3>🏆 Layanan Terpopuler</h3><div class="chart-canvas-wrap" style="height:280px;"><canvas id="chServices"></canvas></div></div>
-    <h3 style="margin: 24px 0 14px;">📋 Reservasi Terbaru</h3>
-    <div id="recentList"></div>
   `;
+  // Populate Reservasi Terbaru FIRST so it shows even before stats
+  // resolve — at least the section is anchored at the top of the page.
   try {
-    const [stats, charts, rows] = await Promise.all([
+    const rows = await api('/api/admin/reservations');
+    renderRecentList(rows.slice(0, 8));
+  } catch (e) {
+    document.getElementById('recentSkeleton').innerHTML = '<div class="alert alert-error">' + e.message + '</div>';
+  }
+  try {
+    const [stats, charts] = await Promise.all([
       api('/api/admin/stats'),
-      api('/api/admin/charts'),
-      api('/api/admin/reservations')
+      api('/api/admin/charts')
     ]);
     document.getElementById('statGrid').innerHTML = `
       <div class="stat-card"><div class="label">Pending</div><div class="value">${stats.pending}</div></div>
@@ -163,23 +242,35 @@ async function renderDashboard() {
       <div class="stat-card"><div class="label">Total Reservasi</div><div class="value">${stats.total}</div></div>
     `;
     drawCharts(charts);
-
-    const recent = rows.slice(0, 8);
-    document.getElementById('recentList').innerHTML = recent.length ? `
-      <div class="table-scroll"><table class="data-table"><thead>
-        <tr><th>Pasien</th><th>Layanan</th><th>Sesi</th><th>Status</th><th>Bayar</th><th>Total</th></tr>
-      </thead><tbody>
-      ${recent.map(r => `<tr>
-        <td><strong>${esc(r.patient_name)}</strong><br><small style="color:var(--text-soft)">${esc(r.whatsapp)}</small></td>
-        <td>${renderItemsCompact(r.items)}</td>
-        <td>${(r.slots || []).length} sesi</td>
-        <td><span class="badge badge-${r.status}">${r.status}</span></td>
-        <td><span class="badge badge-${r.payment_status}">${r.payment_status}</span></td>
-        <td><strong>${fmtRp(r.total)}</strong></td>
-      </tr>`).join('')}
-      </tbody></table></div>
-    ` : '<p style="color:var(--text-soft);text-align:center;padding:20px;">Belum ada reservasi.</p>';
   } catch (e) { document.getElementById('statGrid').innerHTML = `<div class="alert alert-error">${e.message}</div>`; }
+}
+
+// Render the recent-reservations list in a card format. Shows a count
+// pill next to the heading so the admin can see at-a-glance how many
+// latest reservations are listed, even before scrolling into the list.
+function renderRecentList(rows) {
+  const skel = document.getElementById('recentSkeleton');
+  const count = document.getElementById('recentCount');
+  if (count) count.textContent = rows.length ? `(${rows.length} terbaru)` : '';
+  if (!skel) return;
+  if (!rows.length) {
+    skel.innerHTML = '<p style="color:var(--text-soft);text-align:center;padding:14px;">Belum ada reservasi.</p>';
+    return;
+  }
+  // On phones render compact card list, on desktop render the table.
+  // Cards are mobile-first because they fit a 360px-wide viewport.
+  skel.innerHTML = `
+    <div class="card-list" aria-label="Reservasi terbaru (tampilan kartu untuk HP)">
+      ${rows.map(r => `<div class="card-list-item">
+        <div class="cli-head">${esc(r.patient_name || '-')} <small style="color:var(--text-soft);font-weight:500;font-size:0.82rem;">· #${r.id}</small></div>
+        <div class="cli-meta">📅 ${(r.slots || []).map(s => `${s.date} ${s.time}`).join(', ') || '—'}</div>
+        <div class="cli-row"><span class="cli-label">Layanan</span><span class="cli-value" style="text-align:left;font-weight:500;">${(r.items || []).map(it => `${esc(it.name)} ×${it.qty}`).join(', ') || '-'}</span></div>
+        <div class="cli-row"><span class="cli-label">Status</span><span class="cli-value"><span class="badge badge-${r.status}">${r.status}</span></span></div>
+        <div class="cli-row"><span class="cli-label">Bayar</span><span class="cli-value"><span class="badge badge-${r.payment_status}">${r.payment_status}</span></span></div>
+        <div class="cli-row"><span class="cli-label">Total</span><span class="cli-value"><strong>${fmtRp(r.total)}</strong></span></div>
+      </div>`).join('')}
+    </div>
+  `;
 }
 
 function renderItemsCompact(items) {
@@ -190,6 +281,14 @@ function renderItemsCompact(items) {
 }
 
 function drawCharts(d) {
+  // Fallback path: if Chart.js failed to load from both CDNs (mobile
+  // networks sometimes block cdn.jsdelivr.net or unpkg), render the
+  // same data as plain HTML tables. Functionally equivalent — every
+  // chart the admin wants to see is still there as tabular data.
+  if (typeof window.Chart !== 'function') {
+    renderChartsAsTables(d);
+    return;
+  }
   const pinkColors = ['#ee5a8a', '#ffb979', '#ffa6bf', '#ffd3a8', '#ee7ea4', '#ff7ea4', '#d63f70', '#ffd6e2'];
   // Omzet by day - line
   CHARTS.day = new Chart(document.getElementById('chOmzetDay'), {
@@ -243,6 +342,70 @@ function drawCharts(d) {
     options: { ...chartOpts({}), indexAxis: 'y', plugins: { legend: { display: false } } }
   });
 }
+
+// Replace any of the canvas-based chart cards that don't have a
+// working chart with a plain HTML table of the same data. Called when
+// Chart.js fails to load from every CDN we tried. Each branch keeps the
+// data shape identical to the chart it replaces — only the visual
+// rendering changes (table instead of canvas).
+function renderChartsAsTables(d) {
+  const omzetDayEl = document.getElementById('chOmzetDay');
+  if (omzetDayEl) {
+    const wrap = omzetDayEl.closest('.chart-card');
+    if (wrap) wrap.innerHTML = '<h3>📈 Omzet 14 Hari Terakhir</h3>' +
+      renderMiniTable([['Tanggal', 'Omzet']].concat(d.omzetByDay.map((x) => [x.date, fmtRp(x.omzet)])));
+  }
+  const statusEl = document.getElementById('chStatus');
+  if (statusEl) {
+    const wrap = statusEl.closest('.chart-card');
+    if (wrap) wrap.innerHTML = '<h3>📊 Status Reservasi</h3>' +
+      renderMiniTable([['Status', 'Jumlah']].concat(Object.entries(d.statusCount || {})));
+  }
+  const monthEl = document.getElementById('chOmzetMonth');
+  if (monthEl) {
+    const wrap = monthEl.closest('.chart-card');
+    if (wrap) wrap.innerHTML = '<h3>💰 Omzet 6 Bulan</h3>' +
+      renderMiniTable([['Bulan', 'Omzet']].concat(d.omzetByMonth.map((x) => [x.month, fmtRp(x.omzet)])));
+  }
+  const payEl = document.getElementById('chPay');
+  if (payEl) {
+    const wrap = payEl.closest('.chart-card');
+    if (wrap) wrap.innerHTML = '<h3>💳 Metode Pembayaran</h3>' +
+      renderMiniTable([['Metode', 'Jumlah']].concat(Object.entries(d.payCount || {})));
+  }
+  const svcEl = document.getElementById('chServices');
+  if (svcEl) {
+    const wrap = svcEl.closest('.chart-card');
+    if (wrap) wrap.innerHTML = '<h3>🏆 Layanan Terpopuler</h3>' +
+      renderMiniTable([['Layanan', 'Booking']].concat(d.topServices.map((x) => [x.name, x.count])));
+  }
+  // Optionally notify the admin that charts are in table mode (so
+  // they understand why they don't look like usual charts).
+  const banner = document.getElementById('chartFallbackBanner');
+  if (!banner) {
+    const b = document.createElement('div');
+    b.id = 'chartFallbackBanner';
+    b.style.cssText = 'background:var(--pink-50);border:1px dashed var(--border);border-radius:10px;padding:10px 14px;margin-bottom:14px;font-size:0.85rem;color:var(--text-soft);';
+    b.textContent = '⚠️ Mode tabel aktif — grafik Chart.js gagal dimuat (CDN diblokir/koneksi lambat). Data tetap lengkap, hanya tampil dalam bentuk tabel.';
+    const header = document.querySelector('.admin-header');
+    if (header && header.parentElement) {
+      header.parentElement.insertBefore(b, header.nextSibling);
+    }
+  }
+}
+
+// Tiny helper used by renderChartsAsTables — return an HTML table
+// from a 2D array of cells.
+function renderMiniTable(rows) {
+  if (!rows.length) return '<p style="color:var(--text-soft);padding:14px;text-align:center;">Tidak ada data.</p>';
+  const headerRow = rows[0];
+  const bodyRows = rows.slice(1);
+  return '<div class="table-scroll" style="margin-top:8px;"><table class="data-table"><thead><tr>' +
+    headerRow.map((h) => '<th>' + h + '</th>').join('') +
+    '</tr></thead><tbody>' +
+    bodyRows.map((r) => '<tr>' + r.map((c) => '<td>' + c + '</td>').join('') + '</tr>').join('') +
+    '</tbody></table></div>';
+}
 function chartOpts(scales) {
   return {
     responsive: true, maintainAspectRatio: false,
@@ -252,6 +415,13 @@ function chartOpts(scales) {
 }
 
 // ---------- RESERVATIONS ----------
+// Cached list + filters so search/sort/date-range don't refetch the
+// server on every keystroke. The server already supports from/to/
+// status/payment_status query params, so for the heavier filters we
+// re-query. For client-only tweaks (search text, sort order) we just
+// re-filter the cached array.
+let RES_CACHE = [];
+let RES_FILTERS = { q: '', from: '', to: '', sort: 'date_desc' };
 async function renderReservations() {
   const c = document.getElementById('pageContent');
   c.innerHTML = `
@@ -260,39 +430,144 @@ async function renderReservations() {
       <div style="display:flex;gap:8px;flex-wrap:wrap;">
         <select id="filterStatus" style="padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--card);color:var(--text);">
           <option value="">Semua Status</option><option value="pending">Pending</option>
-          <option value="approved">Approved</option><option value="rejected">Rejected</option>
+          <option value="approved">Approved</option>
+          <option value="rejected">Rejected</option>
         </select>
         <select id="filterPay" style="padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--card);color:var(--text);">
-          <option value="">Semua Bayar</option><option value="unpaid">Unpaid</option><option value="lunas">Lunas</option>
+          <option value="">Semua Bayar</option><option value="unpaid">Unpaid</option>
+          <option value="lunas">Lunas</option>
         </select>
-        <button onclick="loadReservations()" class="btn-sm btn-pay">🔄 Refresh</button>
+        <button onclick="loadReservations(true)" class="btn-sm btn-pay">🔄 Refresh</button>
       </div>
+    </div>
+    <div class="setting-card" style="margin-bottom:14px;padding:14px 16px;">
+      <div style="display:grid;grid-template-columns:2fr 1fr 1fr 1fr;gap:10px;align-items:end;">
+        <div>
+          <label style="font-size:0.82rem;font-weight:600;color:var(--text-soft);">🔍 Cari Pasien / No. WA / Invoice</label>
+          <input type="search" id="resSearch" placeholder="Ketik nama, HP, atau #ID..." style="width:100%;padding:8px 12px;border:1.5px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-family:inherit;" autocomplete="off">
+        </div>
+        <div>
+          <label style="font-size:0.82rem;font-weight:600;color:var(--text-soft);">📅 Dari</label>
+          <input type="date" id="resFrom" style="width:100%;padding:8px 12px;border:1.5px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-family:inherit;">
+        </div>
+        <div>
+          <label style="font-size:0.82rem;font-weight:600;color:var(--text-soft);">📅 Sampai</label>
+          <input type="date" id="resTo" style="width:100%;padding:8px 12px;border:1.5px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-family:inherit;">
+        </div>
+        <div>
+          <label style="font-size:0.82rem;font-weight:600;color:var(--text-soft);">↕️ Urutkan</label>
+          <select id="resSort" style="width:100%;padding:8px 12px;border:1.5px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-family:inherit;">
+            <option value="date_desc">Tanggal Terbaru</option>
+            <option value="date_asc">Tanggal Terlama</option>
+            <option value="total_desc">Total Terbesar</option>
+            <option value="total_asc">Total Terkecil</option>
+            <option value="name_asc">Nama A-Z</option>
+            <option value="name_desc">Nama Z-A</option>
+            <option value="id_desc">ID Terbaru</option>
+          </select>
+        </div>
+      </div>
+      <div id="resCount" style="margin-top:10px;font-size:0.85rem;color:var(--text-soft);"></div>
     </div>
     <div id="reservationsList">Loading...</div>
   `;
-  document.getElementById('filterStatus').onchange = loadReservations;
-  document.getElementById('filterPay').onchange = loadReservations;
-  loadReservations();
+  document.getElementById('filterStatus').onchange = () => loadReservations(true);
+  document.getElementById('filterPay').onchange = () => loadReservations(true);
+  // Client-side filters (search, sort) don't need a server refetch.
+  document.getElementById('resSearch').oninput = () => { RES_FILTERS.q = document.getElementById('resSearch').value; renderFilteredReservations(); };
+  document.getElementById('resSort').onchange = () => { RES_FILTERS.sort = document.getElementById('resSort').value; renderFilteredReservations(); };
+  // Date range filters DO need a server refetch (server has the
+  // index-friendly `from`/`to` query params).
+  document.getElementById('resFrom').onchange = () => { RES_FILTERS.from = document.getElementById('resFrom').value; loadReservations(true); };
+  document.getElementById('resTo').onchange = () => { RES_FILTERS.to = document.getElementById('resTo').value; loadReservations(true); };
+  // Restore the previously-entered filter values (in case user
+  // navigates away and back, we don't lose their search text).
+  document.getElementById('resSearch').value = RES_FILTERS.q;
+  document.getElementById('resSort').value = RES_FILTERS.sort;
+  if (RES_FILTERS.from) document.getElementById('resFrom').value = RES_FILTERS.from;
+  if (RES_FILTERS.to) document.getElementById('resTo').value = RES_FILTERS.to;
+  await loadReservations(false);
 }
 
-async function loadReservations() {
-  const status = document.getElementById('filterStatus').value;
-  const pay = document.getElementById('filterPay').value;
-  const qs = new URLSearchParams();
-  if (status) qs.set('status', status);
-  if (pay) qs.set('payment_status', pay);
-  try {
-    const rows = await api('/api/admin/reservations?' + qs);
-    const el = document.getElementById('reservationsList');
-    if (!rows.length) { el.innerHTML = '<p style="color:var(--text-soft);text-align:center;padding:40px;">Tidak ada reservasi.</p>'; return; }
-    el.innerHTML = `<div class="table-scroll"><table class="data-table"><thead><tr>
+async function loadReservations(refetch) {
+  // The first load (or an explicit "Refresh" button) refetches the
+  // server. Subsequent toggles of search/sort just re-filter the
+  // cached list to keep the UI snappy on slow networks.
+  if (refetch || !RES_CACHE.length) {
+    const status = document.getElementById('filterStatus').value;
+    const pay = document.getElementById('filterPay').value;
+    const qs = new URLSearchParams();
+    if (status) qs.set('status', status);
+    if (pay) qs.set('payment_status', pay);
+    if (RES_FILTERS.from) qs.set('from', RES_FILTERS.from);
+    if (RES_FILTERS.to) qs.set('to', RES_FILTERS.to);
+    try {
+      RES_CACHE = await api('/api/admin/reservations?' + qs);
+    } catch (e) {
+      document.getElementById('reservationsList').innerHTML = `<div class="alert alert-error">${e.message}</div>`;
+      return;
+    }
+  }
+  renderFilteredReservations();
+}
+
+function renderFilteredReservations() {
+  let rows = RES_CACHE.slice();
+  const q = (RES_FILTERS.q || '').toLowerCase().trim();
+  if (q) {
+    rows = rows.filter((r) => {
+      // Match by patient name, phone (digits-only), reservation id, or
+      // any service item name. Most common admin searches are "what
+      // came in from Bunda Rina" or "who booked Baby Sleepwell".
+      const phoneDigits = String(r.whatsapp || '').replace(/\D/g, '');
+      const qDigits = q.replace(/\D/g, '');
+      return (
+        String(r.patient_name || '').toLowerCase().includes(q) ||
+        (qDigits && phoneDigits.includes(qDigits)) ||
+        String(r.id).includes(qDigits || q) ||
+        (r.items || []).some((it) => String(it.name || '').toLowerCase().includes(q)) ||
+        String(r.address || '').toLowerCase().includes(q)
+      );
+    });
+  }
+  // Sort. Default is date_desc (newest first).
+  rows.sort((a, b) => {
+    switch (RES_FILTERS.sort) {
+      case 'date_asc': return String(a.reservation_date || '').localeCompare(String(b.reservation_date || ''));
+      case 'total_desc': return (b.total || 0) - (a.total || 0);
+      case 'total_asc': return (a.total || 0) - (b.total || 0);
+      case 'name_asc': return String(a.patient_name || '').localeCompare(String(b.patient_name || ''));
+      case 'name_desc': return String(b.patient_name || '').localeCompare(String(a.patient_name || ''));
+      case 'id_desc': return (b.id || 0) - (a.id || 0);
+      case 'date_desc':
+      default: return String(b.reservation_date || '').localeCompare(String(a.reservation_date || ''));
+    }
+  });
+
+  const el = document.getElementById('reservationsList');
+  document.body.setAttribute('data-table-mode', 'cards');
+  // Update the visible count so admin knows how many rows match.
+  const totalCount = RES_CACHE.length;
+  const shownCount = rows.length;
+  const countEl = document.getElementById('resCount');
+  if (countEl) {
+    countEl.innerHTML = shownCount === totalCount
+      ? `📊 Total: <strong>${totalCount}</strong> reservasi`
+      : `📊 Menampilkan <strong>${shownCount}</strong> dari <strong>${totalCount}</strong> reservasi${q ? ` (cari: "${esc(q)}")` : ''}`;
+  }
+
+  if (!rows.length) {
+    el.innerHTML = `<p style="color:var(--text-soft);text-align:center;padding:40px;background:var(--card);border-radius:12px;">${q ? `Tidak ada reservasi yang cocok dengan "${esc(q)}".` : 'Tidak ada reservasi.'}</p>`;
+    return;
+  }
+  const tableHtml = `<div class="data-table-wrap"><div class="table-scroll"><table class="data-table"><thead><tr>
       <th>#</th><th>Pasien</th><th>Layanan</th><th>Jadwal</th><th>Bayar</th><th>Total</th><th>Status</th><th>Aksi</th>
     </tr></thead><tbody>
       ${rows.map(r => `<tr>
         <td>#${r.id}</td>
         <td><strong>${esc(r.patient_name)}</strong><br>
           <small><a href="https://wa.me/${r.whatsapp.replace(/\D/g,'')}" target="_blank">${esc(r.whatsapp)}</a></small><br>
-          <small style="color:var(--text-soft)">${esc(r.address.slice(0,40))}${r.address.length>40?'…':''}</small></td>
+          <small style="color:var(--text-soft)">${esc((r.address||'').slice(0,40))}${(r.address||'').length>40?'…':''}</small></td>
         <td><div class="items-list">${(r.items||[]).map(it => `<div class="item-line">• ${esc(it.name)} <small style="color:var(--text-soft)">×${it.qty}</small></div>`).join('')}</div></td>
         <td><div class="slots-list">${(r.slots||[]).map(s => `<span class="slot-line">${fmtDate(s.date)} ${s.time}</span>`).join(' ')}</div></td>
         <td>${esc(r.payment_method)}<br>${r.proof_file ? `<button type="button" onclick="openProtectedAsset('/api/proof/${r.id}')" class="link-button" style="font-size:0.78rem;">📎 Bukti</button><br>` : ''}<span class="badge badge-${r.payment_status}">${r.payment_status}</span></td>
@@ -305,8 +580,26 @@ async function loadReservations() {
           <button class="btn-sm btn-del" onclick="delRes(${r.id})">🗑️</button>
         </td>
       </tr>`).join('')}
-    </tbody></table></div>`;
-  } catch (e) { document.getElementById('reservationsList').innerHTML = `<div class="alert alert-error">${e.message}</div>`; }
+    </tbody></table></div></div>`;
+  const cardHtml = `<div class="card-list">
+      ${rows.map(r => `<div class="card-list-item">
+        <div class="cli-head">#${r.id} · ${esc(r.patient_name)}</div>
+        <div class="cli-row"><span class="cli-label">WhatsApp</span><span class="cli-value"><a href="https://wa.me/${r.whatsapp.replace(/\D/g,'')}" target="_blank">${esc(r.whatsapp)}</a></span></div>
+        <div class="cli-row"><span class="cli-label">Alamat</span><span class="cli-value" style="font-weight:500;">${esc((r.address||'').slice(0,60))}${(r.address||'').length>60?'…':''}</span></div>
+        <div class="cli-row"><span class="cli-label">Layanan</span><span class="cli-value" style="text-align:left;font-weight:500;">${(r.items||[]).map(it => `• ${esc(it.name)} ×${it.qty}`).join('<br>')}</span></div>
+        <div class="cli-row"><span class="cli-label">Jadwal</span><span class="cli-value" style="font-weight:500;">${(r.slots||[]).map(s => `${fmtDate(s.date)} ${s.time}`).join('<br>')}</span></div>
+        <div class="cli-row"><span class="cli-label">Bayar</span><span class="cli-value">${esc(r.payment_method)}${r.proof_file ? `<br><button type="button" onclick="openProtectedAsset('/api/proof/${r.id}')" class="link-button" style="font-size:0.78rem;">📎 Bukti</button>` : ''}</span></div>
+        <div class="cli-row"><span class="cli-label">Total</span><span class="cli-value">${fmtRp(r.total)}</span></div>
+        <div class="cli-row"><span class="cli-label">Status</span><span class="cli-value"><span class="badge badge-${r.status}">${r.status}</span> <span class="badge badge-${r.payment_status}">${r.payment_status}</span></span></div>
+        <div class="cli-actions">
+          ${r.status === 'pending' ? `<button class="btn-sm btn-approve" onclick="updateRes(${r.id}, 'approved', null)">✓ Approve</button>` : ''}
+          ${r.payment_status === 'unpaid' ? `<button class="btn-sm btn-pay" onclick="updateRes(${r.id}, null, 'lunas')">💰 Lunas</button>` : ''}
+          <button class="btn-sm btn-view" onclick="viewRes(${r.id})">👁️ Detail</button>
+          <button class="btn-sm btn-del" onclick="delRes(${r.id})">🗑️ Hapus</button>
+        </div>
+      </div>`).join('')}
+    </div>`;
+  el.innerHTML = tableHtml + cardHtml;
 }
 
 async function updateRes(id, status, payment_status) {
@@ -314,12 +607,12 @@ async function updateRes(id, status, payment_status) {
   if (status) body.status = status;
   if (payment_status) body.payment_status = payment_status;
   await api('/api/admin/reservations/' + id, { method: 'PATCH', body: JSON.stringify(body) });
-  loadReservations();
+  loadReservations(true);
 }
 async function delRes(id) {
   if (!confirm('Hapus reservasi ini?')) return;
   await api('/api/admin/reservations/' + id, { method: 'DELETE' });
-  loadReservations();
+  loadReservations(true);
 }
 async function viewRes(id) {
   const rows = await api('/api/admin/reservations');
@@ -355,69 +648,210 @@ async function quickMakeReceipt(id) {
 }
 
 // ---------- CALENDAR ADMIN ----------
+// Compact mobile-friendly calendar. Cells pakai class .cal-compact
+// dari stylesheet. Click tanggal → buka panel detail di bawah
+// kalender yang menampilkan daftar (layanan, jam) per reservasi.
+// Nama pasien & nomor HP di-mask ("Bunda A***") demi privasi —
+// admin bisa buka Reservasi atau Kwitansi untuk lihat data lengkap.
 let admCalDate = new Date();
+let admCalEvents = []; // {date, time, items, status, reservation_id, items_count}
+let admCalSelectedDate = null;
 async function renderCalendarAdmin() {
   const c = document.getElementById('pageContent');
   c.innerHTML = `
     <div class="admin-header">
       <h1>🗓️ Kalender Realtime</h1>
-      <div class="cal-nav">
-        <button class="btn-sm btn-pay" onclick="admPrev()">‹</button>
-        <button class="btn-sm btn-pay" onclick="admToday()">Hari ini</button>
-        <button class="btn-sm btn-pay" onclick="admNext()">›</button>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+        <span style="font-size:0.82rem;color:var(--text-soft);">📅 Lihat jadwal reservasi per hari</span>
+        <button onclick="admRefresh()" class="btn-sm btn-pay">🔄 Refresh</button>
       </div>
     </div>
-    <div class="calendar-wrap">
-      <h3 id="admCalLabel" style="margin-bottom:16px;">—</h3>
+    <div class="calendar-wrap cal-compact">
+      <div class="cal-header">
+        <h3 id="admCalLabel">—</h3>
+        <div class="cal-nav">
+          <button onclick="admPrev()" title="Bulan sebelumnya">‹</button>
+          <button onclick="admToday()">Hari ini</button>
+          <button onclick="admNext()" title="Bulan berikutnya">›</button>
+        </div>
+      </div>
       <div class="cal-grid" id="admCalGrid"></div>
+      <div class="cal-legend">
+        <span><span class="swatch today"></span>Hari ini</span>
+        <span><span class="swatch has-events"></span>Ada reservasi</span>
+        <span style="color:var(--text-soft);font-size:0.78rem;">💡 Klik tanggal untuk lihat detail (nama pasien di-mask)</span>
+      </div>
+    </div>
+    <div id="admCalDetail" style="display:none;margin-top:18px;background:var(--card);border-radius:12px;padding:18px;border:1px solid var(--border);">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+        <h3 style="margin:0;" id="admCalDetailTitle">—</h3>
+        <button onclick="closeAdmCalDetail()" class="btn-sm btn-view">Tutup</button>
+      </div>
+      <div id="admCalDetailContent"></div>
     </div>
   `;
+  await admRefresh();
+}
+async function admRefresh() {
+  try {
+    const rows = await api('/api/admin/reservations');
+    admCalEvents = [];
+    rows.forEach(r => {
+      const items = Array.isArray(r.items) ? r.items : [];
+      (r.slots || []).forEach((s, idx) => {
+        admCalEvents.push({
+          reservation_id: r.id,
+          date: s.date,
+          time: s.time,
+          status: r.status,
+          payment_status: r.payment_status,
+          // Items for this reservation — we display per-slot. Since
+          // items are usually identical across slots of the same
+          // reservation, we attach them on the FIRST slot only.
+          items: idx === 0 ? items : [],
+          items_total: r.total,
+          // Private fields (name, whatsapp) are NOT loaded here. They
+          // are masked out of the calendar entirely — admin opens
+          // Reservasi / Kwitansi to see full PII.
+        });
+      });
+    });
+  } catch (e) {
+    admCalEvents = [];
+  }
   drawAdmCal();
 }
-async function drawAdmCal() {
-  const rows = await api('/api/admin/reservations');
-  // Flatten slots
-  const events = [];
-  rows.forEach(r => {
-    (r.slots || []).forEach(s => events.push({
-      date: s.date, time: s.time, patient_name: r.patient_name,
-      service_name: r.items && r.items[0] ? r.items[0].name : r.service_name,
-      status: r.status
-    }));
-  });
+function maskPatientId(id) {
+  // Stable short mask of a numeric reservation id, e.g. #42 → "#…0042".
+  // Doesn't reveal the real name/phone — just an opaque token so the
+  // admin knows multiple slots at the same time belong to the same
+  // reservation when looking at the detail panel.
+  if (!id) return '';
+  const tail = String(id).padStart(4, '0').slice(-4);
+  return `Pasien #…${tail}`;
+}
+function drawAdmCal() {
   const y = admCalDate.getFullYear(), m = admCalDate.getMonth();
   const mn = ['Januari','Februari','Maret','April','Mei','Juni','Juli','Agustus','September','Oktober','November','Desember'];
   document.getElementById('admCalLabel').textContent = `${mn[m]} ${y}`;
-  const grid = document.getElementById('admCalGrid'); grid.innerHTML = '';
+  const grid = document.getElementById('admCalGrid');
+  grid.innerHTML = '';
+  const today = new Date().toISOString().slice(0, 10);
+  const todayMidnight = new Date(); todayMidnight.setHours(0,0,0,0);
+
   ['Min','Sen','Sel','Rab','Kam','Jum','Sab'].forEach(d => {
-    const h = document.createElement('div'); h.className = 'cal-cell head'; h.textContent = d; grid.appendChild(h);
+    const h = document.createElement('div');
+    h.className = 'cal-cell head';
+    h.textContent = d;
+    grid.appendChild(h);
   });
+
   const firstDay = new Date(y, m, 1).getDay();
   const daysInMonth = new Date(y, m + 1, 0).getDate();
-  for (let i = 0; i < firstDay; i++) { const c = document.createElement('div'); c.className = 'cal-cell muted'; grid.appendChild(c); }
-  const today = new Date().toISOString().slice(0, 10);
+  const prevDays = new Date(y, m, 0).getDate();
+
+  for (let i = firstDay - 1; i >= 0; i--) {
+    const c = document.createElement('div');
+    c.className = 'cal-cell muted';
+    c.innerHTML = `<span class="day-num">${prevDays - i}</span>`;
+    grid.appendChild(c);
+  }
+
   for (let d = 1; d <= daysInMonth; d++) {
     const ds = `${y}-${String(m + 1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
-    const evs = events.filter(e => e.date === ds);
+    const cellDate = new Date(y, m, d);
+    const isPast = cellDate < todayMidnight;
+    const evs = admCalEvents.filter(e => e.date === ds);
     const c = document.createElement('div');
-    c.className = 'cal-cell' + (ds === today ? ' today' : '');
-    c.innerHTML = `<span class="day-num">${d}</span>`;
-    evs.slice(0,3).forEach(e => {
-      const ev = document.createElement('div');
-      ev.className = 'ev';
-      ev.style.background = e.status === 'approved' ? '#d9efe1' : '#fff3d6';
-      ev.style.color = e.status === 'approved' ? '#1e8957' : '#b07b15';
-      ev.title = `${e.time} — ${e.patient_name} — ${e.service_name}`;
-      ev.textContent = `${e.time.slice(0,5)} ${e.patient_name}`;
-      c.appendChild(ev);
+    let cls = 'cal-cell';
+    if (ds === today) cls += ' today';
+    if (evs.length && !isPast) cls += evs.length >= 4 ? ' full' : ' has-events';
+    if (isPast) cls += ' past';
+    c.className = cls;
+    c.style.cursor = 'pointer';
+    c.style.position = 'relative';
+    c.title = `${d} ${mn[m]} ${y}${evs.length ? ` — ${evs.length} reservasi` : ''}`;
+    // Use addEventListener + data-* instead of c.onclick. Some
+    // desktop browsers detach the .onclick handler when innerHTML is
+    // overwritten, leaving the cell visually clickable but
+    // functionally dead. addEventListener survives and the data-*
+    // attribute keeps the (date, events) pair around for the
+    // handler to read directly.
+    c.dataset.date = ds;
+    c.dataset.idx = String(evs.length);
+    c.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openAdmCalDetail(ds, evs);
     });
-    if (evs.length > 3) { const m = document.createElement('div'); m.className = 'ev'; m.textContent = `+${evs.length - 3}`; c.appendChild(m); }
+    let html = `<span class="day-num">${d}</span>`;
+    if (evs.length && !isPast) {
+      html += `<span class="count-badge" title="${evs.length} reservasi">${evs.length}</span>`;
+    }
+    c.innerHTML = html;
+    grid.appendChild(c);
+  }
+
+  const cells = firstDay + daysInMonth;
+  const trail = (7 - (cells % 7)) % 7;
+  for (let i = 1; i <= trail; i++) {
+    const c = document.createElement('div');
+    c.className = 'cal-cell muted';
+    c.innerHTML = `<span class="day-num">${i}</span>`;
     grid.appendChild(c);
   }
 }
-function admPrev() { admCalDate.setMonth(admCalDate.getMonth() - 1); drawAdmCal(); }
-function admNext() { admCalDate.setMonth(admCalDate.getMonth() + 1); drawAdmCal(); }
-function admToday() { admCalDate = new Date(); drawAdmCal(); }
+function openAdmCalDetail(dateStr, evs) {
+  admCalSelectedDate = dateStr;
+  const detail = document.getElementById('admCalDetail');
+  const title = document.getElementById('admCalDetailTitle');
+  const content = document.getElementById('admCalDetailContent');
+  if (!detail) return;
+  const dateLabel = new Date(dateStr + 'T00:00:00').toLocaleDateString('id-ID', { weekday: 'long', day: '2-digit', month: 'long', year: 'numeric' });
+  title.textContent = `📅 ${dateLabel}`;
+  if (!evs.length) {
+    content.innerHTML = `<p style="color:var(--text-soft);margin:6px 0 0;">Tidak ada reservasi di tanggal ini.</p>`;
+  } else {
+    const sorted = evs.slice().sort((a, b) => (a.time || '').localeCompare(b.time || ''));
+    const itemsByRes = sorted.reduce((m, e) => {
+      // Aggregate items per reservation: items[] only on first slot.
+      if (e.items && e.items.length) m[e.reservation_id] = e.items;
+      return m;
+    }, {});
+    const list = sorted.map(e => {
+      const items = itemsByRes[e.reservation_id] || [];
+      const itemsHtml = items.length
+        ? `<div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:4px;">${items.map((it) => `<span style="display:inline-block;padding:2px 8px;background:var(--pink-100);color:var(--primary);border-radius:999px;font-size:0.78rem;font-weight:600;">${esc(it.name)}${it.qty > 1 ? ` ×${it.qty}` : ''}</span>`).join('')}</div>`
+        : '<div style="margin-top:6px;color:var(--text-soft);font-size:0.8rem;font-style:italic;">(item layanan sudah ditampilkan di slot pertama)</div>';
+      return `
+        <div style="display:flex;gap:10px;align-items:flex-start;padding:10px 12px;margin-top:8px;background:var(--pink-50);border-radius:8px;border-left:4px solid ${e.status === 'approved' ? '#4caf85' : e.status === 'rejected' ? '#e85a78' : '#f4a83a'};">
+          <div style="font-weight:700;color:var(--primary);min-width:54px;font-size:0.92rem;">${esc((e.time || '').slice(0,5))}</div>
+          <div style="flex:1;">
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+              <strong style="font-size:0.88rem;">${maskPatientId(e.reservation_id)}</strong>
+              <span class="badge badge-${e.status}" style="font-size:0.72rem;">${e.status}</span>
+              <span class="badge badge-${e.payment_status}" style="font-size:0.72rem;">${e.payment_status}</span>
+              <small style="color:var(--text-soft);">#${e.reservation_id}</small>
+            </div>
+            ${itemsHtml}
+          </div>
+        </div>`;
+    }).join('');
+    const note = `<p style="margin-top:12px;padding:10px 12px;background:var(--bg);border-radius:8px;color:var(--text-soft);font-size:0.82rem;line-height:1.5;">
+      🔒 <strong>Privasi terjaga:</strong> Nama pasien & nomor WhatsApp tidak ditampilkan di sini. Buka menu <strong>Reservasi</strong> atau <strong>Kwitansi</strong> untuk lihat data lengkap.
+    </p>`;
+    content.innerHTML = `${list}${note}`;
+  }
+  detail.style.display = 'block';
+  detail.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+function closeAdmCalDetail() {
+  const detail = document.getElementById('admCalDetail');
+  if (detail) detail.style.display = 'none';
+  admCalSelectedDate = null;
+}
+function admPrev() { admCalDate.setMonth(admCalDate.getMonth() - 1); drawAdmCal(); closeAdmCalDetail(); }
+function admNext() { admCalDate.setMonth(admCalDate.getMonth() + 1); drawAdmCal(); closeAdmCalDetail(); }
+function admToday() { admCalDate = new Date(); drawAdmCal(); closeAdmCalDetail(); }
 
 // ---------- RECEIPTS ----------
 let receiptItems = [];
@@ -433,6 +867,11 @@ async function renderReceipts() {
           <div class="form-row">
             <div class="form-group"><label>HP</label><input type="tel" id="kw_hp"></div>
             <div class="form-group"><label>Tanggal Layanan</label><input type="date" id="kw_date" value="${new Date().toISOString().slice(0,10)}"></div>
+          </div>
+          <div class="form-group"><label>⏰ Waktu / Jam Layanan (multi-waktu)</label>
+            <div id="kw_times" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;"></div>
+            <button type="button" onclick="addKwTimePrompt()" class="btn-sm btn-pay" style="margin-top:6px;">+ Tambah Waktu</button>
+            <small style="color:var(--text-soft);display:block;margin-top:4px;">Misal: satu pasien dengan 3 sesi (09:00, 14:00, 19:00). Masing-masing jadi 1 sesi di reservasi mirror.</small>
           </div>
           <div class="form-group"><label>Alamat</label><input type="text" id="kw_addr"></div>
           <hr style="margin:16px 0;border:none;border-top:1px dashed var(--border);">
@@ -451,15 +890,52 @@ async function renderReceipts() {
         </div>
       </div>
       <div>
-        <h3 style="margin-bottom:12px;">Riwayat Kwitansi</h3>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px;">
+          <div>
+            <h3 style="margin:0;">Riwayat Kwitansi</h3>
+            <small style="color:var(--text-soft);">💡 Butuh restore data? Pakai tombol 📥 Import JSON atau 📄 Import PDF di kanan atas.</small>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+            <input type="search" id="kwSearch" placeholder="Cari nama / invoice..." oninput="filterKwList()" class="kw-search">
+            <button onclick="openImportKwitansiModal()" class="btn-sm btn-approve" title="Import dari JSON / spreadsheet">📥 Import JSON</button>
+            <button onclick="openImportPdfKwitansiModal()" class="btn-sm" title="Restore kwitansi dari file PDF Adzkiya" style="background:#7c3aed;color:white;border:none;">📄 Import PDF</button>
+            <details style="position:relative;display:inline-block;">
+              <summary class="btn-sm" style="background:#0f766e;color:white;list-style:none;cursor:pointer;user-select:none;border:none;padding:6px 12px;border-radius:8px;font-size:0.8rem;font-weight:700;">📂 Cara Restore Lainnya ▾</summary>
+              <div style="position:absolute;right:0;top:100%;margin-top:6px;background:var(--card);border:1px solid var(--border);border-radius:10px;padding:10px;width:280px;z-index:50;box-shadow:0 8px 24px rgba(0,0,0,0.15);font-size:0.85rem;line-height:1.5;">
+                <strong style="display:block;margin-bottom:6px;">🔄 3 cara restore kwitansi:</strong>
+                <div style="margin:4px 0;">📥 <strong>Import JSON</strong> — file backup .json dari sistem ini atau paste JSON langsung.</div>
+                <div style="margin:4px 0;">📄 <strong>Import PDF</strong> — upload PDF kwitansi Adzkiya (yang dicetak dari sistem).</div>
+                <div style="margin:4px 0;">🧾 <strong>Buat Manual</strong> — input 1 kwitansi via form di kolom kiri.</div>
+                <div style="margin-top:8px;color:var(--text-soft);font-size:0.8rem;">
+                  ⚠️ PDF hasil scan/foto tidak didukung (butuh OCR).
+                </div>
+              </div>
+            </details>
+          </div>
+        </div>
         <div id="kwList">Loading...</div>
       </div>
     </div>
-    <style>@media(max-width:920px){#kwGrid{grid-template-columns:1fr !important;}}</style>
+    <style>@media(max-width:920px),(hover:none) and (pointer:coarse) and (max-width:1024px){#kwGrid{grid-template-columns:1fr !important;}}</style>
   `;
   receiptItems = [];
   addReceiptItem();
+  initKwTimes();
   loadReceipts();
+}
+
+// Filter kwitansi list by search text (client-side)
+function filterKwList() {
+  const q = (document.getElementById('kwSearch')?.value || '').toLowerCase().trim();
+  const tbody = document.querySelector('#kwList tbody');
+  if (!tbody) return;
+  let visible = 0;
+  tbody.querySelectorAll('tr').forEach((tr) => {
+    const text = tr.textContent.toLowerCase();
+    const show = !q || text.includes(q);
+    tr.style.display = show ? '' : 'none';
+    if (show) visible++;
+  });
 }
 
 function addReceiptItem(item) {
@@ -524,16 +1000,225 @@ function prefillReceipt(r) {
   (r.items || []).forEach(it => receiptItems.push({ name: it.name, price: it.price, qty: it.qty }));
   if (!receiptItems.length) receiptItems.push({ name: '', price: 0, qty: 1 });
   rebuildReceiptItems();
+  // Pre-fill slots from reservation (multi-waktu + multi-tanggal)
+  if (r.slots && r.slots.length) {
+    initKwSlots(r.slots.map((s) => ({ date: s.date, time: s.time })));
+  }
+}
+
+// ===== MULTI-WAKTU + MULTI-TANGGAL (kwitansi manual) =====
+// Each slot has a date AND a time. Total harga = subtotal × jumlah slot
+// (per-waktu pricing) plus any transport_fee / discount. The
+// auto-synced reservation gets one entry in `slots` per (date, time).
+//
+// Two forms share this UI:
+//   • kwSlots — left side of /receipts page (manual kwitansi form)
+//   • mkwSlots — modal "Buat Kwitansi Manual" in Rekap Bulanan
+// Both are arrays of {date, time} objects (same shape as the API).
+let kwSlots = [];
+let mkwSlots = [];
+
+function initKwTimes(initial) {
+  // Legacy: support old kwTimes init by converting to slots. Prefer
+  // initKwSlots when possible (date+time per slot).
+  const today = new Date().toISOString().slice(0, 10);
+  if (Array.isArray(initial) && initial.length && typeof initial[0] === 'string') {
+    return initKwSlots([{ date: today, time: initial[0] }]);
+  }
+  return initKwSlots(initial);
+}
+function initMkwTimes(initial) {
+  const today = new Date().toISOString().slice(0, 10);
+  if (Array.isArray(initial) && initial.length && typeof initial[0] === 'string') {
+    return initMkwSlots([{ date: today, time: initial[0] }]);
+  }
+  return initMkwSlots(initial);
+}
+
+// ===== Multi-date+time slots (newer, more flexible UI) =====
+
+function normalizeSlot(s, fallbackDate) {
+  if (!s || typeof s !== 'object') return null;
+  const date = String(s.date || fallbackDate || '').slice(0, 10);
+  const time = String(s.time || '').slice(0, 5);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !/^\d{1,2}:\d{2}$/.test(time)) return null;
+  return { date, time };
+}
+
+function initKwSlots(initial) {
+  const today = new Date().toISOString().slice(0, 10);
+  const seed = (Array.isArray(initial) && initial.length)
+    ? initial.map((s) => normalizeSlot(s, today)).filter(Boolean)
+    : [{ date: today, time: '09:00' }];
+  kwSlots = seed.length ? seed : [{ date: today, time: '09:00' }];
+  renderKwSlots();
+}
+
+function addKwSlot(value) {
+  const today = new Date().toISOString().slice(0, 10);
+  const slot = normalizeSlot(value, today);
+  if (!slot) return;
+  if (kwSlots.find((x) => x.date === slot.date && x.time === slot.time)) return;
+  kwSlots.push(slot);
+  renderKwSlots();
+}
+
+function removeKwSlot(idx) {
+  if (kwSlots.length <= 1) return; // keep at least one slot
+  kwSlots.splice(idx, 1);
+  renderKwSlots();
+}
+
+function getKwSlots() {
+  const today = new Date().toISOString().slice(0, 10);
+  return kwSlots.map((s) => normalizeSlot(s, today)).filter(Boolean);
+}
+
+function renderKwSlots() {
+  const wrap = document.getElementById('kw_times');
+  if (!wrap) return;
+  const today = new Date().toISOString().slice(0, 10);
+  if (!kwSlots.length) kwSlots = [{ date: today, time: '09:00' }];
+  wrap.innerHTML = '';
+  // Sort slots by date+time so the user sees them in chronological order
+  const sorted = kwSlots.map((s, i) => ({ ...s, _origIdx: i }))
+    .sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time));
+  sorted.forEach((s) => {
+    const realIdx = s._origIdx;
+    const chip = document.createElement('span');
+    chip.className = 'kw-time-chip';
+    chip.style.cssText = 'display:inline-flex;align-items:center;gap:6px;padding:6px 12px;background:var(--pink-50);border:1px solid var(--pink-100);border-radius:999px;font-size:0.92rem;font-weight:600;color:var(--pink-700);';
+    const dateLabel = s.date === today ? 'Hari ini' : new Date(s.date).toLocaleDateString('id-ID', { day: '2-digit', month: 'short' });
+    chip.innerHTML = `📅 ${dateLabel} &nbsp;⏰ ${s.time} <button type="button" onclick="removeKwSlot(${realIdx})" style="background:none;border:none;color:#c43050;cursor:pointer;font-weight:700;padding:0 2px;font-size:1rem;line-height:1;" title="Hapus jadwal">×</button>`;
+    wrap.appendChild(chip);
+  });
+}
+
+function initMkwSlots(initial) {
+  const today = new Date().toISOString().slice(0, 10);
+  const seed = (Array.isArray(initial) && initial.length)
+    ? initial.map((s) => normalizeSlot(s, today)).filter(Boolean)
+    : [{ date: today, time: '09:00' }];
+  mkwSlots = seed.length ? seed : [{ date: today, time: '09:00' }];
+  renderMkwSlots();
+}
+
+function mkwAddSlot(value) {
+  const today = new Date().toISOString().slice(0, 10);
+  const slot = normalizeSlot(value, today);
+  if (!slot) return;
+  if (mkwSlots.find((x) => x.date === slot.date && x.time === slot.time)) return;
+  mkwSlots.push(slot);
+  renderMkwSlots();
+}
+
+function removeMkwSlot(idx) {
+  if (mkwSlots.length <= 1) return;
+  mkwSlots.splice(idx, 1);
+  renderMkwSlots();
+}
+
+function getMkwSlots() {
+  const today = new Date().toISOString().slice(0, 10);
+  return mkwSlots.map((s) => normalizeSlot(s, today)).filter(Boolean);
+}
+
+function renderMkwSlots() {
+  const wrap = document.getElementById('mkw_times');
+  if (!wrap) return;
+  const today = new Date().toISOString().slice(0, 10);
+  if (!mkwSlots.length) mkwSlots = [{ date: today, time: '09:00' }];
+  wrap.innerHTML = '';
+  const sorted = mkwSlots.map((s, i) => ({ ...s, _origIdx: i }))
+    .sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time));
+  sorted.forEach((s) => {
+    const realIdx = s._origIdx;
+    const chip = document.createElement('span');
+    chip.className = 'kw-time-chip';
+    chip.style.cssText = 'display:inline-flex;align-items:center;gap:6px;padding:6px 12px;background:var(--pink-50);border:1px solid var(--pink-100);border-radius:999px;font-size:0.92rem;font-weight:600;color:var(--pink-700);';
+    const dateLabel = s.date === today ? 'Hari ini' : new Date(s.date).toLocaleDateString('id-ID', { day: '2-digit', month: 'short' });
+    chip.innerHTML = `📅 ${dateLabel} &nbsp;⏰ ${s.time} <button type="button" onclick="removeMkwSlot(${realIdx})" style="background:none;border:none;color:#c43050;cursor:pointer;font-weight:700;padding:0 2px;font-size:1rem;line-height:1;" title="Hapus jadwal">×</button>`;
+    wrap.appendChild(chip);
+  });
+}
+
+// Inline picker: pops a small date+time input + add button next to
+// the chip row. Keeps the main UI tidy.
+function addKwTimePrompt() {
+  const wrap = document.getElementById('kw_times');
+  if (!wrap) return;
+  const existing = document.getElementById('kw_time_picker');
+  if (existing) { existing.focus(); return; }
+  const today = new Date().toISOString().slice(0, 10);
+  const picker = document.createElement('span');
+  picker.id = 'kw_time_picker';
+  picker.className = 'kw-time-chip';
+  picker.style.cssText = 'display:inline-flex;align-items:center;gap:6px;padding:6px 10px;background:var(--card);border:2px solid var(--primary);border-radius:999px;flex-wrap:wrap;';
+  picker.innerHTML = `<input type="date" id="kw_date_input" value="${today}" min="${today}" style="border:none;background:transparent;font-weight:600;color:var(--text);font-family:inherit;font-size:0.85rem;padding:0;width:130px;">
+    <input type="time" id="kw_time_input" value="09:00" style="border:none;background:transparent;font-weight:600;color:var(--text);font-family:inherit;font-size:0.85rem;padding:0;width:80px;">
+    <button type="button" onclick="commitKwTime()" style="background:var(--primary);color:white;border:none;cursor:pointer;font-weight:700;padding:2px 8px;border-radius:6px;font-size:0.85rem;">✓</button>
+    <button type="button" onclick="cancelKwTimePicker()" style="background:none;border:none;color:var(--text-soft);cursor:pointer;font-weight:700;padding:0 2px;font-size:1rem;">×</button>`;
+  wrap.appendChild(picker);
+  document.getElementById('kw_date_input').focus();
+}
+
+function commitKwTime() {
+  const date = document.getElementById('kw_date_input')?.value;
+  const time = document.getElementById('kw_time_input')?.value;
+  if (!date || !time) { cancelKwTimePicker(); return; }
+  addKwSlot({ date, time });
+  cancelKwTimePicker();
+}
+
+function cancelKwTimePicker() {
+  document.getElementById('kw_time_picker')?.remove();
+}
+
+function addMkwTimePrompt() {
+  const wrap = document.getElementById('mkw_times');
+  if (!wrap) return;
+  const existing = document.getElementById('mkw_time_picker');
+  if (existing) { existing.focus(); return; }
+  const today = new Date().toISOString().slice(0, 10);
+  const picker = document.createElement('span');
+  picker.id = 'mkw_time_picker';
+  picker.className = 'kw-time-chip';
+  picker.style.cssText = 'display:inline-flex;align-items:center;gap:6px;padding:6px 10px;background:var(--card);border:2px solid var(--primary);border-radius:999px;flex-wrap:wrap;';
+  picker.innerHTML = `<input type="date" id="mkw_date_input" value="${today}" min="${today}" style="border:none;background:transparent;font-weight:600;color:var(--text);font-family:inherit;font-size:0.85rem;padding:0;width:130px;">
+    <input type="time" id="mkw_time_input" value="09:00" style="border:none;background:transparent;font-weight:600;color:var(--text);font-family:inherit;font-size:0.85rem;padding:0;width:80px;">
+    <button type="button" onclick="commitMkwTime()" style="background:var(--primary);color:white;border:none;cursor:pointer;font-weight:700;padding:2px 8px;border-radius:6px;font-size:0.85rem;">✓</button>
+    <button type="button" onclick="cancelMkwTimePicker()" style="background:none;border:none;color:var(--text-soft);cursor:pointer;font-weight:700;padding:0 2px;font-size:1rem;">×</button>`;
+  wrap.appendChild(picker);
+  document.getElementById('mkw_date_input').focus();
+}
+
+function commitMkwTime() {
+  const date = document.getElementById('mkw_date_input')?.value;
+  const time = document.getElementById('mkw_time_input')?.value;
+  if (!date || !time) { cancelMkwTimePicker(); return; }
+  mkwAddSlot({ date, time });
+  cancelMkwTimePicker();
+}
+
+function cancelMkwTimePicker() {
+  document.getElementById('mkw_time_picker')?.remove();
 }
 
 async function saveReceipt() {
   const items = receiptItems.filter(it => it.name && it.price > 0);
   if (!items.length) return alert('Tambahkan minimal 1 layanan');
+  const slots = getKwSlots();
+  if (!slots.length) return alert('Tambahkan minimal 1 jadwal');
+  // If all slots are on the same date as the form's date input,
+  // use the form's date. Otherwise the per-slot dates win.
+  const formDate = document.getElementById('kw_date').value;
+  const allSameDate = slots.every((s) => s.date === formDate);
   const body = {
     patient_name: document.getElementById('kw_name').value,
     whatsapp: document.getElementById('kw_hp').value,
     address: document.getElementById('kw_addr').value,
-    service_date: document.getElementById('kw_date').value,
+    service_date: allSameDate ? formDate : slots[0].date,
+    service_slots: slots,
     items,
     transport_fee: parseInt(document.getElementById('kw_transport').value) || 0,
     discount: parseInt(document.getElementById('kw_discount').value) || 0
@@ -548,6 +1233,11 @@ async function loadReceipts() {
     const rows = await api('/api/admin/receipts');
     window._receiptsCache = rows;
     const el = document.getElementById('kwList');
+    // Enable the responsive card-list view for phones (<720px). The
+    // CSS rule body[data-table-mode="cards"] hides the table on
+    // small screens, so we render BOTH the table and the cards and
+    // let CSS pick which one is visible.
+    document.body.setAttribute('data-table-mode', 'cards');
     if (!rows.length) {
       el.innerHTML = '<p style="color:var(--text-soft);padding:20px;text-align:center;">Belum ada kwitansi.</p>';
       return;
@@ -562,25 +1252,44 @@ async function loadReceipts() {
         <button onclick="deleteSelectedReceipts()" class="btn-sm btn-del" id="kwBulkBtn" disabled style="padding:6px 14px;">🗑️ Hapus Terpilih</button>
         <button onclick="deleteAllReceipts()" class="btn-sm btn-del" style="padding:6px 14px;background:#b91c1c;">⚠️ Hapus Semua</button>
       </div>
-      <div class="table-scroll">
-        <table class="data-table">
-          <thead><tr>
-            <th style="width:36px;"></th>
-            <th>No. Invoice</th><th>Pasien</th><th>Total</th><th>Aksi</th>
-          </tr></thead>
-          <tbody>
-            ${rows.map(r => `<tr data-rid="${r.id}">
-              <td><input type="checkbox" class="kw-chk" value="${r.id}" onchange="updateKwSelCount()"></td>
-              <td><strong>${r.invoice_no}</strong><br><small>${fmtDateTime(r.created_at)}</small></td>
-              <td>${esc(r.patient_name || '-')}</td>
-              <td><strong>${fmtRp(r.total)}</strong></td>
-              <td style="white-space:nowrap;">
-                <button class="btn-sm btn-view" onclick='printReceiptById(${r.id})' title="Cetak">🖨️</button>
-                <button class="btn-sm btn-del" onclick="deleteReceipt(${r.id}, '${esc(r.invoice_no)}')" title="Hapus" style="padding:6px 10px;">🗑️</button>
-              </td>
-            </tr>`).join('')}
-          </tbody>
-        </table>
+      <div class="data-table-wrap">
+        <div class="table-scroll">
+          <table class="data-table">
+            <thead><tr>
+              <th style="width:36px;"></th>
+              <th>No. Invoice</th><th>Pasien</th><th>Total</th><th>Aksi</th>
+            </tr></thead>
+            <tbody>
+              ${rows.map(r => `<tr data-rid="${r.id}">
+                <td><input type="checkbox" class="kw-chk" value="${r.id}" onchange="updateKwSelCount()"></td>
+                <td><strong>${r.invoice_no}</strong><br><small>${fmtDateTime(r.created_at)}</small></td>
+                <td>${esc(r.patient_name || '-')}</td>
+                <td><strong>${fmtRp(r.total)}</strong></td>
+                <td style="white-space:nowrap;">
+                  <button class="btn-sm btn-view" onclick="openKwitansiDetailModal(${r.id})" title="Lihat">👁️</button>
+                  <button class="btn-sm btn-view" onclick='shareOrPrintKwitansi(${r.id})' title="Kirim/Cetak" aria-label="Kirim atau cetak kwitansi">📤</button>
+                  <button class="btn-sm btn-del" onclick="deleteReceipt(${r.id}, '${esc(r.invoice_no)}')" title="Hapus" style="padding:6px 10px;">🗑️</button>
+                </td>
+              </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div class="card-list" aria-label="Daftar kwitansi (tampilan kartu untuk HP)">
+        ${rows.map(r => `<div class="card-list-item" data-rid="${r.id}">
+          <div class="cli-head">${esc(r.invoice_no || '')}</div>
+          <div class="cli-meta">📅 ${fmtDateTime(r.created_at)}</div>
+          <div class="cli-row"><span class="cli-label">Pasien</span><span class="cli-value">${esc(r.patient_name || '-')}</span></div>
+          <div class="cli-row"><span class="cli-label">Total</span><span class="cli-value">${fmtRp(r.total)}</span></div>
+          <div class="cli-actions">
+            <label style="display:flex;align-items:center;gap:6px;padding:6px 10px;background:var(--bg);border-radius:8px;font-size:0.78rem;font-weight:700;">
+              <input type="checkbox" class="kw-chk" value="${r.id}" onchange="updateKwSelCount()"> Pilih
+            </label>
+            <button class="btn-sm btn-view" onclick="openKwitansiDetailModal(${r.id})" title="Lihat">👁️ Lihat</button>
+            <button class="btn-sm btn-view" onclick='shareOrPrintKwitansi(${r.id})' title="Kirim ke WA / Cetak" aria-label="Kirim atau cetak kwitansi">📤 Kirim/Cetak</button>
+            <button class="btn-sm btn-del" onclick="deleteReceipt(${r.id}, '${esc(r.invoice_no)}')" title="Hapus">🗑️ Hapus</button>
+          </div>
+        </div>`).join('')}
       </div>`;
     updateKwSelCount();
   } catch (e) { document.getElementById('kwList').innerHTML = `<div class="alert alert-error">${e.message}</div>`; }
@@ -589,6 +1298,56 @@ async function loadReceipts() {
 function printReceiptById(id) {
   const r = (window._receiptsCache || []).find(x => x.id === id);
   if (r) printReceipt(r);
+}
+// "Share to customer" — opens a small prompt to choose: share
+// link (for WA/email) or print. Defaults to share-link since the
+// admin is more often on a phone and wants to send a quick link.
+function shareOrPrintKwitansi(id) {
+  const r = (window._receiptsCache || RECAP_RECEIPTS || []).find(x => x.id === id);
+  if (!r) return alert('Kwitansi tidak ditemukan.');
+  // Default paper size = A5. Persisted per-admin in localStorage so
+  // the choice survives across sessions.
+  let paperSize = localStorage.getItem('adm_kw_paper_size') || 'A5';
+  openModal(`
+    <h3>📤 Kirim Kwitansi <span style="color:var(--text-soft);font-size:0.85rem;font-weight:500;">${esc(r.invoice_no || '')}</span></h3>
+    <p style="color:var(--text-soft);font-size:0.9rem;margin:6px 0 14px;">Pilih cara kirim kwitansi atas nama <strong>${esc(r.patient_name || 'pasien')}</strong>:</p>
+    <div style="display:grid;gap:10px;">
+      <button onclick="shareKwitansiById(${r.id});closeModal();" class="btn btn-primary" style="width:100%;justify-content:center;padding:12px;">
+        <span>💬 Share Link via WhatsApp</span>
+        <small style="display:block;font-weight:500;font-size:0.78rem;opacity:0.85;">Buat link privat + buka WA template</small>
+      </button>
+      <button onclick="closeModal();printReceiptById(${r.id});" class="btn btn-wa" style="width:100%;justify-content:center;padding:12px;">
+        <span>🖨️ Cetak + Tanda Tangan Pasien</span>
+        <small style="display:block;font-weight:500;font-size:0.78rem;opacity:0.85;">Print preview dengan signature pad (opsional)</small>
+      </button>
+      <div style="padding:14px;background:var(--bg);border:1px solid var(--border);border-radius:12px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+          <strong style="font-size:0.92rem;">💾 Save PDF — Langsung Download</strong>
+          <select id="kwPdfSize" onchange="localStorage.setItem('adm_kw_paper_size', this.value);" style="padding:6px 10px;border:1.5px solid var(--border);border-radius:8px;background:var(--card);color:var(--text);font-size:0.82rem;font-family:inherit;font-weight:600;">
+            ${Object.entries(KW_PAPER_SIZES).map(([k, v]) => `<option value="${k}" ${paperSize === k ? 'selected' : ''}>${v.icon} ${v.label}</option>`).join('')}
+          </select>
+        </div>
+        <button onclick="saveKwitansiAsPDF(_kwitansiForPdf, document.getElementById('kwPdfSize').value)" class="btn btn-primary" style="width:100%;justify-content:center;padding:12px;background:#7c3aed;">
+          <span>💾 Download ${esc(r.invoice_no || 'kwitansi')}.pdf</span>
+          <small style="display:block;font-weight:500;font-size:0.78rem;opacity:0.85;">Ukuran kertas sudah ter-set, langsung print tanpa atur manual</small>
+        </button>
+        <small style="display:block;margin-top:8px;color:var(--text-soft);line-height:1.5;">📐 Pilih ukuran kertas di atas. PDF yang di-generate sudah tertanam ukuran kertas, jadi saat dibuka di laptop/HP → di-print → langsung sesuai tanpa harus setting ukuran kertas lagi di printer dialog.</small>
+      </div>
+      <button onclick="downloadProtected('/api/proof/${r.id}', '${esc(r.invoice_no)}.${r.proof_mime ? r.proof_mime.split('/')[1] : 'bin'}')" class="btn btn-outline" style="width:100%;justify-content:center;">
+        📎 Download Bukti Pembayaran
+      </button>
+    </div>
+  `);
+  // Stash the receipt on a global so the Save PDF button can read it
+  // without needing to re-fetch from cache. Cleared on modal close.
+  window._kwitansiForPdf = r;
+  // Also wire closeModal to clear the global.
+  const orig = closeModal;
+  // Use a once-only listener on the backdrop click to clean up.
+  setTimeout(() => {
+    const backdrop = document.querySelector('.modal-backdrop');
+    if (backdrop) backdrop.addEventListener('click', () => { window._kwitansiForPdf = null; }, { once: true });
+  }, 50);
 }
 
 function toggleSelectAllReceipts(checked) {
@@ -639,55 +1398,227 @@ async function deleteAllReceipts() {
   } catch (e) { alert('Gagal: ' + e.message); }
 }
 
+// ===== DIGITAL SIGNATURE PAD =====
+// Render an inline <canvas> signature pad into a target element.
+// Supports both mouse (PC) and touch (mobile/tablet) input. The
+// signature is exported as a base64 PNG and inlined into the kwitansi
+// HTML so it prints as part of the receipt. Optional — admin can
+// choose to skip the signature if the customer signed on paper.
+function attachSignaturePad(canvasId, wrapId) {
+  const canvas = document.getElementById(canvasId);
+  const wrap = document.getElementById(wrapId);
+  if (!canvas || !wrap) return;
+  // Size the canvas to its CSS box. Devicepixelratio handling ensures
+  // the captured signature is crisp when printed.
+  function sizeCanvas() {
+    const r = wrap.getBoundingClientRect();
+    canvas.width = r.width * window.devicePixelRatio;
+    canvas.height = 140 * window.devicePixelRatio;
+    canvas.style.width = r.width + 'px';
+    canvas.style.height = '140px';
+    const ctx = canvas.getContext('2d');
+    ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
+    ctx.lineWidth = 2;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.strokeStyle = '#2a1822';
+  }
+  sizeCanvas();
+  const ctx2d = canvas.getContext('2d');
+  let drawing = false, last = null;
+  function pos(e) {
+    const r = canvas.getBoundingClientRect();
+    const t = e.touches ? e.touches[0] : e;
+    return { x: t.clientX - r.left, y: t.clientY - r.top };
+  }
+  function start(e) {
+    e.preventDefault();
+    drawing = true;
+    last = pos(e);
+  }
+  function move(e) {
+    if (!drawing) return;
+    e.preventDefault();
+    const p = pos(e);
+    ctx2d.beginPath();
+    ctx2d.moveTo(last.x, last.y);
+    ctx2d.lineTo(p.x, p.y);
+    ctx2d.stroke();
+    last = p;
+  }
+  function end(e) {
+    if (!drawing) return;
+    e.preventDefault();
+    drawing = false;
+    last = null;
+  }
+  canvas.addEventListener('mousedown', start);
+  canvas.addEventListener('mousemove', move);
+  window.addEventListener('mouseup', end);
+  canvas.addEventListener('touchstart', start, { passive: false });
+  canvas.addEventListener('touchmove', move, { passive: false });
+  canvas.addEventListener('touchend', end);
+  // Expose helper methods on the canvas DOM node so the print
+  // button can clear / extract.
+  canvas._clearSig = () => {
+    ctx2d.clearRect(0, 0, canvas.width, canvas.height);
+  };
+  canvas._getSigDataUrl = () => {
+    if (isCanvasBlank(canvas)) return null;
+    return canvas.toDataURL('image/png');
+  };
+}
+function isCanvasBlank(canvas) {
+  // Quick way to detect whether the user actually drew something.
+  // Empty canvases return all-zeros when read with getImageData.
+  // For privacy we avoid reading pixels (large canvas on retina
+  // can be slow) — instead just compare the toDataURL hash.
+  const blank = document.createElement('canvas');
+  blank.width = canvas.width;
+  blank.height = canvas.height;
+  return canvas.toDataURL() === blank.toDataURL();
+}
+function clearSignaturePad(canvasId) {
+  const canvas = document.getElementById(canvasId);
+  if (canvas && canvas._clearSig) canvas._clearSig();
+}
+
+// ===== SHARE KWITANSI LINK =====
+// Generates a tokenized read-only URL the admin can paste into WA /
+// email so the customer can view their receipt without admin login.
+// The token is just a deterministic hash of (invoice_no + created_at)
+// — not crypto-secure but good enough for "anyone-with-the-link"-
+// style sharing. Real auth would require signed JWTs; for now this
+// keeps the feature zero-config.
+// ===== SHARE KWITANSI LINK =====
+// Ask the server to mint a signed token via POST /api/admin/receipts/:id/share
+// (HMAC over invoice_no|created_at|total, 30-day TTL). The token format is
+// `<base64-data>.<ts>.<sig>` and the public /api/public/receipt/:token
+// endpoint re-derives the receipt from that signature — so the link
+// keeps working across server restarts as long as JWT_SECRET and the
+// underlying receipt haven't changed. We do NOT roll our own base64
+// token client-side anymore (that used to generate single-part tokens
+// that the server-side validator would always reject, giving every
+// share link a false "kadaluarsa" error).
+async function shareKwitansiById(id) {
+  try {
+    // Mint the signed token on the server. The endpoint requires the
+    // admin's JWT (Authorization header is added by api()).
+    const { token, expires_at } = await api('/api/admin/receipts/' + id + '/share', { method: 'POST' });
+    if (!token) throw new Error('Server tidak mengembalikan token.');
+    const url = `${window.location.origin}/kwitansi-share.html?t=${encodeURIComponent(token)}`;
+    // Try native share sheet first (mobile), fall back to copy.
+    if (navigator.share) {
+      try {
+        await navigator.share({
+          title: `Kwitansi`,
+          text: `Ini kwitansi Anda dari Adzkiya Mom Baby Care. Buka link ini untuk melihat & download:`,
+          url: url
+        });
+        return;
+      } catch { /* user dismissed; fall through to copy */ }
+    }
+    try {
+      await navigator.clipboard.writeText(url);
+      const exp = expires_at ? new Date(expires_at).toLocaleDateString('id-ID', { day: '2-digit', month: 'long', year: 'numeric' }) : '';
+      alert(`✅ Link kwitansi disalin ke clipboard:\n${url}\n\nLink berlaku sampai ${exp || '30 hari ke depan'}.`);
+    } catch {
+      prompt('Salin link ini untuk dikirim ke pelanggan:', url);
+    }
+  } catch (e) { alert('Gagal membuat link share: ' + e.message); }
+}
+
 function printReceipt(r) {
   const items = Array.isArray(r.items) ? r.items : (r.items || JSON.parse(r.items_json || '[]'));
   const biz = SETTINGS || {};
   const logoSrc = biz.has_logo ? apiUrl('/api/logo') : null;
+  // Multi-waktu support: prefer service_times[] if available, fall back
+  // to service_time. Render each as a chip so several sessions fit
+  // gracefully on a single line.
+  const times = (Array.isArray(r.service_times) && r.service_times.length)
+    ? r.service_times
+    : (r.service_time ? [r.service_time] : []);
+  const timesHtml = times.length
+    ? times.map((t) => `<span class="kwitansi-time-chip">⏰ ${esc(t)} WIB</span>`).join('')
+    : '<span style="color:var(--text-soft);">—</span>';
+  const sessionsLabel = times.length > 1 ? `<strong style="color:var(--primary);">${times.length} sesi</strong>` : '';
+  // Kwitansi rendered into a standalone tab. Uses the same .invoice
+  // CSS classes as the in-app receipt preview, so the print result
+  // matches exactly what's shown on-screen.
   const html = `<!doctype html><html><head><title>Kwitansi ${r.invoice_no}</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="${PAGE_STYLESHEET}">
-    <style>body{background:#f7f2f4;padding:30px;font-family:'Plus Jakarta Sans',sans-serif;}@media print{body{background:white;padding:0;}.print-actions{display:none;}}</style>
+    <style>
+      body{background:#f7f2f4;padding:30px;font-family:'Plus Jakarta Sans',sans-serif;margin:0;}
+      .print-actions{display:flex;justify-content:center;gap:10px;margin-bottom:20px;flex-wrap:wrap;}
+      .print-actions button{padding:10px 20px;color:white;border:none;border-radius:999px;font-weight:700;cursor:pointer;font-size:0.95rem;font-family:inherit;}
+      @media print{body{background:white;padding:0;margin:0;}.print-actions{display:none !important;}}
+    </style>
     </head><body>
-    <div class="print-actions" style="text-align:center;margin-bottom:20px;">
-      <button onclick="window.print()" style="padding:10px 24px;background:#ee5a8a;color:white;border:none;border-radius:999px;font-weight:700;cursor:pointer;font-size:1rem;">🖨️ Cetak / Save PDF</button>
+    <div class="print-actions">
+      <button id="printBtn" onclick="embedSigAndPrint()" style="background:#ee5a8a;">🖨️ Cetak / Save PDF</button>
+      <button id="clearBtn" onclick="if(window.__sigPad && window.__sigPad._clearSig) window.__sigPad._clearSig()" style="background:#f4a83a;color:white;">✏️ Ulangi TTD</button>
+      <button onclick="window.close()" style="background:var(--card);color:var(--text);border:1px solid var(--border);">✕ Tutup</button>
+    </div>
+    <div id="sigWrap" style="max-width:760px;margin:0 auto 12px;padding:14px 18px;background:var(--card);border-radius:12px;box-shadow:var(--shadow);border:1px solid var(--border);">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:8px;">
+        <strong style="font-size:0.92rem;color:var(--primary);">✍️ Tanda Tangan Pasien (Opsional)</strong>
+        <small style="color:var(--text-soft);">Bisa dilewati untuk hasil cetak cepat</small>
+      </div>
+      <div id="sigPadWrap" style="background:#fdfafc;border:2px dashed var(--pink-200);border-radius:10px;overflow:hidden;">
+        <canvas id="sigPad" style="display:block;touch-action:none;width:100%;height:140px;"></canvas>
+      </div>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px;font-size:0.78rem;color:var(--text-soft);">
+        <span>💡 Tanda tangan di area putih di atas</span>
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+          <input type="checkbox" id="sigInclude" checked> Sertakan di kwitansi
+        </label>
+      </div>
     </div>
     <div class="invoice">
       <div class="invoice-header">
-        <div style="display:flex;align-items:center;gap:14px;">
-          ${logoSrc ? `<img src="${logoSrc}" style="width:70px;height:70px;object-fit:contain;">` : '<span style="font-size:2.4rem;">🌸</span>'}
+        <div class="invoice-brand">
+          ${logoSrc ? `<img src="${logoSrc}" alt="">` : '<span style="font-size:2.4rem;">🌸</span>'}
           <div>
-            <h2 style="margin:0;">${esc(biz.business_name || 'Adzkiya Mom Baby Care')}</h2>
+            <h2>${esc(biz.business_name || 'Adzkiya Mom Baby Care')}</h2>
             <small>${esc(biz.tagline || 'Layanan Kesehatan Ibu & Anak Terpercaya')}<br>
             ${esc(biz.address || '')}<br>
             WA: ${esc(biz.phone || '085887018194')}</small>
           </div>
         </div>
-        <div class="meta">
-          <strong style="font-size:1.1rem;">KWITANSI</strong><br>
-          <span>${r.invoice_no}</span><br>
+        <div class="invoice-meta">
+          <strong>KWITANSI</strong>
+          <span class="invoice-meta-no">${r.invoice_no}</span>
           <small>${new Date(r.created_at).toLocaleDateString('id-ID', { day:'2-digit', month:'long', year:'numeric' })}</small>
         </div>
       </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;">
+      <div class="invoice-grid">
         <div class="invoice-block">
           <h4>Kepada</h4>
-          <strong>${esc(r.patient_name || '-')}</strong><br>
-          ${esc(r.whatsapp || '')}<br>
-          ${esc(r.address || '')}
+          <p class="invoice-block-body">
+            <strong>${esc(r.patient_name || '-')}</strong><br>
+            ${esc(r.whatsapp || '')}<br>
+            ${esc(r.address || '')}
+          </p>
         </div>
         <div class="invoice-block">
-          <h4>Tanggal Layanan</h4>
-          ${r.service_date ? new Date(r.service_date).toLocaleDateString('id-ID', { day:'2-digit', month:'long', year:'numeric' }) : '-'}
+          <h4>Tanggal & Waktu Layanan ${sessionsLabel}</h4>
+          <p class="invoice-block-body">
+            ${r.service_date ? new Date(r.service_date).toLocaleDateString('id-ID', { day:'2-digit', month:'long', year:'numeric' }) : '-'}
+            <span class="kwitansi-time-row">${timesHtml}</span>
+          </p>
         </div>
       </div>
-      <table>
-        <thead><tr><th>Layanan</th><th style="text-align:center;">Qty</th><th style="text-align:right;">Harga</th><th style="text-align:right;">Subtotal</th></tr></thead>
+      <table class="invoice-table">
+        <thead><tr><th>Layanan</th><th class="num">Qty</th><th class="num">Harga</th><th class="num">Subtotal</th></tr></thead>
         <tbody>
           ${items.map(it => `<tr>
             <td>${esc(it.name)}</td>
-            <td style="text-align:center;">${it.qty}</td>
-            <td style="text-align:right;">${fmtRp(it.price)}</td>
-            <td style="text-align:right;">${fmtRp(it.price * it.qty)}</td>
+            <td class="num">${it.qty}</td>
+            <td class="num">${fmtRp(it.price)}</td>
+            <td class="num">${fmtRp(it.price * it.qty)}</td>
           </tr>`).join('')}
         </tbody>
       </table>
@@ -698,13 +1629,214 @@ function printReceipt(r) {
         <div class="row grand"><span>TOTAL</span><span>${fmtRp(r.total)}</span></div>
       </div>
       <div class="invoice-footer">
-        Terima kasih atas kepercayaan Anda 🌸<br>
-        <em>${esc(biz.practitioner || 'Tasya Hanifah Pramesti, A.Md. Keb., CBME')}</em>
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:24px;flex-wrap:wrap;text-align:left;">
+          <div style="flex:1;min-width:200px;">
+            <div style="font-size:0.82rem;color:var(--text-soft);">Penerima,</div>
+            <img id="sigEmbed" alt="" style="display:none;max-height:80px;max-width:240px;margin-top:6px;margin-bottom:6px;background:transparent;" />
+            <div id="sigEmbedPlaceholder" style="margin-top:50px;border-top:1px solid #2a1822;padding-top:6px;font-weight:700;">${esc(r.patient_name || '-')}</div>
+            <div style="font-size:0.78rem;color:var(--text-soft);">Nama jelas & tanda tangan</div>
+          </div>
+          <div style="flex:1;min-width:200px;text-align:right;">
+            <div style="font-size:0.82rem;color:var(--text-soft);">Hormat kami,</div>
+            <img id="ownerSigEmbed" src="" alt="Tanda tangan ${esc(biz.business_name || '')}" style="display:none;max-height:60px;max-width:220px;margin:4px 0 4px auto;background:transparent;" />
+            <div id="ownerSigUnderline" style="margin-top:50px;border-top:1px solid #2a1822;padding-top:6px;font-weight:700;"><em>${esc(biz.practitioner || 'Tasya Hanifah Pramesti, A.Md. Keb., CBME')}</em></div>
+            <div style="font-size:0.78rem;color:var(--text-soft);">${esc(biz.business_name || 'Adzkiya Mom Baby Care')}</div>
+          </div>
+        </div>
+        <div style="margin-top:20px;padding-top:14px;border-top:1px dashed var(--pink-200);text-align:center;">
+          <div style="font-size:0.92rem;">Terima kasih atas kepercayaan Anda 🌸</div>
+          <div style="font-size:0.78rem;color:var(--text-soft);margin-top:4px;">Kwitansi ini sah dan diproses secara elektronik oleh sistem.</div>
+        </div>
       </div>
     </div>
+    <script>
+    // Signature pad setup. Runs INSIDE the print-preview window so
+    // every event listener, getBoundingClientRect, and getContext call
+    // works against the right DOM/window. Previously the parent
+    // (admin.js) called attachSignaturePad() which always did
+    // document.getElementById('sigPad') — and since admin.js's
+    // \`document\` refers to the original window, it returned null,
+    // so the function bailed out at the guard and the canvas never
+    // got any pointer/touch listeners. That was the "bug tidak
+    // bisa TTD". This self-contained script fixes it by owning the
+    // canvas from the start.
+    (function() {
+      const canvas = document.getElementById('sigPad');
+      const wrap = document.getElementById('sigPadWrap');
+      if (!canvas || !wrap) return;
+      function sizeCanvas() {
+        // Wrap's CSS already gives the canvas a fixed pixel height
+        // (140px) and 100% width. We measure AFTER layout so the
+        // bounding rect is non-zero (calling getBoundingClientRect
+        // before paint would yield 0×0 for the just-opened tab).
+        const r = wrap.getBoundingClientRect();
+        if (r.width <= 0) {
+          // Tab hasn't laid out yet. Defer to the next frame.
+          requestAnimationFrame(sizeCanvas);
+          return;
+        }
+        const dpr = window.devicePixelRatio || 1;
+        canvas.width = r.width * dpr;
+        canvas.height = 140 * dpr;
+        canvas.style.width = r.width + 'px';
+        canvas.style.height = '140px';
+        const ctx = canvas.getContext('2d');
+        ctx.scale(dpr, dpr);
+        ctx.lineWidth = 2;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        ctx.strokeStyle = '#2a1822';
+      }
+      sizeCanvas();
+      // Re-size on window resize so the canvas stays matched to its
+      // CSS box (the @media print rule below hides the wrap on
+      // paper so the resize has no effect there).
+      window.addEventListener('resize', sizeCanvas);
+      const ctx2d = canvas.getContext('2d');
+      let drawing = false, last = null;
+      function pos(e) {
+        const r = canvas.getBoundingClientRect();
+        const t = e.touches ? e.touches[0] : e;
+        return { x: t.clientX - r.left, y: t.clientY - r.top };
+      }
+      function start(e) {
+        e.preventDefault();
+        drawing = true;
+        last = pos(e);
+      }
+      function move(e) {
+        if (!drawing) return;
+        e.preventDefault();
+        const p = pos(e);
+        ctx2d.beginPath();
+        ctx2d.moveTo(last.x, last.y);
+        ctx2d.lineTo(p.x, p.y);
+        ctx2d.stroke();
+        last = p;
+      }
+      function end(e) {
+        if (!drawing) return;
+        if (e) e.preventDefault();
+        drawing = false;
+        last = null;
+      }
+      canvas.addEventListener('mousedown', start);
+      canvas.addEventListener('mousemove', move);
+      window.addEventListener('mouseup', end);
+      canvas.addEventListener('touchstart', start, { passive: false });
+      canvas.addEventListener('touchmove', move, { passive: false });
+      canvas.addEventListener('touchend', end);
+      canvas.addEventListener('touchcancel', end);
+      // Expose helper methods on the canvas DOM node so the print
+      // button can clear / extract.
+      canvas._clearSig = function() {
+        ctx2d.clearRect(0, 0, canvas.width, canvas.height);
+      };
+      canvas._getSigDataUrl = function() {
+        const blank = document.createElement('canvas');
+        blank.width = canvas.width;
+        blank.height = canvas.height;
+        if (canvas.toDataURL() === blank.toDataURL()) return null;
+        return canvas.toDataURL('image/png');
+      };
+      // Expose the canvas on window so the "Ulangi TTD" button's
+      // onclick (set inline above) can find it without needing its
+      // ID (the inline onclick runs in this window's scope).
+      window.__sigPad = canvas;
+      // "Sertakan di kwitansi" checkbox: when off, clear the pad
+      // so a stale signature doesn't sneak into the printed PDF.
+      const inc = document.getElementById('sigInclude');
+      if (inc) inc.addEventListener('change', () => { if (!inc.checked) canvas._clearSig(); });
+
+      // Capture the signature as a PNG and embed it into the invoice's
+      // "Penerima," block right before the user triggers window.print().
+      // Without this, the signature stays on the canvas but never ends
+      // up in the printed/Save-as-PDF output. The <img id="sigEmbed"> is
+      // hidden by default — show it only when we actually have a
+      // non-empty signature AND the "Sertakan di kwitansi" checkbox is
+      // still checked. We collapse the nama placeholder's margin-top
+      // so the rendered TTD sits cleanly above the underline border.
+      function embedSigAndPrint() {
+        const img = document.getElementById('sigEmbed');
+        const placeholder = document.getElementById('sigEmbedPlaceholder');
+        const include = inc && inc.checked;
+        const dataUrl = canvas._getSigDataUrl();
+        if (include && dataUrl) {
+          img.src = dataUrl;
+          img.style.display = 'block';
+          if (placeholder) placeholder.style.marginTop = '8px';
+        } else {
+          img.removeAttribute('src');
+          img.style.display = 'none';
+          if (placeholder) placeholder.style.marginTop = '50px';
+        }
+        // Also embed the saved owner signature (bidan/pemilik) into
+        // the "Hormat kami," block, if the parent's SETTINGS flag is
+        // true. We resolve it to a data URL via fetch so the print
+        // pipeline doesn't need auth headers. If the request fails
+        // (signature was deleted between settings-fetch and print,
+        // network glitch, etc.), we silently fall back to the empty
+        // placeholder — the printed kwitansi just shows the underline.
+        const ownerImg = document.getElementById('ownerSigEmbed');
+        const ownerUnderline = document.getElementById('ownerSigUnderline');
+        const wantOwner = window.__hasOwnerSignature === true;
+        function finalize() { window.print(); }
+        if (wantOwner && ownerImg) {
+          // Use the same origin the page was loaded from so /api works
+          // whether this print preview was opened from the same
+          // origin or a different one.
+          const url = (location.origin || '') + '/api/owner-signature';
+          fetch(url, { credentials: 'omit' })
+            .then((r) => r.ok ? r.blob() : null)
+            .then((blob) => {
+              if (!blob) {
+                if (ownerImg) ownerImg.style.display = 'none';
+                if (ownerUnderline) ownerUnderline.style.marginTop = '50px';
+                return;
+              }
+              const reader = new FileReader();
+              reader.onload = () => {
+                ownerImg.src = reader.result;
+                ownerImg.style.display = 'block';
+                if (ownerUnderline) ownerUnderline.style.marginTop = '6px';
+              };
+              reader.readAsDataURL(blob);
+            })
+            .catch(() => {
+              if (ownerImg) ownerImg.style.display = 'none';
+              if (ownerUnderline) ownerUnderline.style.marginTop = '50px';
+            })
+            .finally(() => {
+              // Wait a beat so the FileReader.onload fires before
+              // window.print() snapshots the layout.
+              setTimeout(finalize, 60);
+            });
+        } else {
+          if (ownerImg) ownerImg.style.display = 'none';
+          if (ownerUnderline) ownerUnderline.style.marginTop = '50px';
+          finalize();
+        }
+      }
+      // Expose to window so the inline onclick="embedSigAndPrint()" on
+      // the printBtn (rendered before the script runs, but in the
+      // same window) can resolve the function by name.
+      window.embedSigAndPrint = embedSigAndPrint;
+    })();
+    <\/script>
     </body></html>`;
   const w = window.open('', '_blank');
   w.document.write(html); w.document.close();
+  // Tell the print preview whether the owner signature is saved on
+  // the server. The inline script reads this in embedSigAndPrint() to
+  // decide whether to fetch /api/owner-signature before window.print().
+  try {
+    w.__hasOwnerSignature = !!(biz && biz.has_owner_signature);
+  } catch (e) {}
+
+  // The new tab now owns its own canvas + listeners. Nothing for the
+  // parent window to do — focus the new tab so the admin lands on
+  // the print preview immediately.
+  setTimeout(() => { try { w.focus(); } catch {} }, 50);
 }
 
 // ---------- RECAP ----------
@@ -715,11 +1847,21 @@ async function renderRecap() {
     <div class="admin-header">
       <h1>📈 Rekap Bulanan</h1>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+        <label style="font-size:0.85rem;color:var(--text-soft);font-weight:600;">📅 Bulan:</label>
         <input type="month" id="recapMonth" value="${m}" style="padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--card);color:var(--text);">
+        <label style="font-size:0.85rem;color:var(--text-soft);font-weight:600;margin-left:6px;">📊 Range:</label>
+        <select id="recapMonths" onchange="loadRecap()" style="padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--card);color:var(--text);font-weight:600;">
+          <option value="1">1 Bulan</option>
+          <option value="3">3 Bulan</option>
+          <option value="6">6 Bulan</option>
+          <option value="12">1 Tahun (12 Bulan)</option>
+        </select>
         <button onclick="loadRecap()" class="btn-sm btn-pay">🔄 Muat</button>
-        <button onclick="exportRecapXLSX()" class="btn-sm btn-approve">📊 Excel</button>
+        <button onclick="openKwitansiModal()" class="btn-sm btn-approve">🧾 Buat Kwitansi Manual</button>
+        <button onclick="exportRecapXLSX()" class="btn-sm btn-approve" title="Download laporan keuangan Excel">📊 Excel</button>
         <button onclick="exportRecapCSV()" class="btn-sm btn-pay">📥 CSV</button>
-        <button onclick="exportRecapPDF()" class="btn-sm btn-view">🖨️ PDF</button>
+        <button onclick="exportRecapPDF()" class="btn-sm btn-view" title="Cetak laporan keuangan sebagai PDF">🖨️ PDF</button>
+        <button onclick="openLaporanKeuangan()" class="btn-sm" style="background:#7c3aed;color:white;border:none;" title="Buka laporan keuangan printable">📑 Laporan</button>
       </div>
     </div>
     <div id="recapContent">Loading...</div>
@@ -728,38 +1870,677 @@ async function renderRecap() {
 }
 
 let RECAP_DATA = null;
+let RECAP_RECEIPTS = [];
 async function loadRecap() {
   const month = document.getElementById('recapMonth').value;
+  const months = document.getElementById('recapMonths')?.value || '1';
   try {
-    RECAP_DATA = await api('/api/admin/recap?month=' + month);
+    RECAP_DATA = await api('/api/admin/recap?month=' + month + '&months=' + months);
+    // For receipts table we only show the single-month receipts (the
+    // receipts list is too long to mix across multi-month views).
+    RECAP_RECEIPTS = await api('/api/admin/receipts?month=' + month);
     const el = document.getElementById('recapContent');
+    const isRange = parseInt(months, 10) > 1;
+    // Range label for the page header
+    const rangeLabel = isRange
+      ? `${RECAP_DATA.monthList[RECAP_DATA.monthList.length - 1]} s/d ${month} (${months} bulan)`
+      : month;
+
+    // Build byMonth breakdown table (only for range view)
+    const byMonthHtml = (isRange && Array.isArray(RECAP_DATA.byMonth))
+      ? `<div style="margin:18px 0 6px;background:var(--card);border-radius:12px;padding:16px;border:1px solid var(--border);">
+          <h3 style="margin:0 0 12px;font-size:1.05rem;">📊 Ringkasan Per Bulan (${months} bulan)</h3>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;">
+            ${RECAP_DATA.byMonth.map((m) => {
+              const isPeak = m.totalOmzet === Math.max(...RECAP_DATA.byMonth.map((x) => x.totalOmzet));
+              return `<span style="display:inline-flex;align-items:center;gap:6px;padding:6px 12px;background:${isPeak ? '#d9efe1' : 'var(--pink-50)'};border:1px solid ${isPeak ? '#1e8957' : 'var(--pink-100)'};border-radius:999px;font-size:0.85rem;font-weight:600;">
+                📅 <strong>${m.month}</strong> · ${m.totalReservasi} res · ${fmtRp(m.totalOmzet)}
+                ${isPeak ? ' 🏆' : ''}
+              </span>`;
+            }).join('')}
+          </div>
+          <div class="table-scroll"><table class="data-table"><thead><tr>
+            <th>Bulan</th><th>Reservasi</th><th>Kwitansi</th><th>Omzet (Lunas)</th><th>Rata-rata/Reservasi</th>
+          </tr></thead><tbody>
+            ${RECAP_DATA.byMonth.map((m) => `<tr>
+              <td><strong>${m.month}</strong></td>
+              <td>${m.totalReservasi}</td>
+              <td>${m.totalKwitansi}</td>
+              <td><strong>${fmtRp(m.totalOmzet)}</strong></td>
+              <td>${m.totalReservasi ? fmtRp(Math.round(m.totalOmzet / m.totalReservasi)) : '—'}</td>
+            </tr>`).join('')}
+            <tr style="background:var(--primary);color:white;font-weight:700;">
+              <td>TOTAL</td>
+              <td>${RECAP_DATA.totalReservasi}</td>
+              <td>${RECAP_RECEIPTS.length || RECAP_DATA.byMonth.reduce((s, m) => s + m.totalKwitansi, 0)}</td>
+              <td>${fmtRp(RECAP_DATA.totalOmzet)}</td>
+              <td>${RECAP_DATA.totalReservasi ? fmtRp(Math.round(RECAP_DATA.totalOmzet / RECAP_DATA.totalReservasi)) : '—'}</td>
+            </tr>
+          </tbody></table></div>
+        </div>`
+      : '';
+
     el.innerHTML = `
+      <div style="margin-bottom:14px;padding:10px 14px;background:var(--bg);border-radius:10px;font-size:0.92rem;color:var(--text-soft);border:1px solid var(--border);">
+        📅 <strong>${rangeLabel}</strong>${isRange ? ` &nbsp;·&nbsp; <button onclick="openLaporanKeuangan()" style="background:none;border:none;color:var(--primary);text-decoration:underline;font-weight:700;cursor:pointer;">📑 Cetak Laporan Keuangan</button>` : ''}
+      </div>
       <div class="stat-grid">
         <div class="stat-card"><div class="label">Total Reservasi</div><div class="value">${RECAP_DATA.totalReservasi}</div></div>
         <div class="stat-card pink"><div class="label">Total Omzet</div><div class="value">${fmtRp(RECAP_DATA.totalOmzet)}</div></div>
-        <div class="stat-card peach"><div class="label">Total Kwitansi</div><div class="value">${RECAP_DATA.totalKwitansi}</div></div>
+        <div class="stat-card peach"><div class="label">Total Kwitansi</div><div class="value">${RECAP_RECEIPTS.length || RECAP_DATA.byMonth.reduce((s, m) => s + m.totalKwitansi, 0)}</div></div>
       </div>
-      <h3 style="margin:20px 0 12px;">Detail Reservasi Bulan ${RECAP_DATA.month}</h3>
-      <div class="table-scroll"><table class="data-table"><thead><tr>
-        <th>Tgl</th><th>Pasien</th><th>Layanan</th><th>Sesi</th><th>Total</th><th>Status</th><th>Bayar</th>
-      </tr></thead><tbody>
-      ${RECAP_DATA.rows.map(r => `<tr>
-        <td>${(r.slots||[]).map(s=>`${fmtDate(s.date)} <small>${s.time}</small>`).join('<br>')}</td>
-        <td>${esc(r.patient_name)}</td>
-        <td><div class="items-list">${(r.items||[]).map(it=>`<div>• ${esc(it.name)} ×${it.qty}</div>`).join('')}</div></td>
-        <td>${(r.slots||[]).length}</td>
-        <td><strong>${fmtRp(r.total)}</strong></td>
-        <td><span class="badge badge-${r.status}">${r.status}</span></td>
-        <td><span class="badge badge-${r.payment_status}">${r.payment_status}</span></td>
-      </tr>`).join('') || '<tr><td colspan="7" style="text-align:center;color:var(--text-soft);padding:20px;">Tidak ada data.</td></tr>'}
-      </tbody></table></div>
+      ${byMonthHtml}
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-top:8px;" id="recapCols">
+        <div>
+          <h3 style="margin:20px 0 12px;">🧾 Kwitansi ${isRange ? 'Bulan ' + month : ''}</h3>
+          ${RECAP_RECEIPTS.length ? renderReceiptTable(RECAP_RECEIPTS) : '<p style="color:var(--text-soft);text-align:center;padding:20px;background:var(--card);border-radius:12px;">Belum ada kwitansi bulan ini.</p>'}
+        </div>
+        <div>
+          <h3 style="margin:20px 0 12px;">📅 Detail Reservasi ${isRange ? '(' + RECAP_DATA.rows.length + ' di ' + months + ' bulan)' : 'Bulan ' + month}</h3>
+          ${RECAP_DATA.rows.length ? `
+            <div class="data-table-wrap">
+              <div class="table-scroll"><table class="data-table"><thead><tr>
+                <th>Tgl</th><th>Pasien</th><th>Layanan</th><th>Sesi</th><th>Total</th><th>Status</th><th>Bayar</th>
+              </tr></thead><tbody>
+              ${RECAP_DATA.rows.map(r => `<tr>
+                <td>${(r.slots||[]).map(s=>`${fmtDate(s.date)} <small>${s.time}</small>`).join('<br>')}</td>
+                <td>${esc(r.patient_name)}</td>
+                <td><div class="items-list">${(r.items||[]).map(it=>`<div>• ${esc(it.name)} ×${it.qty}</div>`).join('')}</div></td>
+                <td>${(r.slots||[]).length}</td>
+                <td><strong>${fmtRp(r.total)}</strong></td>
+                <td><span class="badge badge-${r.status}">${r.status}</span></td>
+                <td><span class="badge badge-${r.payment_status}">${r.payment_status}</span></td>
+              </tr>`).join('') || '<tr><td colspan="7" style="text-align:center;color:var(--text-soft);padding:20px;">Tidak ada data.</td></tr>'}
+              </tbody></table></div>
+            </div>
+            <div class="card-list">
+              ${RECAP_DATA.rows.map(r => `<div class="card-list-item">
+                <div class="cli-head">${esc(r.patient_name || '-')}</div>
+                <div class="cli-meta">📅 ${(r.slots||[]).map(s=>`${fmtDate(s.date)} ${s.time}`).join(', ')}</div>
+                <div class="cli-row"><span class="cli-label">Layanan</span><span class="cli-value" style="text-align:left;font-weight:500;">${(r.items||[]).map(it=>`• ${esc(it.name)} ×${it.qty}`).join('<br>')}</span></div>
+                <div class="cli-row"><span class="cli-label">Sesi</span><span class="cli-value">${(r.slots||[]).length}</span></div>
+                <div class="cli-row"><span class="cli-label">Total</span><span class="cli-value">${fmtRp(r.total)}</span></div>
+                <div class="cli-row"><span class="cli-label">Status</span><span class="cli-value"><span class="badge badge-${r.status}">${r.status}</span> <span class="badge badge-${r.payment_status}">${r.payment_status}</span></span></div>
+              </div>`).join('')}
+            </div>
+          ` : '<p style="color:var(--text-soft);text-align:center;padding:20px;background:var(--card);border-radius:12px;">Belum ada reservasi bulan ini.</p>'}
+        </div>
+      </div>
+      <style>@media(max-width:920px),(hover:none) and (pointer:coarse) and (max-width:1024px){#recapCols{grid-template-columns:1fr !important;}}</style>
     `;
   } catch (e) { document.getElementById('recapContent').innerHTML = `<div class="alert alert-error">${e.message}</div>`; }
 }
 
+function renderReceiptTable(rows) {
+  // Enable responsive card-list view for phones. Both the table and
+  // the card list are rendered; CSS hides the table on phones so
+  // every action button stays tappable.
+  document.body.setAttribute('data-table-mode', 'cards');
+  const tableHtml = `<div class="data-table-wrap"><div class="table-scroll"><table class="data-table"><thead><tr>
+    <th>Invoice</th><th>Tgl Layanan</th><th>Pasien</th><th>Total</th><th>Aksi</th>
+  </tr></thead><tbody>
+  ${rows.map(r => `<tr>
+    <td><strong>${esc(r.invoice_no || '-')}</strong><br><small style="color:var(--text-soft)">${fmtDateTime(r.created_at)}</small></td>
+    <td>${r.service_date ? fmtDate(r.service_date) : '<span style="color:var(--text-soft)">—</span>'}</td>
+    <td>${esc(r.patient_name || '-')}<br><small style="color:var(--text-soft)">${esc(r.whatsapp || '')}</small></td>
+    <td><strong>${fmtRp(r.total)}</strong></td>
+    <td style="white-space:nowrap;">
+      <button class="btn-sm btn-view" onclick="openKwitansiDetailModal(${r.id})" title="Lihat">👁️</button>
+      <button class="btn-sm btn-view" onclick="shareOrPrintKwitansi(${r.id})" title="Kirim ke WA / Cetak" aria-label="Kirim atau cetak kwitansi">📤</button>
+      <button class="btn-sm btn-del" onclick="deleteReceipt(${r.id}, '${esc(r.invoice_no)}')" title="Hapus">🗑️</button>
+    </td>
+  </tr>`).join('')}
+  </tbody></table></div></div>`;
+  const cardHtml = `<div class="card-list" aria-label="Daftar kwitansi (tampilan kartu untuk HP)">
+    ${rows.map(r => `<div class="card-list-item">
+      <div class="cli-head">${esc(r.invoice_no || '')}</div>
+      <div class="cli-meta">📅 ${fmtDateTime(r.created_at)}</div>
+      <div class="cli-row"><span class="cli-label">Tgl Layanan</span><span class="cli-value">${r.service_date ? fmtDate(r.service_date) : '—'}</span></div>
+      <div class="cli-row"><span class="cli-label">Pasien</span><span class="cli-value">${esc(r.patient_name || '-')}<br><small style="font-weight:400;color:var(--text-soft)">${esc(r.whatsapp || '')}</small></span></div>
+      <div class="cli-row"><span class="cli-label">Total</span><span class="cli-value">${fmtRp(r.total)}</span></div>
+      <div class="cli-actions">
+        <button class="btn-sm btn-view" onclick="openKwitansiDetailModal(${r.id})">👁️ Lihat</button>
+        <button class="btn-sm btn-view" onclick="shareOrPrintKwitansi(${r.id})">📤 Kirim/Cetak</button>
+        <button class="btn-sm btn-del" onclick="deleteReceipt(${r.id}, '${esc(r.invoice_no)}')">🗑️ Hapus</button>
+      </div>
+    </div>`).join('')}
+  </div>`;
+  return tableHtml + cardHtml;
+}
+
+// Buka modal 'Buat Kwitansi Manual' dari Rekap Bulanan — tidak perlu pindah
+// ke menu Kwitansi di sidebar. Form identik dengan yang ada di /receipts.
+function openKwitansiModal() {
+  receiptItems = [];
+  const month = document.getElementById('recapMonth').value + '-01';
+  openModal(`
+    <h3>🧾 Buat Kwitansi Manual</h3>
+    <p style="color:var(--text-soft);font-size:0.85rem;margin:6px 0 14px;">Kwitansi ini akan otomatis muncul di Rekap <strong>${esc(document.getElementById('recapMonth').value)}</strong>.</p>
+    <div class="form-wrap" style="padding:0;">
+      <div class="form-group"><label>Nama Pasien</label><input type="text" id="mkw_name"></div>
+      <div class="form-row">
+        <div class="form-group"><label>HP</label><input type="tel" id="mkw_hp"></div>
+        <div class="form-group"><label>Tanggal Layanan</label><input type="date" id="mkw_date" value="${month}"></div>
+      </div>
+      <div class="form-group"><label>⏰ Waktu / Jam Layanan (multi-waktu)</label>
+        <div id="mkw_times" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;"></div>
+        <button type="button" onclick="addMkwTimePrompt()" class="btn-sm btn-pay" style="margin-top:6px;">+ Tambah Waktu</button>
+        <small style="color:var(--text-soft);display:block;margin-top:4px;">Misal: satu pasien dengan beberapa sesi (09:00, 14:00, 19:00).</small>
+      </div>
+      <div class="form-group"><label>Alamat</label><input type="text" id="mkw_addr"></div>
+      <hr style="margin:14px 0;border:none;border-top:1px dashed var(--border);">
+      <h4 style="margin-bottom:8px;">Layanan</h4>
+      <div id="mkw_items"></div>
+      <button type="button" onclick="mkwAddRow()" class="btn-sm btn-pay" style="margin-top:8px;">+ Tambah Layanan</button>
+      <div class="form-row" style="margin-top:14px;">
+        <div class="form-group"><label>Fee Transportasi</label><input type="number" id="mkw_transport" value="0"></div>
+        <div class="form-group"><label>Diskon</label><input type="number" id="mkw_discount" value="0"></div>
+      </div>
+      <div class="summary-card" id="mkw_summary" style="margin-top:14px;">
+        <div class="row"><span>Subtotal:</span><span id="mkw_sub">Rp 0</span></div>
+        <div class="row total"><span>Total:</span><span id="mkw_total">Rp 0</span></div>
+      </div>
+      <div id="mkw_err" style="display:none;margin-top:10px;padding:10px;background:#fde0e4;color:#c43050;border-radius:8px;font-size:0.88rem;"></div>
+      <div style="margin-top:18px;display:flex;gap:8px;justify-content:flex-end;">
+        <button class="btn-sm btn-view" onclick="closeModal()">Batal</button>
+        <button class="btn btn-primary" onclick="mkwSave()">💾 Simpan & Cetak</button>
+      </div>
+    </div>
+  `);
+  mkwAddRow();
+  initMkwTimes();
+}
+
+function mkwAddRow(item) {
+  const i = receiptItems.length;
+  receiptItems.push(item || { name: '', price: 0, qty: 1 });
+  const wrap = document.getElementById('mkw_items');
+  if (!wrap) return;
+  const div = document.createElement('div');
+  div.style.cssText = 'display:grid;grid-template-columns:1fr 90px 70px 32px;gap:8px;margin-bottom:8px;align-items:center;';
+  div.innerHTML = `
+    <select onchange="mkwOnServiceChange(${i}, this)">
+      <option value="">— pilih layanan —</option>
+      ${SERVICES.map(c => `<optgroup label="${esc(c.cat)}">${c.items.map(it => `<option value="${esc(it.name)}" data-price="${it.price}" ${item && item.name === it.name ? 'selected' : ''}>${esc(it.name)}</option>`).join('')}</optgroup>`).join('')}
+    </select>
+    <div class="kw-price-tag" style="padding:8px 10px;background:var(--pink-50);border:1px solid var(--pink-100);border-radius:8px;font-weight:700;color:var(--pink-700);font-size:0.85rem;text-align:right;white-space:nowrap;">${fmtRp(item ? item.price : 0)}</div>
+    <input type="number" placeholder="qty" value="${item ? item.qty : 1}" min="1" oninput="receiptItems[${i}].qty=parseInt(this.value)||1;mkwUpdateTotal();">
+    <button type="button" onclick="receiptItems.splice(${i},1);mkwRebuild();" class="btn-sm btn-del" style="padding:6px;" title="Hapus baris">×</button>
+  `;
+  div.querySelectorAll('select, input').forEach(el => {
+    el.style.cssText = (el.style.cssText || '') + ';padding:8px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-family:inherit;font-size:0.88rem;';
+  });
+  wrap.appendChild(div);
+  ['#mkw_transport', '#mkw_discount'].forEach(s => { const el = document.querySelector(s); if (el) el.oninput = mkwUpdateTotal; });
+  mkwUpdateTotal();
+}
+
+function mkwRebuild() {
+  const wrap = document.getElementById('mkw_items');
+  if (!wrap) return;
+  wrap.innerHTML = '';
+  const snap = receiptItems.slice();
+  receiptItems = [];
+  snap.forEach(it => mkwAddRow(it));
+}
+
+function mkwOnServiceChange(idx, sel) {
+  const opt = sel.options[sel.selectedIndex];
+  const price = parseInt(opt.dataset.price) || 0;
+  receiptItems[idx].name = sel.value;
+  receiptItems[idx].price = price;
+  mkwRebuild();
+}
+
+function mkwUpdateTotal() {
+  const sub = receiptItems.reduce((s, it) => s + (it.price * it.qty), 0);
+  const trans = parseInt(document.getElementById('mkw_transport')?.value) || 0;
+  const disc = parseInt(document.getElementById('mkw_discount')?.value) || 0;
+  const total = sub + trans - disc;
+  if (document.getElementById('mkw_sub')) document.getElementById('mkw_sub').textContent = fmtRp(sub);
+  if (document.getElementById('mkw_total')) document.getElementById('mkw_total').textContent = fmtRp(total);
+}
+
+async function mkwSave() {
+  const items = receiptItems.filter(it => it.name && it.price > 0);
+  const errEl = document.getElementById('mkw_err');
+  errEl.style.display = 'none';
+  if (!items.length) {
+    errEl.textContent = '⚠️ Tambahkan minimal 1 layanan (pilih dari dropdown).';
+    errEl.style.display = 'block';
+    return;
+  }
+  const slots = getMkwSlots();
+  if (!slots.length) {
+    errEl.textContent = '⚠️ Tambahkan minimal 1 jadwal.';
+    errEl.style.display = 'block';
+    return;
+  }
+  const formDate = document.getElementById('mkw_date').value;
+  const allSameDate = slots.every((s) => s.date === formDate);
+  const body = {
+    patient_name: document.getElementById('mkw_name').value,
+    whatsapp: document.getElementById('mkw_hp').value,
+    address: document.getElementById('mkw_addr').value,
+    service_date: allSameDate ? formDate : slots[0].date,
+    service_slots: slots,
+    items,
+    transport_fee: parseInt(document.getElementById('mkw_transport').value) || 0,
+    discount: parseInt(document.getElementById('mkw_discount').value) || 0
+  };
+  try {
+    const res = await api('/api/admin/receipts', { method: 'POST', body: JSON.stringify(body) });
+    printReceipt({ ...body, invoice_no: res.invoice_no, subtotal: res.subtotal, total: res.total, created_at: new Date().toISOString() });
+    closeModal();
+    loadRecap();
+  } catch (e) {
+    errEl.textContent = 'Gagal: ' + e.message;
+    errEl.style.display = 'block';
+  }
+}
+
+// Modal detail kwitansi — dipanggil dari tabel kwitansi di Rekap Bulanan.
+async function openKwitansiDetailModal(id) {
+  const r = (RECAP_RECEIPTS && RECAP_RECEIPTS.find(x => x.id === id))
+    || (window._receiptsCache && window._receiptsCache.find(x => x.id === id));
+  if (!r) return alert('Kwitansi tidak ditemukan di cache. Coba muat ulang halaman.');
+  const items = Array.isArray(r.items) ? r.items : [];
+  const times = (Array.isArray(r.service_times) && r.service_times.length)
+    ? r.service_times
+    : (r.service_time ? [r.service_time] : []);
+  const sessionsLabel = times.length > 1 ? ` <span style="color:var(--primary);font-weight:700;">(${times.length} sesi)</span>` : '';
+  const timesHtml = times.length
+    ? times.map((t) => `<span style="display:inline-block;margin:2px 4px 2px 0;padding:4px 10px;background:var(--pink-50);border:1px solid var(--pink-100);border-radius:999px;font-size:0.86rem;font-weight:700;color:var(--primary);">⏰ ${esc(t)} WIB</span>`).join('')
+    : '<span style="color:var(--text-soft);">—</span>';
+  openModal(`
+    <h3>🧾 Detail Kwitansi ${esc(r.invoice_no || '')}</h3>
+    <div style="margin-top:14px;display:grid;gap:8px;font-size:0.92rem;">
+      <div><strong>Tanggal Buat:</strong> ${fmtDateTime(r.created_at)}</div>
+      <div><strong>Tanggal Layanan:</strong> ${r.service_date ? fmtDate(r.service_date) : '<span style="color:var(--text-soft)">—</span>'}</div>
+      <div><strong>Waktu Layanan${sessionsLabel}:</strong>
+        <div style="margin-top:4px;line-height:1.8;">${timesHtml}</div>
+      </div>
+      <div><strong>Pasien:</strong> ${esc(r.patient_name || '-')}</div>
+      <div><strong>WhatsApp:</strong> ${esc(r.whatsapp || '-')}</div>
+      <div><strong>Alamat:</strong> ${esc(r.address || '-')}</div>
+      <div><strong>Layanan:</strong>
+        <div style="margin-top:4px;padding:8px;background:var(--pink-50);border-radius:8px;">
+          ${items.length ? items.map(it => `<div>• ${esc(it.name)} <small>×${it.qty || 1}</small> — ${fmtRp((it.price || 0) * (it.qty || 1))}</div>`).join('') : '<em style="color:var(--text-soft)">Tidak ada item layanan.</em>'}
+        </div>
+      </div>
+      <div><strong>Subtotal:</strong> ${fmtRp(r.subtotal || 0)}</div>
+      ${r.transport_fee ? `<div><strong>Transportasi:</strong> ${fmtRp(r.transport_fee)}</div>` : ''}
+      ${r.discount ? `<div><strong>Diskon:</strong> -${fmtRp(r.discount)}</div>` : ''}
+      <div style="margin-top:8px;padding:10px;background:var(--primary);color:white;border-radius:10px;text-align:center;font-size:1.05rem;font-weight:800;">
+        TOTAL: ${fmtRp(r.total)}
+      </div>
+    </div>
+    <div style="margin-top:18px;display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;">
+      <button class="btn-sm btn-view" onclick="printReceiptById(${r.id})">🖨️ Cetak PDF</button>
+      <button class="btn-sm btn-del" onclick="if(confirm('Hapus kwitansi ${esc(r.invoice_no)}?')){closeModal();deleteReceipt(${r.id},'${esc(r.invoice_no)}').then(()=>loadRecap());}">🗑️ Hapus</button>
+      <button class="btn-sm btn-view" onclick="closeModal()">Tutup</button>
+    </div>
+  `);
+}
+
+// ===== IMPORT KWITANSI DARI JSON =====
+// Modal ini menerima:
+//   - File .json hasil export dari sistem ini / sistem lain
+//   - File .json hasil copy-paste dari spreadsheet (array of objects)
+//   - JSON langsung yang di-paste ke textarea
+// Server akan otomatis mengenali format dan melewati baris duplikat.
+function openImportKwitansiModal() {
+  openModal(`
+    <h3>📥 Import Kwitansi</h3>
+    <p style="color:var(--text-soft);font-size:0.88rem;margin:6px 0 14px;line-height:1.5;">
+      Upload file <strong>.json</strong> atau paste JSON langsung. Format yang didukung:
+      <br>• Array of objects: <code>[{patient_name,service_date,items:[{name,price,qty}]}]</code>
+      <br>• Backup format: <code>{receipts:[...]}</code>
+      <br>• Spreadsheet headers (ID/EN): nama/pasien, tanggal/service_date, harga/price, dll.
+      <br>• <strong>Multi-waktu & multi-tanggal</strong>: pakai <code>service_slots:[{date,time}]</code> atau CSV <code>"waktu":"09:00,14:00,19:00"</code>. Total dihitung otomatis (subtotal × jumlah slot).
+    </p>
+    <div style="display:grid;gap:12px;">
+      <div>
+        <label style="font-weight:600;">📁 Upload File JSON</label>
+        <input type="file" id="impKwFile" accept="application/json,.json" style="margin-top:6px;width:100%;">
+      </div>
+      <div>
+        <label style="font-weight:600;">📋 atau Paste JSON</label>
+        <textarea id="impKwText" rows="6" placeholder='[{"patient_name":"Bunda Rina","service_date":"2026-09-05","items":[{"name":"Massage Ibu Hamil","price":80000,"qty":1}]}]' style="width:100%;font-family:monospace;font-size:0.85rem;"></textarea>
+      </div>
+      <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;font-size:0.9rem;">
+        <label style="display:flex;gap:6px;align-items:center;cursor:pointer;">
+          <input type="checkbox" id="impKwSkipDups" checked> Lewati duplikat (invoice_no / pasien+tanggal sama)
+        </label>
+        <label style="display:flex;gap:6px;align-items:center;cursor:pointer;">
+          <input type="checkbox" id="impKwSyncRes" checked> 🔗 Auto-sinkron ke Reservasi (supaya masuk Rekap Bulanan)
+        </label>
+        <a href="javascript:void(0)" onclick="downloadKwitansiTemplate()" style="color:var(--primary);text-decoration:underline;font-size:0.85rem;">📄 Download Template</a>
+      </div>
+    </div>
+    <div id="impKwResult" style="margin-top:12px;"></div>
+    <div style="margin-top:18px;display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;">
+      <button class="btn-sm btn-view" onclick="closeModal()">Tutup</button>
+      <button onclick="doImportKwitansi()" class="btn btn-primary">📥 Import Sekarang</button>
+    </div>
+  `);
+}
+
+async function doImportKwitansi() {
+  const resultEl = document.getElementById('impKwResult');
+  const fileEl = document.getElementById('impKwFile');
+  const textEl = document.getElementById('impKwText');
+  const skipDups = document.getElementById('impKwSkipDups').checked;
+  const syncRes = document.getElementById('impKwSyncRes').checked;
+
+  let payload;
+  if (fileEl.files && fileEl.files[0]) {
+    try { payload = await fileEl.files[0].text(); }
+    catch (e) { return resultEl.innerHTML = `<div class="alert alert-error">Gagal baca file: ${esc(e.message)}</div>`; }
+  } else if (textEl.value.trim()) {
+    payload = textEl.value.trim();
+  } else {
+    return resultEl.innerHTML = `<div class="alert alert-error">Pilih file atau paste JSON terlebih dahulu.</div>`;
+  }
+
+  let parsed;
+  try { parsed = JSON.parse(payload); }
+  catch (e) { return resultEl.innerHTML = `<div class="alert alert-error">JSON tidak valid: ${esc(e.message)}</div>`; }
+
+  resultEl.innerHTML = `<div style="padding:10px;background:var(--pink-50);border-radius:8px;">⏳ Mengimport...</div>`;
+  try {
+    const params = new URLSearchParams();
+    if (!skipDups) params.set('skip', '0');
+    if (!syncRes) params.set('sync_reservations', '0');
+    const qs = params.toString();
+    const res = await fetch(apiUrl('/api/admin/receipts/import' + (qs ? '?' + qs : '')), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + TOKEN },
+      body: JSON.stringify(parsed)
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || res.statusText);
+
+    let html = `<div style="padding:12px;border-radius:8px;background:${data.imported ? '#d9efe1' : '#fff3d6'};">
+      <strong>✅ Import selesai</strong><br>
+      Berhasil: <strong>${data.imported}</strong> kwitansi · Lewati (duplikat): <strong>${data.skipped}</strong> · Gagal: <strong>${data.failed}</strong>
+      ${syncRes && data.imported ? `<br><small style="color:#1e8957;">🔗 ${data.imported} kwitansi otomatis dibuatkan reservasi mirror (status=approved, payment_status=lunas) supaya muncul di Rekap Bulanan.</small>` : ''}
+    </div>`;
+    if (data.failed_items && data.failed_items.length) {
+      html += `<details style="margin-top:8px;"><summary style="cursor:pointer;color:var(--text-soft);">Lihat ${data.failed_items.length} baris gagal</summary>
+        <pre style="background:#fde0e4;padding:8px;border-radius:6px;margin-top:6px;max-height:200px;overflow:auto;font-size:0.78rem;">${esc(JSON.stringify(data.failed_items, null, 2))}</pre>
+      </details>`;
+    }
+    resultEl.innerHTML = html;
+    loadReceipts();
+    loadKwitansiStats();
+    // Also refresh reservations view if the user is currently looking
+    // at it, so the newly created mirrors show up immediately.
+    if (syncRes && data.imported && CURRENT_PAGE === 'reservations') {
+      try { await loadReservations(); } catch {}
+    }
+  } catch (e) {
+    resultEl.innerHTML = `<div class="alert alert-error">${esc(e.message)}</div>`;
+  }
+}
+
+function downloadKwitansiTemplate() {
+  const sample = [
+    {
+      patient_name: "Bunda Rina",
+      whatsapp: "081234567890",
+      address: "Cilacap",
+      service_date: "2026-09-05",
+      service_slots: [{ date: "2026-09-05", time: "09:00" }],
+      items: [
+        { name: "Massage Ibu Hamil", price: 80000, qty: 1 }
+      ],
+      transport_fee: 0,
+      discount: 0
+    },
+    {
+      patient_name: "Bunda Dewi",
+      whatsapp: "081234567891",
+      address: "Nusawungu",
+      service_date: "2026-09-10",
+      // Multi-waktu + multi-tanggal: total dihitung otomatis
+      // (subtotal × jumlah slot). Bisa juga service_times array
+      // untuk 1 tanggal dengan beberapa jam.
+      service_slots: [
+        { date: "2026-09-12", time: "09:00" },
+        { date: "2026-09-14", time: "10:00" },
+        { date: "2026-09-15", time: "08:00" }
+      ],
+      items: [
+        { name: "Pijat Laktasi", price: 80000, qty: 2 },
+        { name: "Baby Sleepwell", price: 50000, qty: 1 }
+      ],
+      transport_fee: 15000,
+      discount: 0
+    }
+  ];
+  const blob = new Blob([JSON.stringify(sample, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'template-import-kwitansi.json';
+  a.click();
+}
+
+// ===== IMPORT KWITANSI DARI PDF =====
+// Upload one or more kwitansi PDFs (the ones printed from this admin
+// panel). Server extracts text and parses invoice/patient/items/totals.
+// User reviews parsed data in a table, can edit fields, then submits to
+// the existing /api/admin/receipts/import for insertion.
+let _impPdfParsed = []; // last batch of parsed receipts (after upload, before confirm)
+function openImportPdfKwitansiModal() {
+  _impPdfParsed = [];
+  openModal(`
+    <h3>📄 Restore Kwitansi dari PDF</h3>
+    <p style="color:var(--text-soft);font-size:0.88rem;margin:6px 0 14px;line-height:1.5;">
+      Upload satu atau banyak file PDF kwitansi Adzkiya (PDF yang dicetak dari menu <strong>🖨️ Cetak PDF</strong>).
+      Server akan otomatis mengekstrak data dari setiap PDF. Anda bisa cek & edit hasilnya sebelum import.
+      <br><small style="color:var(--text-soft);">⚠️ PDF hasil scan/foto tidak didukung (butuh OCR). Hanya PDF yang di-generate oleh sistem ini.</small>
+    </p>
+    <div id="impPdfStep1">
+      <label style="font-weight:600;">📁 Pilih file PDF (boleh lebih dari satu)</label>
+      <input type="file" id="impPdfFiles" accept="application/pdf,.pdf" multiple style="margin-top:6px;width:100%;">
+      <div style="margin-top:10px;display:flex;gap:8px;align-items:center;font-size:0.88rem;flex-wrap:wrap;">
+        <label style="display:flex;gap:6px;align-items:center;cursor:pointer;">
+          <input type="checkbox" id="impPdfSkipDups" checked> Lewati duplikat
+        </label>
+        <label style="display:flex;gap:6px;align-items:center;cursor:pointer;">
+          <input type="checkbox" id="impPdfSyncRes" checked> 🔗 Auto-sinkron ke Reservasi
+        </label>
+      </div>
+      <div id="impPdfStatus" style="margin-top:10px;"></div>
+      <div style="margin-top:14px;display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;">
+        <button class="btn-sm btn-view" onclick="closeModal()">Batal</button>
+        <button onclick="impPdfUpload()" class="btn btn-primary">🔍 Ekstrak Data</button>
+      </div>
+    </div>
+    <div id="impPdfStep2" style="display:none;">
+      <div id="impPdfSummary" style="margin-bottom:12px;"></div>
+      <div style="max-height:340px;overflow:auto;border:1px solid var(--border);border-radius:10px;">
+        <table class="data-table" id="impPdfTable">
+          <thead><tr>
+            <th style="width:32px;">✓</th>
+            <th>File</th>
+            <th>Invoice</th>
+            <th>Pasien</th>
+            <th>Tanggal</th>
+            <th>Item</th>
+            <th>Total</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div id="impPdfFailed" style="margin-top:10px;"></div>
+      <div style="margin-top:14px;display:flex;gap:8px;justify-content:space-between;flex-wrap:wrap;">
+        <button class="btn-sm btn-view" onclick="document.getElementById('impPdfStep1').style.display='';document.getElementById('impPdfStep2').style.display='none';">⬅️ Upload Lagi</button>
+        <div style="display:flex;gap:8px;">
+          <button class="btn-sm btn-view" onclick="closeModal()">Batal</button>
+          <button onclick="impPdfConfirmImport()" class="btn btn-primary">📥 Import ke Database</button>
+        </div>
+      </div>
+    </div>
+  `);
+}
+
+async function impPdfUpload() {
+  const filesEl = document.getElementById('impPdfFiles');
+  const statusEl = document.getElementById('impPdfStatus');
+  const files = filesEl.files;
+  if (!files || !files.length) return statusEl.innerHTML = `<div class="alert alert-error">Pilih minimal 1 file PDF.</div>`;
+
+  statusEl.innerHTML = `<div style="padding:10px;background:var(--pink-50);border-radius:8px;">⏳ Mengekstrak ${files.length} file...</div>`;
+  const fd = new FormData();
+  for (const f of files) fd.append('files', f);
+
+  try {
+    const res = await fetch(apiUrl('/api/admin/receipts/import-pdf'), {
+      method: 'POST',
+      headers: { Authorization: 'Bearer ' + TOKEN },
+      body: fd
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || res.statusText);
+
+    _impPdfParsed = (data.results || []).map((r, idx) => ({
+      filename: r.filename,
+      ok: r.ok,
+      error: r.error || null,
+      receipt: r.receipt || null,
+      selected: r.ok,
+    }));
+
+    // Show step 2 with parsed table
+    document.getElementById('impPdfStep1').style.display = 'none';
+    document.getElementById('impPdfStep2').style.display = '';
+
+    // Summary
+    const ok = _impPdfParsed.filter((r) => r.ok);
+    const fail = _impPdfParsed.filter((r) => !r.ok);
+    document.getElementById('impPdfSummary').innerHTML = `
+      <div style="padding:12px;border-radius:8px;background:${ok.length ? '#d9efe1' : '#fff3d6'};">
+        <strong>${ok.length}</strong> kwitansi berhasil diekstrak${fail.length ? `, <strong style="color:#c43050;">${fail.length}</strong> gagal` : ''}.
+      </div>
+    `;
+
+    // Table
+    const tbody = document.querySelector('#impPdfTable tbody');
+    tbody.innerHTML = _impPdfParsed.map((r, idx) => {
+      if (!r.ok) {
+        return `<tr style="background:#fde0e4;">
+          <td colspan="7"><strong>❌ ${esc(r.filename)}</strong> — ${esc(r.error || 'gagal')}</td>
+        </tr>`;
+      }
+      const rec = r.receipt;
+      const itemsText = (rec.items || []).map((it) => `${esc(it.name)} ×${it.qty}`).join(', ');
+      return `<tr data-idx="${idx}">
+        <td><input type="checkbox" class="imp-pdf-chk" ${r.selected ? 'checked' : ''} onchange="_impPdfParsed[${idx}].selected=this.checked"></td>
+        <td><small>${esc(r.filename)}</small></td>
+        <td>${esc(rec.invoice_no || '—')}</td>
+        <td>${esc(rec.patient_name || '—')}</td>
+        <td>${esc(rec.service_date || '—')}</td>
+        <td><small>${itemsText}</small></td>
+        <td><strong>${fmtRp(rec.total)}</strong></td>
+      </tr>`;
+    }).join('');
+
+    if (fail.length) {
+      document.getElementById('impPdfFailed').innerHTML = `<details><summary style="cursor:pointer;color:var(--text-soft);">${fail.length} file gagal diekstrak</summary>
+        <ul style="margin-top:6px;font-size:0.85rem;">${fail.map((f) => `<li><strong>${esc(f.filename)}</strong>: ${esc(f.error || 'unknown')}</li>`).join('')}</ul>
+      </details>`;
+    }
+  } catch (e) {
+    statusEl.innerHTML = `<div class="alert alert-error">${esc(e.message)}</div>`;
+  }
+}
+
+async function impPdfConfirmImport() {
+  const toImport = _impPdfParsed.filter((r) => r.ok && r.selected).map((r) => {
+    // Strip _confidence fields (server doesn't need them)
+    const { _confidence, ...rest } = r.receipt;
+    return rest;
+  });
+  if (!toImport.length) return alert('Tidak ada kwitansi dipilih untuk di-import.');
+
+  const skipDups = document.getElementById('impPdfSkipDups').checked;
+  const syncRes = document.getElementById('impPdfSyncRes') ? document.getElementById('impPdfSyncRes').checked : true;
+  try {
+    const params = new URLSearchParams();
+    if (!skipDups) params.set('skip', '0');
+    if (!syncRes) params.set('sync_reservations', '0');
+    const qs = params.toString();
+    const res = await fetch(apiUrl('/api/admin/receipts/import' + (qs ? '?' + qs : '')), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + TOKEN },
+      body: JSON.stringify(toImport)
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || res.statusText);
+    let msg = 'Import selesai: ' + data.imported + ' kwitansi, ' + data.skipped + ' dilewati, ' + data.failed + ' gagal.';
+    if (syncRes && data.imported) {
+      msg += '\n\n' + data.imported + ' reservasi mirror otomatis dibuat (status=approved, payment_status=lunas) supaya muncul di Rekap Bulanan. Cek menu Reservasi.';
+    }
+    alert(msg);
+    closeModal();
+    loadReceipts();
+    loadKwitansiStats();
+    if (syncRes && data.imported && CURRENT_PAGE === 'reservations') {
+      try { await loadReservations(); } catch {}
+    }
+  } catch (e) {
+    alert('Gagal import: ' + e.message);
+  }
+}
+
+// Refresh total kwitansi stat card on Rekap Bulanan (called after import)
+async function loadKwitansiStats() {
+  if (typeof RECAP_DATA !== 'undefined' && RECAP_DATA && RECAP_DATA.month) {
+    try { await loadRecap(); } catch {}
+  }
+}
+
+function getRecapMonthAndMonths() {
+  const month = document.getElementById('recapMonth')?.value || new Date().toISOString().slice(0, 7);
+  const months = document.getElementById('recapMonths')?.value || '1';
+  return { month, months };
+}
+
 function exportRecapCSV() {
   if (!RECAP_DATA) return;
-  const rows = [['Tanggal','Jam','Pasien','WhatsApp','Layanan','Qty','Harga','Sesi','Total','Status','Pembayaran']];
+  const { month, months } = getRecapMonthAndMonths();
+  const isRange = parseInt(months, 10) > 1;
+  const rows = [];
+  // Summary at the top so the CSV opens with quick totals.
+  rows.push(['LAPORAN KEUANGAN', month]);
+  rows.push(['Periode', isRange ? `${RECAP_DATA.monthList[RECAP_DATA.monthList.length - 1]} s/d ${month}` : month]);
+  rows.push(['Tanggal Cetak', new Date().toLocaleString('id-ID')]);
+  rows.push([]);
+  rows.push(['Statistik', 'Nilai']);
+  rows.push(['Total Reservasi', RECAP_DATA.totalReservasi]);
+  rows.push(['Total Kwitansi', RECAP_DATA.totalKwitansi || 0]);
+  rows.push(['Total Omzet (Lunas)', RECAP_DATA.totalOmzet]);
+  rows.push(['Rata-rata / Reservasi', RECAP_DATA.totalReservasi ? Math.round(RECAP_DATA.totalOmzet / RECAP_DATA.totalReservasi) : 0]);
+  rows.push([]);
+  // Per-bulan breakdown when in range mode. Mirrors the byMonth card.
+  if (isRange && Array.isArray(RECAP_DATA.byMonth)) {
+    rows.push(['Ringkasan Per Bulan']);
+    rows.push(['Bulan', 'Reservasi', 'Kwitansi', 'Omzet (Lunas)', 'Rata-rata/Reservasi']);
+    for (const m of RECAP_DATA.byMonth) {
+      rows.push([
+        m.month,
+        m.totalReservasi,
+        m.totalKwitansi,
+        m.totalOmzet,
+        m.totalReservasi ? Math.round(m.totalOmzet / m.totalReservasi) : 0
+      ]);
+    }
+    rows.push([]);
+  }
+  rows.push(['Detail Reservasi']);
+  rows.push(['Tanggal','Jam','Pasien','WhatsApp','Layanan','Qty','Harga','Sesi','Total','Status','Pembayaran']);
   RECAP_DATA.rows.forEach(r => {
     (r.slots||[{date:'',time:''}]).forEach(s => {
       (r.items||[{name:'',price:0,qty:0}]).forEach(it => {
@@ -767,18 +2548,25 @@ function exportRecapCSV() {
       });
     });
   });
-  const csv = rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
+  // RFC 4180 CSV: every cell quoted, embedded quotes doubled, line
+  // endings CRLF so Excel & Google Sheets open it cleanly.
+  const csv = rows.map(r => r.map(c => {
+    const s = String(c == null ? '' : c);
+    return `"${s.replace(/"/g, '""')}"`;
+  }).join(',')).join('\r\n');
   const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8' });
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
-  a.download = `rekap-${RECAP_DATA.month}.csv`; a.click();
+  a.download = isRange ? `rekap-${month}_${months}bulan.csv` : `rekap-${month}.csv`; a.click();
 }
 
 async function exportRecapXLSX() {
   if (!RECAP_DATA) return;
   try {
+    const { month, months } = getRecapMonthAndMonths();
+    const isRange = parseInt(months, 10) > 1;
     await downloadProtected(
-      `/api/admin/recap.xlsx?month=${encodeURIComponent(RECAP_DATA.month)}`,
-      `rekap-adzkiya-${RECAP_DATA.month}.xlsx`
+      `/api/admin/recap.xlsx?month=${encodeURIComponent(month)}&months=${months}`,
+      isRange ? `rekap-adzkiya-${month}_${months}bulan.xlsx` : `rekap-adzkiya-${month}.xlsx`
     );
   } catch (error) {
     alert('Export Excel gagal: ' + error.message);
@@ -787,30 +2575,1045 @@ async function exportRecapXLSX() {
 
 function exportRecapPDF() {
   if (!RECAP_DATA) return;
+  // The "🖨️ PDF" button opens the same printable Laporan Keuangan view.
+  openLaporanKeuangan();
+}
+
+// Dedicated "Laporan Keuangan" printable view — same data as the
+// Rekap page but laid out for paper / PDF print. Includes range
+// summary at top when in range mode, then per-month breakdown, then
+// the full reservation detail table.
+function openLaporanKeuangan() {
+  if (!RECAP_DATA) return;
   const biz = SETTINGS || {};
   const logoSrc = biz.has_logo ? apiUrl('/api/logo') : null;
-  const html = `<!doctype html><html><head><title>Rekap ${RECAP_DATA.month}</title>
+  const { month, months } = getRecapMonthAndMonths();
+  const isRange = parseInt(months, 10) > 1;
+  const rangeLabel = isRange
+    ? `${RECAP_DATA.monthList[RECAP_DATA.monthList.length - 1]} s/d ${month} (${months} bulan)`
+    : month;
+
+  const summaryRows = isRange && Array.isArray(RECAP_DATA.byMonth)
+    ? `<table class="data-table" style="margin:18px 0;">
+        <thead><tr><th>Bulan</th><th>Reservasi</th><th>Kwitansi</th><th>Omzet (Lunas)</th><th>Rata-rata/Reservasi</th></tr></thead>
+        <tbody>
+          ${RECAP_DATA.byMonth.map((m) => `<tr>
+            <td><strong>${m.month}</strong></td>
+            <td>${m.totalReservasi}</td>
+            <td>${m.totalKwitansi}</td>
+            <td><strong>${fmtRp(m.totalOmzet)}</strong></td>
+            <td>${m.totalReservasi ? fmtRp(Math.round(m.totalOmzet / m.totalReservasi)) : '—'}</td>
+          </tr>`).join('')}
+          <tr style="background:var(--primary);color:white;">
+            <td><strong>TOTAL</strong></td>
+            <td><strong>${RECAP_DATA.totalReservasi}</strong></td>
+            <td><strong>${RECAP_DATA.byMonth.reduce((s, m) => s + m.totalKwitansi, 0)}</strong></td>
+            <td><strong>${fmtRp(RECAP_DATA.totalOmzet)}</strong></td>
+            <td><strong>${RECAP_DATA.totalReservasi ? fmtRp(Math.round(RECAP_DATA.totalOmzet / RECAP_DATA.totalReservasi)) : '—'}</strong></td>
+          </tr>
+        </tbody>
+      </table>`
+    : '';
+
+  const detailRows = RECAP_DATA.rows.map((r) => `<tr>
+    <td>${(r.slots||[]).map((s) => `${s.date} ${s.time}`).join('<br>')}</td>
+    <td>${esc(r.patient_name)}</td>
+    <td>${(r.items||[]).map((it) => `• ${esc(it.name)} ×${it.qty}`).join('<br>')}</td>
+    <td>${(r.slots||[]).length}</td>
+    <td>${fmtRp(r.total)}</td>
+    <td>${r.status}</td>
+    <td>${r.payment_status}</td>
+  </tr>`).join('');
+
+  const html = `<!doctype html><html><head><title>Laporan Keuangan — ${esc(rangeLabel)}</title>
     <link rel="stylesheet" href="${PAGE_STYLESHEET}">
-    <style>body{padding:30px;background:white;font-family:'Plus Jakarta Sans',sans-serif;}@media print{.no-print{display:none;}}</style>
+    <style>body{padding:30px;background:white;font-family:'Plus Jakarta Sans',sans-serif;color:#2a1822;}@media print{.no-print{display:none;}}h1,h2,h3{color:#4a2533;}</style>
     </head><body>
-    <div class="no-print" style="text-align:center;margin-bottom:16px;"><button onclick="window.print()" style="padding:10px 24px;background:#ee5a8a;color:white;border:none;border-radius:999px;font-weight:700;cursor:pointer;">🖨️ Cetak / Save PDF</button></div>
-    <div style="display:flex;align-items:center;gap:16px;margin-bottom:18px;padding-bottom:14px;border-bottom:3px solid #ee5a8a;">
-      ${logoSrc ? `<img src="${logoSrc}" style="width:80px;height:80px;object-fit:contain;">` : '<span style="font-size:3rem;">🌸</span>'}
-      <div><h1 style="color:#ee5a8a;margin:0;">${esc(biz.business_name || 'Adzkiya Mom Baby Care')}</h1><div style="color:#8b6878;">${esc(biz.tagline || '')}</div></div>
+    <div class="no-print" style="text-align:center;margin-bottom:16px;display:flex;gap:8px;justify-content:center;">
+      <button onclick="window.print()" style="padding:10px 24px;background:#ee5a8a;color:white;border:none;border-radius:999px;font-weight:700;cursor:pointer;font-size:1rem;">🖨️ Cetak / Save PDF</button>
+      <button onclick="window.close()" style="padding:10px 24px;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:999px;font-weight:700;cursor:pointer;font-size:1rem;">✕ Tutup</button>
     </div>
-    <h2>Rekap Bulanan — ${RECAP_DATA.month}</h2>
-    <p style="margin:14px 0;"><strong>Total Reservasi:</strong> ${RECAP_DATA.totalReservasi} &nbsp;|&nbsp; <strong>Total Omzet:</strong> ${fmtRp(RECAP_DATA.totalOmzet)} &nbsp;|&nbsp; <strong>Total Kwitansi:</strong> ${RECAP_DATA.totalKwitansi}</p>
-    <table class="data-table" style="font-size:0.85rem;">
+    <div style="display:flex;align-items:center;gap:16px;margin-bottom:14px;padding-bottom:14px;border-bottom:3px solid #ee5a8a;">
+      ${logoSrc ? `<img src="${logoSrc}" style="width:70px;height:70px;object-fit:contain;">` : '<span style="font-size:2.6rem;">🌸</span>'}
+      <div>
+        <h1 style="color:#ee5a8a;margin:0;font-size:1.5rem;">${esc(biz.business_name || 'Adzkiya Mom Baby Care')}</h1>
+        <div style="color:#8b6878;font-size:0.92rem;">${esc(biz.tagline || 'Layanan Kesehatan Ibu & Anak Terpercaya')}</div>
+        <div style="color:#8b6878;font-size:0.82rem;">${esc(biz.address || '')}</div>
+      </div>
+    </div>
+    <h2 style="margin:6px 0 4px;">📑 Laporan Keuangan</h2>
+    <p style="margin:0 0 14px;color:#8b6878;">Periode: <strong>${esc(rangeLabel)}</strong></p>
+    <div style="display:flex;gap:14px;flex-wrap:wrap;margin:14px 0;">
+      <div style="flex:1;min-width:160px;padding:14px;background:var(--pink-50);border-radius:10px;">
+        <div style="font-size:0.78rem;text-transform:uppercase;letter-spacing:0.5px;color:#8b6878;font-weight:700;">Total Reservasi</div>
+        <div style="font-size:1.6rem;font-weight:800;color:var(--primary);margin-top:4px;">${RECAP_DATA.totalReservasi}</div>
+      </div>
+      <div style="flex:1;min-width:160px;padding:14px;background:#d9efe1;border-radius:10px;">
+        <div style="font-size:0.78rem;text-transform:uppercase;letter-spacing:0.5px;color:#1e8957;font-weight:700;">Total Omzet (Lunas)</div>
+        <div style="font-size:1.6rem;font-weight:800;color:#1e8957;margin-top:4px;">${fmtRp(RECAP_DATA.totalOmzet)}</div>
+      </div>
+      <div style="flex:1;min-width:160px;padding:14px;background:#fff3d6;border-radius:10px;">
+        <div style="font-size:0.78rem;text-transform:uppercase;letter-spacing:0.5px;color:#b07b15;font-weight:700;">Rata-rata / Reservasi</div>
+        <div style="font-size:1.6rem;font-weight:800;color:#b07b15;margin-top:4px;">${RECAP_DATA.totalReservasi ? fmtRp(Math.round(RECAP_DATA.totalOmzet / RECAP_DATA.totalReservasi)) : '—'}</div>
+      </div>
+      <div style="flex:1;min-width:160px;padding:14px;background:var(--bg);border-radius:10px;border:1px solid var(--border);">
+        <div style="font-size:0.78rem;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-soft);font-weight:700;">Total Kwitansi</div>
+        <div style="font-size:1.6rem;font-weight:800;color:var(--text);margin-top:4px;">${RECAP_DATA.byMonth ? RECAP_DATA.byMonth.reduce((s, m) => s + m.totalKwitansi, 0) : RECAP_DATA.totalKwitansi || 0}</div>
+      </div>
+    </div>
+    ${summaryRows ? `<h3 style="margin:18px 0 10px;">📊 Ringkasan Per Bulan</h3>${summaryRows}` : ''}
+    <h3 style="margin:18px 0 10px;">📅 Detail Reservasi (${RECAP_DATA.rows.length} baris)</h3>
+    <table class="data-table" style="font-size:0.82rem;">
       <thead><tr><th>Jadwal</th><th>Pasien</th><th>Layanan</th><th>Sesi</th><th>Total</th><th>Status</th><th>Bayar</th></tr></thead>
-      <tbody>${RECAP_DATA.rows.map(r => `<tr>
-        <td>${(r.slots||[]).map(s=>`${s.date} ${s.time}`).join('<br>')}</td>
-        <td>${esc(r.patient_name)}</td>
-        <td>${(r.items||[]).map(it=>`• ${esc(it.name)} ×${it.qty}`).join('<br>')}</td>
-        <td>${(r.slots||[]).length}</td><td>${fmtRp(r.total)}</td><td>${r.status}</td><td>${r.payment_status}</td>
-      </tr>`).join('')}</tbody>
+      <tbody>${detailRows}</tbody>
     </table>
+    <p style="margin-top:18px;text-align:center;color:#8b6878;font-size:0.78rem;">
+      Laporan dicetak pada ${new Date().toLocaleString('id-ID')} · ${esc(biz.business_name || 'Adzkiya Mom Baby Care')}
+    </p>
     </body></html>`;
-  const w = window.open('', '_blank'); w.document.write(html); w.document.close();
+  const w = window.open('', '_blank');
+  w.document.write(html);
+  w.document.close();
+}
+
+// ---------- BROADCAST WHATSAPP ----------
+// Admin pilih template + filter, server generate wa.me links untuk
+// semua recipient. Admin klik link satu-satu atau pakai tombol
+// "Buka semua sekaligus" untuk firefox/edge yang otomatis konfirmasi
+// multiple tab opens.
+//
+// State:
+//   - BROADCAST_LAST: hasil generate yang baru di-fetch
+//   - BROADCAST_TEMPLATES: list templates from settings
+let BROADCAST_LAST = null;
+let BROADCAST_TEMPLATES = [];
+let BROADCAST_HISTORY = [];
+
+async function renderBroadcast() {
+  const c = document.getElementById('pageContent');
+  c.innerHTML = `
+    <div class="admin-header">
+      <div>
+        <h1>📢 Broadcast WhatsApp</h1>
+        <p style="color:var(--text-soft);margin:4px 0 0;">Kirim pesan massal ke banyak pasien sekaligus via wa.me (gratis, tanpa API).</p>
+      </div>
+      <div style="display:flex;gap:8px;">
+        <button onclick="switchBroadcastTab('send')" id="bcTabSend" class="btn-sm btn-pay">📨 Kirim</button>
+        <button onclick="switchBroadcastTab('templates')" id="bcTabTpl" class="btn-sm btn-view">📝 Template</button>
+        <button onclick="switchBroadcastTab('history')" id="bcTabHistory" class="btn-sm btn-view">📜 History</button>
+      </div>
+    </div>
+    <div id="broadcastBody">Loading...</div>
+  `;
+  // Pre-fetch templates + history once so tabs render fast.
+  await Promise.all([
+    api('/api/admin/whatsapp/templates').then((t) => { BROADCAST_TEMPLATES = t; }).catch(() => { BROADCAST_TEMPLATES = SETTINGS.whatsapp_templates || []; }),
+    api('/api/admin/broadcasts').then((h) => { BROADCAST_HISTORY = h; }).catch(() => { BROADCAST_HISTORY = []; }),
+  ]);
+  switchBroadcastTab('send');
+}
+
+function switchBroadcastTab(tab) {
+  ['send', 'templates', 'history'].forEach((t) => {
+    const el = document.getElementById('bcTab' + (t === 'send' ? 'Send' : t === 'templates' ? 'Tpl' : 'History'));
+    if (!el) return;
+    el.className = t === tab ? (t === 'send' ? 'btn-sm btn-pay' : 'btn-sm btn-pay') : 'btn-sm btn-view';
+  });
+  if (tab === 'send') renderBroadcastSend();
+  else if (tab === 'templates') renderBroadcastTemplates();
+  else renderBroadcastHistory();
+}
+
+function renderBroadcastSend() {
+  const body = document.getElementById('broadcastBody');
+  if (!body) return;
+  const tpls = BROADCAST_TEMPLATES.length ? BROADCAST_TEMPLATES : (SETTINGS.whatsapp_templates || []);
+  body.innerHTML = `
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;" id="bcSendGrid">
+      <div class="setting-card">
+        <h3>📨 Kirim Broadcast</h3>
+        <p style="color:var(--text-soft);font-size:0.85rem;margin-bottom:14px;">Pilih template, tentukan filter recipient, lalu klik <strong>"Preview Recipient"</strong>.</p>
+        <div class="form-group">
+          <label>Nama Broadcast (opsional, untuk arsip)</label>
+          <input type="text" id="bcName" placeholder="mis. Reminder H-1 untuk booking minggu ini">
+        </div>
+        <div class="form-group">
+          <label>Pakai Template</label>
+          <select id="bcTemplate" onchange="updateBcBodyPreview()" style="width:100%;padding:8px 12px;border:1.5px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-family:inherit;">
+            <option value="">— Custom (tulis sendiri) —</option>
+            ${tpls.map((t) => `<option value="${esc(t.id)}" data-body="${esc(t.body)}" data-name="${esc(t.name)}">${esc(t.name)}</option>`).join('')}
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Isi Pesan (placeholder: <code>{{nama}}, {{tanggal}}, {{jam}}, {{layanan}}, {{total}}, {{invoice_no}}</code>)</label>
+          <textarea id="bcBody" rows="6" placeholder="Tulis pesan di sini. Pakai {{nama}} untuk ganti dengan nama pasien otomatis." style="width:100%;padding:10px 12px;border:1.5px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-family:inherit;resize:vertical;"></textarea>
+          <small style="color:var(--text-soft);font-size:0.78rem;margin-top:4px;display:block;">💡 Placeholder diganti per recipient. Contoh: "Halo {{nama}}, ini pengingat untuk {{tanggal}} jam {{jam}}."</small>
+        </div>
+        <h4 style="margin:14px 0 8px;">🎯 Filter Recipient</h4>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+          <div class="form-group"><label>Status Reservasi</label>
+            <select id="bcFilterStatus" style="width:100%;padding:8px 12px;border:1.5px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-family:inherit;">
+              <option value="">Semua</option><option value="pending">Pending</option><option value="approved">Approved</option><option value="rejected">Rejected</option>
+            </select>
+          </div>
+          <div class="form-group"><label>Pembayaran</label>
+            <select id="bcFilterPay" style="width:100%;padding:8px 12px;border:1.5px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-family:inherit;">
+              <option value="">Semua</option><option value="unpaid">Unpaid</option><option value="lunas">Lunas</option>
+            </select>
+          </div>
+          <div class="form-group"><label>📅 Dari Tanggal</label>
+            <input type="date" id="bcFilterFrom" style="width:100%;padding:8px 12px;border:1.5px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-family:inherit;">
+          </div>
+          <div class="form-group"><label>📅 Sampai Tanggal</label>
+            <input type="date" id="bcFilterTo" style="width:100%;padding:8px 12px;border:1.5px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-family:inherit;">
+          </div>
+        </div>
+        <div class="form-group"><label>Limit (max recipient per blast)</label>
+          <input type="number" id="bcLimit" min="1" max="500" value="100" style="width:100%;padding:8px 12px;border:1.5px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-family:inherit;">
+        </div>
+        <button onclick="previewBroadcast()" class="btn btn-primary" style="width:100%;justify-content:center;">👁️ Preview & Generate Link</button>
+        <div id="bcPreviewResult" style="margin-top:14px;"></div>
+      </div>
+      <div>
+        <div class="setting-card" style="margin-bottom:14px;">
+          <h3>💡 Cara Pakai</h3>
+          <ol style="font-size:0.88rem;line-height:1.7;color:var(--text-soft);padding-left:20px;">
+            <li>Pilih template di sebelah kiri (atau tulis pesan sendiri).</li>
+            <li>Set filter — mis. status approved + lunas untuk customer yang sudah bayar.</li>
+            <li>Klik <strong>Preview & Generate Link</strong>. Server akan generate wa.me link untuk tiap recipient.</li>
+            <li>Klik tombol <strong>"📤 Kirim ke Nama"</strong> di sebelah kanan, satu-satu — WA akan terbuka dengan pesan terisi.</li>
+            <li>Atau klik <strong>"Buka Semua Sekaligus"</strong> untuk mengirim batch (beberapa tab WA terbuka).</li>
+          </ol>
+        </div>
+        <div class="setting-card">
+          <h3>🔒 Kenapa pakai wa.me link?</h3>
+          <p style="color:var(--text-soft);font-size:0.85rem;line-height:1.6;">
+            Gratis tanpa API eksternal. Admin klik manual atau batch.
+            Untuk otomatis penuh ke 100+ nomor sekaligus, upgrade ke
+            WhatsApp Business API + provider (Fonnte/Wablas) dan kita
+            bisa integrasi dengan satu endpoint tambahan.
+          </p>
+        </div>
+      </div>
+    </div>
+  `;
+  updateBcBodyPreview();
+  // Reset body if user already had a session
+  document.getElementById('bcPreviewResult').innerHTML = '';
+  BROADCAST_LAST = null;
+}
+
+function updateBcBodyPreview() {
+  const sel = document.getElementById('bcTemplate');
+  if (!sel) return;
+  const opt = sel.options[sel.selectedIndex];
+  const body = document.getElementById('bcBody');
+  if (!body) return;
+  if (opt && opt.value && opt.dataset.body) {
+    body.value = opt.dataset.body;
+    body.disabled = false;
+  } else if (!opt || !opt.value) {
+    body.disabled = false;
+    if (!body.value) body.value = 'Halo {{nama}}, ini pengingat untuk jadwal {{tanggal}} jam {{jam}}. Terima kasih 🌸';
+  }
+}
+
+async function previewBroadcast() {
+  const tplSel = document.getElementById('bcTemplate');
+  const tplId = tplSel ? tplSel.value : '';
+  const body = document.getElementById('bcBody').value.trim();
+  if (!body) return alert('Isi pesan kosong. Pilih template atau tulis sendiri.');
+  const filter = {
+    status: document.getElementById('bcFilterStatus').value || undefined,
+    payment_status: document.getElementById('bcFilterPay').value || undefined,
+    from: document.getElementById('bcFilterFrom').value || undefined,
+    to: document.getElementById('bcFilterTo').value || undefined,
+    limit: parseInt(document.getElementById('bcLimit').value) || 100,
+  };
+  const name = document.getElementById('bcName').value.trim() || (tplSel && tplSel.selectedIndex >= 0 ? tplSel.options[tplSel.selectedIndex].dataset.name : 'Custom broadcast');
+  const resultEl = document.getElementById('bcPreviewResult');
+  resultEl.innerHTML = '<div style="padding:14px;background:var(--pink-50);border-radius:10px;text-align:center;">⏳ Generating wa.me links…</div>';
+  try {
+    const res = await api('/api/admin/broadcasts', {
+      method: 'POST',
+      body: JSON.stringify({
+        template_id: tplId || null,
+        body_override: body,
+        filter,
+        name,
+      })
+    });
+    BROADCAST_LAST = res;
+    const links = res.messages || [];
+    const ids = links.map((m) => m.id);
+    resultEl.innerHTML = `
+      <div style="background:var(--card);border:1px solid var(--border);border-radius:14px;padding:16px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:12px;">
+          <div>
+            <strong style="color:var(--primary);">✅ ${res.recipient_count} link siap kirim</strong>
+            ${name ? `<div style="font-size:0.78rem;color:var(--text-soft);">${esc(name)}</div>` : ''}
+          </div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;">
+            <button onclick="broadcastOpenAll('${res.id}')" class="btn-sm btn-pay" title="Buka semua link di tab baru — beberapa pop-up akan muncul, klik 'Open' untuk masing-masing">📤 Kirim Semua</button>
+            <button onclick="broadcastCopyAll('${res.id}')" class="btn-sm btn-view">📋 Copy List</button>
+          </div>
+        </div>
+        <div style="max-height:380px;overflow:auto;border:1px solid var(--border);border-radius:10px;">
+          <table class="data-table" style="font-size:0.85rem;">
+            <thead><tr><th>Pasien</th><th>WhatsApp</th><th>Pesan Preview</th><th>Aksi</th></tr></thead>
+            <tbody>
+              ${links.map((m) => `
+                <tr>
+                  <td><strong>${esc(m.name)}</strong></td>
+                  <td><code>${esc(m.phone)}</code></td>
+                  <td style="max-width:280px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--text-soft);" title="${esc(m.text)}">${esc(m.text)}</td>
+                  <td>
+                    <a href="${esc(m.link)}" target="_blank" rel="noopener" class="btn-sm btn-pay" style="text-decoration:none;display:inline-block;padding:6px 12px;">📤 Kirim</a>
+                  </td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+        <small style="color:var(--text-soft);display:block;margin-top:8px;">💡 Klik "📤 Kirim Semua" untuk membuka semua link di tab baru. Browser biasanya minta izin pop-up — klik "Allow". Broadcast tersimpan di tab History.</small>
+      </div>
+    `;
+  } catch (e) {
+    resultEl.innerHTML = `<div class="alert alert-error">❌ ${esc(e.message)}</div>`;
+  }
+}
+
+async function broadcastOpenAll(id) {
+  // Re-fetch to get the latest message list (in case re-opened mid-session)
+  let messages;
+  if (BROADCAST_LAST && BROADCAST_LAST.id === id) {
+    messages = BROADCAST_LAST.messages;
+  } else {
+    try {
+      const b = await api('/api/admin/broadcasts/' + id);
+      messages = b.messages;
+    } catch (e) { return alert('Broadcast tidak ditemukan: ' + e.message); }
+  }
+  if (!messages || !messages.length) return alert('Tidak ada recipient.');
+  const urls = messages.map((m) => m.link).filter(Boolean);
+  if (!urls.length) return;
+  // Try to open all links via window.open. Browsers may cap how many
+  // tabs a script can open at once (chromium ~6) — that's fine, admins
+  // can click "Kirim Semua" repeatedly.
+  let opened = 0;
+  for (const url of urls) {
+    const w = window.open(url, '_blank');
+    if (w) opened++;
+  }
+  alert(`✅ ${opened}/${urls.length} link dibuka di tab baru. Sisanya mungkin diblokir pop-up — klik "Allow" di address bar, lalu coba lagi.`);
+}
+
+async function broadcastCopyAll(id) {
+  let messages;
+  if (BROADCAST_LAST && BROADCAST_LAST.id === id) {
+    messages = BROADCAST_LAST.messages;
+  } else {
+    const b = await api('/api/admin/broadcasts/' + id);
+    messages = b.messages;
+  }
+  if (!messages || !messages.length) return;
+  const txt = messages.map((m) => `${m.name} (${m.phone})\n${m.text}\n${m.link}`).join('\n\n---\n\n');
+  try {
+    await navigator.clipboard.writeText(txt);
+    alert(`✅ ${messages.length} link disalin ke clipboard. Paste di spreadsheet untuk analisis.`);
+  } catch {
+    prompt('Salin manual:', txt);
+  }
+}
+
+function renderBroadcastTemplates() {
+  const body = document.getElementById('broadcastBody');
+  if (!body) return;
+  const list = BROADCAST_TEMPLATES.length ? BROADCAST_TEMPLATES : (SETTINGS.whatsapp_templates || []);
+  body.innerHTML = `
+    <div class="setting-card">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:14px;">
+        <div>
+          <h3>📝 Template Pesan</h3>
+          <p style="color:var(--text-soft);font-size:0.85rem;margin:4px 0 0;">Template yang bisa dipilih saat membuat broadcast. Tambah, edit, atau hapus sesuka hati.</p>
+        </div>
+        <button onclick="addBcTemplate()" class="btn-sm btn-approve">+ Tambah Template</button>
+      </div>
+      <div id="bcTemplatesList"></div>
+    </div>
+  `;
+  const wrap = document.getElementById('bcTemplatesList');
+  if (!wrap) return;
+  if (!list.length) {
+    wrap.innerHTML = '<p style="text-align:center;color:var(--text-soft);padding:20px;background:var(--bg);border-radius:10px;">Belum ada template. Klik "+ Tambah Template" untuk mulai.</p>';
+    return;
+  }
+  wrap.innerHTML = list.map((t) => `
+    <div style="display:grid;grid-template-columns:1fr 130px 1fr 90px;gap:8px;margin-bottom:10px;align-items:start;padding:14px;border:1px solid var(--border);border-radius:12px;background:var(--bg);">
+      <input type="text" value="${esc(t.name)}" onchange="updateBcTemplate('${t.id}', {name: this.value})" style="padding:8px 10px;border:1.5px solid var(--border);border-radius:8px;background:var(--card);color:var(--text);font-family:inherit;font-weight:700;">
+      <select onchange="updateBcTemplate('${t.id}', {category: this.value})" style="padding:8px 10px;border:1.5px solid var(--border);border-radius:8px;background:var(--card);color:var(--text);font-family:inherit;">
+        <option value="reminder" ${t.category === 'reminder' ? 'selected' : ''}>⏰ Reminder</option>
+        <option value="followup" ${t.category === 'followup' ? 'selected' : ''}>🙏 Follow-up</option>
+        <option value="promo" ${t.category === 'promo' ? 'selected' : ''}>🎁 Promo</option>
+        <option value="other" ${!['reminder','followup','promo'].includes(t.category) ? 'selected' : ''}>📌 Lainnya</option>
+      </select>
+      <textarea rows="3" onchange="updateBcTemplate('${t.id}', {body: this.value})" style="padding:8px 10px;border:1.5px solid var(--border);border-radius:8px;background:var(--card);color:var(--text);font-family:inherit;font-size:0.85rem;resize:vertical;">${esc(t.body)}</textarea>
+      <button onclick="deleteBcTemplate('${t.id}')" class="btn-sm btn-del" style="padding:8px 12px;height:auto;">🗑️</button>
+    </div>
+    <small style="color:var(--text-soft);display:block;margin-top:-6px;margin-bottom:14px;font-size:0.78rem;">
+      Placeholder: <code>{{nama}}</code>, <code>{{tanggal}}</code>, <code>{{jam}}</code>, <code>{{layanan}}</code>, <code>{{total}}</code>, <code>{{invoice_no}}</code>, <code>{{alamat}}</code>
+    </small>
+  `).join('');
+}
+
+async function addBcTemplate() {
+  const name = prompt('Nama template (mis. ⏰ Pengingat H-1):');
+  if (!name) return;
+  try {
+    const t = await api('/api/admin/whatsapp/templates', { method: 'POST', body: JSON.stringify({ name, body: 'Halo {{nama}}, [tulis pesan di sini]', category: 'other' }) });
+    BROADCAST_TEMPLATES.push(t);
+    renderBroadcastTemplates();
+  } catch (e) { alert('Gagal: ' + e.message); }
+}
+
+async function updateBcTemplate(id, patch) {
+  try {
+    const t = await api('/api/admin/whatsapp/templates/' + id, { method: 'PATCH', body: JSON.stringify(patch) });
+    const idx = BROADCAST_TEMPLATES.findIndex((x) => x.id === id);
+    if (idx >= 0) BROADCAST_TEMPLATES[idx] = t;
+    // Sync SETTINGS too so the home page settings-fetch stays correct.
+    if (SETTINGS.whatsapp_templates) {
+      SETTINGS.whatsapp_templates = BROADCAST_TEMPLATES;
+    }
+  } catch (e) { alert('Gagal update: ' + e.message); renderBroadcastTemplates(); }
+}
+
+async function deleteBcTemplate(id) {
+  if (!confirm('Hapus template ini? Pesan yang sudah dikirim sebelumnya tetap ada di History.')) return;
+  try {
+    await api('/api/admin/whatsapp/templates/' + id, { method: 'DELETE' });
+    BROADCAST_TEMPLATES = BROADCAST_TEMPLATES.filter((t) => t.id !== id);
+    renderBroadcastTemplates();
+  } catch (e) { alert('Gagal: ' + e.message); }
+}
+
+function renderBroadcastHistory() {
+  const body = document.getElementById('broadcastBody');
+  if (!body) return;
+  const list = BROADCAST_HISTORY || [];
+  body.innerHTML = `
+    <div class="setting-card">
+      <h3>📜 Riwayat Broadcast (200 terakhir)</h3>
+      <p style="color:var(--text-soft);font-size:0.85rem;margin:6px 0 14px;">Riwayat blast untuk audit & rekap. Klik baris untuk lihat pesan lengkap.</p>
+      <div id="bcHistoryList">
+        ${list.length ? `
+          <table class="data-table" style="font-size:0.88rem;">
+            <thead><tr>
+              <th>Tanggal</th><th>Nama Broadcast</th><th>Recipient</th><th>Filter</th><th>Aksi</th>
+            </tr></thead>
+            <tbody>
+              ${list.map((b) => `
+                <tr>
+                  <td>${fmtDateTime(b.created_at)}</td>
+                  <td><strong>${esc(b.name)}</strong><br><small style="color:var(--text-soft);">${esc(b.body.slice(0, 60))}${b.body.length > 60 ? '…' : ''}</small></td>
+                  <td>✅ ${b.recipient_count}${b.skipped_no_phone ? ` &nbsp;<small style="color:#c43050;">(${b.skipped_no_phone} no-HP)</small>` : ''}</td>
+                  <td>${formatFilter(b.filter)}</td>
+                  <td><button onclick="viewBroadcastHistory(${b.id})" class="btn-sm btn-view">👁️ Lihat</button> &nbsp; <button onclick="deleteBroadcastHistory(${b.id})" class="btn-sm btn-del">🗑️</button></td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        ` : '<p style="text-align:center;color:var(--text-soft);padding:20px;background:var(--bg);border-radius:10px;">Belum ada broadcast. Buat yang pertama di tab 📨 Kirim.</p>'}
+      </div>
+    </div>
+  `;
+}
+
+function formatFilter(f) {
+  if (!f) return '—';
+  const parts = [];
+  if (f.status) parts.push(`status=${f.status}`);
+  if (f.payment_status) parts.push(`bayar=${f.payment_status}`);
+  if (f.from) parts.push(`dari=${f.from}`);
+  if (f.to) parts.push(`sampai=${f.to}`);
+  if (f.limit) parts.push(`limit=${f.limit}`);
+  return parts.length ? parts.join(', ') : 'Semua';
+}
+
+async function viewBroadcastHistory(id) {
+  try {
+    const b = await api('/api/admin/broadcasts/' + id);
+    const messages = b.messages || [];
+    const html = `
+      <h3>📋 ${esc(b.name)}</h3>
+      <p style="color:var(--text-soft);font-size:0.85rem;margin:6px 0 14px;">${fmtDateTime(b.created_at)} · ${b.recipient_count} recipient${b.skipped_no_phone ? ` (${b.skipped_no_phone} dilewati tanpa HP)` : ''} · oleh ${esc(b.created_by)}</p>
+      <div style="padding:12px;background:var(--pink-50);border-radius:10px;font-size:0.85rem;line-height:1.5;white-space:pre-wrap;margin-bottom:14px;border:1px solid var(--pink-100);">${esc(b.body)}</div>
+      ${messages.length ? `
+        <div style="max-height:340px;overflow:auto;border:1px solid var(--border);border-radius:10px;">
+          <table class="data-table" style="font-size:0.85rem;">
+            <thead><tr><th>Pasien</th><th>WhatsApp</th><th>Pesan</th><th>Aksi</th></tr></thead>
+            <tbody>
+              ${messages.map((m) => `
+                <tr>
+                  <td>${esc(m.name)}</td>
+                  <td><code>${esc(m.phone)}</code></td>
+                  <td style="max-width:280px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--text-soft);" title="${esc(m.text)}">${esc(m.text)}</td>
+                  <td><a href="${esc(m.link)}" target="_blank" rel="noopener" class="btn-sm btn-pay" style="text-decoration:none;display:inline-block;padding:6px 10px;">📤</a></td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      ` : '<p style="color:var(--text-soft);">Tidak ada pesan.</p>'}
+      <div style="margin-top:16px;display:flex;gap:8px;justify-content:flex-end;">
+        <button class="btn-sm btn-view" onclick="closeModal()">Tutup</button>
+      </div>
+    `;
+    openModal(html);
+  } catch (e) { alert('Gagal: ' + e.message); }
+}
+
+async function deleteBroadcastHistory(id) {
+  if (!confirm('Hapus broadcast ini dari history? Pesan yang sudah terkirim tidak bisa dibatalkan.')) return;
+  try {
+    await api('/api/admin/broadcasts/' + id, { method: 'DELETE' });
+    BROADCAST_HISTORY = BROADCAST_HISTORY.filter((b) => b.id !== id);
+    renderBroadcastHistory();
+  } catch (e) { alert('Gagal: ' + e.message); }
+}
+
+// ---------- MINI-CRM (Customer Profile + RFM) ----------
+let CUST_SORT = 'recent';
+let CUST_CACHE = [];
+
+async function renderCustomers() {
+  const c = document.getElementById('pageContent');
+  c.innerHTML = `
+    <div class="admin-header">
+      <div>
+        <h1>👥 Mini-CRM Pelanggan</h1>
+        <p style="color:var(--text-soft);margin:4px 0 0;">Lihat profil per-pelanggan: total visit, total spend, RFM score, & timeline kunjungan.</p>
+      </div>
+      <button onclick="renderCustomers()" class="btn btn-outline">🔄 Refresh</button>
+    </div>
+    <div id="crmContent">Loading...</div>
+  `;
+  try {
+    const data = await api('/api/admin/customers?sort=' + CUST_SORT);
+    CUST_CACHE = data.customers;
+    renderCustomerSummaryAndTable();
+    // Fire-and-forget heatmap fetch
+    api('/api/admin/charts/heatmap').then(renderHeatmap).catch(() => {});
+  } catch (e) {
+    document.getElementById('crmContent').innerHTML = `<div class="alert alert-error">${esc(e.message)}</div>`;
+  }
+}
+
+function renderCustomerSummaryAndTable() {
+  const customers = CUST_CACHE || [];
+  const total = customers.length;
+  const totalSpend = customers.reduce((s, c) => s + c.total_spent, 0);
+  const aaa = customers.filter((c) => c.rfm === 'AAA').length;
+  const dormant = customers.filter((c) => c.last_visit_age_days > 180).length;
+  const outstanding = customers.filter((c) => c.has_outstanding).length;
+  document.getElementById('crmContent').innerHTML = `
+    <div class="stat-grid" style="grid-template-columns:repeat(auto-fit, minmax(160px, 1fr));margin-bottom:14px;">
+      <div class="stat-card"><div class="label">Total Pelanggan</div><div class="value">${total}</div></div>
+      <div class="stat-card peach"><div class="label">Total Spend</div><div class="value">${fmtRp(totalSpend)}</div></div>
+      <div class="stat-card pink"><div class="label">⭐ Pelanggan AAA</div><div class="value">${aaa}</div></div>
+      <div class="stat-card"><div class="label">😴 Dormant >180h</div><div class="value">${dormant}</div></div>
+      <div class="stat-card"><div class="label">⚠️ Outstanding</div><div class="value">${outstanding}</div></div>
+    </div>
+    <div class="setting-card" style="overflow:hidden;">
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px;">
+        <input type="search" id="crmSearch" placeholder="🔍 Cari nama / HP" oninput="renderCustomerRows()" style="flex:1;min-width:200px;padding:8px 12px;border:1.5px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-family:inherit;">
+        <select id="crmSort" onchange="CUST_SORT=this.value;renderCustomers()" style="padding:8px 12px;border:1.5px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-weight:600;font-family:inherit;">
+          <option value="recent" ${CUST_SORT === 'recent' ? 'selected' : ''}>↕️ Kunjungan Terbaru</option>
+          <option value="spend" ${CUST_SORT === 'spend' ? 'selected' : ''}>💰 Total Spend Terbesar</option>
+          <option value="frequency" ${CUST_SORT === 'frequency' ? 'selected' : ''}>🔁 Paling Sering Booking</option>
+          <option value="rfm" ${CUST_SORT === 'rfm' ? 'selected' : ''}>⭐ RFM Terbaik</option>
+          <option value="name" ${CUST_SORT === 'name' ? 'selected' : ''}>🔤 Nama A-Z</option>
+        </select>
+      </div>
+      <div id="crmHeatmap" style="margin-top:14px;"></div>
+      <h3 style="margin:20px 0 10px;font-size:1.05rem;">👤 Daftar Pelanggan</h3>
+      <div id="crmRows" class="data-table-wrap" style="overflow:auto;max-height:520px;"></div>
+    </div>
+  `;
+  renderCustomerRows();
+}
+
+function renderCustomerRows() {
+  const customers = CUST_CACHE || [];
+  const q = (document.getElementById('crmSearch')?.value || '').toLowerCase().trim();
+  const filtered = q ? customers.filter((c) => c.patient_name.toLowerCase().includes(q) || c.phone.includes(q.replace(/\D/g, ''))) : customers;
+  const wrap = document.getElementById('crmRows');
+  if (!filtered.length) {
+    wrap.innerHTML = `<p style="text-align:center;color:var(--text-soft);padding:30px;">${customers.length ? `Tidak ada yang cocok dengan "${esc(q)}".` : 'Belum ada pelanggan (belum ada reservasi dengan nomor WhatsApp).'}</p>`;
+    return;
+  }
+  wrap.innerHTML = `
+    <table class="data-table">
+      <thead><tr>
+        <th>Pelanggan</th><th>RFM</th><th>Visit</th><th>Spend</th><th>Terakhir</th><th>Aksi</th>
+      </tr></thead>
+      <tbody>
+        ${filtered.map((c) => `
+          <tr style="${c.has_outstanding ? 'background:rgba(196,48,80,0.05);' : ''}">
+            <td>
+              <strong>${esc(c.patient_name)}</strong>
+              <br><small style="color:var(--text-soft);">📱 <a href="https://wa.me/${c.whatsapp_intl}" target="_blank">${esc(c.phone)}</a></small>
+              ${c.address ? `<br><small style="color:var(--text-soft);">📍 ${esc(c.address.slice(0, 40))}${c.address.length > 40 ? '…' : ''}</small>` : ''}
+            </td>
+            <td><span title="Recency-Frequency-Monetary: ${c.rfm}" style="display:inline-block;padding:3px 10px;border-radius:8px;font-weight:700;font-size:0.78rem;${rfmColor(c.rfm)}">${c.rfm}</span></td>
+            <td>${c.total_reservations} <small style="color:var(--text-soft);">(${Object.entries(c.status_breakdown || {}).map(([k, v]) => `${k}:${v}`).join(', ')})</small></td>
+            <td><strong>${fmtRp(c.total_spent)}</strong>${c.has_outstanding ? '<br><small style="color:#c43050;font-weight:700;">⚠️ ada tunggakan</small>' : ''}</td>
+            <td>${c.last_visit ? fmtDate(c.last_visit) : '<em style="color:var(--text-soft);">—</em>'}<br><small style="color:var(--text-soft);">${c.last_visit_age_days === 9999 ? '—' : c.last_visit_age_days + ' hari lalu'}</small></td>
+            <td>
+              <button onclick="openCustomerProfile('${c.phone}')" class="btn-sm btn-view">👤 Profil</button>
+              <a href="https://wa.me/${c.whatsapp_intl}" target="_blank" class="btn-sm btn-pay" style="text-decoration:none;display:inline-block;">💬 Chat</a>
+            </td>
+          </tr>
+        `).join('')}
+      </tbody>
+    </table>
+  `;
+}
+
+function rfmColor(rfm) {
+  if (!rfm) return 'background:var(--bg);color:var(--text-soft);';
+  const a = (rfm.match(/A/g) || []).length;
+  if (a === 3) return 'background:#d9efe1;color:#1e8957;border:1px solid #1e8957;';
+  if (a === 2) return 'background:#e8f5e9;color:#2e7d32;';
+  if (a === 1) return 'background:#fff3d6;color:#b07b15;';
+  return 'background:#fde0e4;color:#c43050;';
+}
+
+async function openCustomerProfile(phone) {
+  try {
+    const c = await api('/api/admin/customers/' + phone);
+    const t = c.timeline || [];
+    const html = `
+      <div style="display:flex;gap:14px;align-items:center;margin-bottom:14px;">
+        <div style="width:64px;height:64px;border-radius:50%;background:linear-gradient(135deg,#ee5a8a,#ffb979);display:flex;align-items:center;justify-content:center;color:white;font-size:1.5rem;font-weight:800;">
+          ${esc((c.patient_name || '?').trim().charAt(0).toUpperCase())}
+        </div>
+        <div>
+          <h3 style="margin:0;">${esc(c.patient_name)}</h3>
+          <div style="color:var(--text-soft);font-size:0.85rem;">
+            <a href="https://wa.me/${c.whatsapp_intl}" target="_blank" style="color:var(--primary);text-decoration:none;font-weight:600;">📱 ${esc(c.phone)}</a>
+            ${c.address ? '<br>📍 ' + esc(c.address) : ''}
+          </div>
+        </div>
+        <div style="margin-left:auto;">
+          <span title="RFM ${c.rfm}" style="display:inline-block;padding:6px 14px;border-radius:12px;font-weight:700;font-size:0.9rem;${rfmColor(c.rfm)}">${c.rfm}</span>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-bottom:14px;">
+        <div style="padding:10px 14px;background:var(--bg);border-radius:10px;">
+          <div style="font-size:0.72rem;color:var(--text-soft);text-transform:uppercase;letter-spacing:0.5px;">Total Visit</div>
+          <div style="font-size:1.4rem;font-weight:800;">${c.total_reservations}</div>
+        </div>
+        <div style="padding:10px 14px;background:var(--pink-50);border-radius:10px;">
+          <div style="font-size:0.72rem;color:var(--primary);text-transform:uppercase;letter-spacing:0.5px;">Total Spend</div>
+          <div style="font-size:1.2rem;font-weight:800;color:var(--primary);">${fmtRp(c.total_spent)}</div>
+        </div>
+        <div style="padding:10px 14px;background:var(--bg);border-radius:10px;">
+          <div style="font-size:0.72rem;color:var(--text-soft);text-transform:uppercase;letter-spacing:0.5px;">Pertama</div>
+          <div style="font-size:0.95rem;font-weight:700;">${c.first_visit ? fmtDate(c.first_visit) : '—'}</div>
+        </div>
+        <div style="padding:10px 14px;background:var(--bg);border-radius:10px;">
+          <div style="font-size:0.72rem;color:var(--text-soft);text-transform:uppercase;letter-spacing:0.5px;">Terakhir</div>
+          <div style="font-size:0.95rem;font-weight:700;">${c.last_visit ? fmtDate(c.last_visit) : '—'}<br><small style="color:var(--text-soft);font-weight:500;">${c.last_visit_age_days === 9999 ? '' : c.last_visit_age_days + ' hari lalu'}</small></div>
+        </div>
+      </div>
+      <h4 style="margin:0 0 8px;">📅 Timeline Kunjungan (${t.length})</h4>
+      <div style="max-height:300px;overflow:auto;border:1px solid var(--border);border-radius:10px;">
+        ${t.length ? `
+          <table class="data-table" style="font-size:0.85rem;">
+            <thead><tr><th>Tgl</th><th>Jam</th><th>Layanan</th><th>Total</th><th>Status</th></tr></thead>
+            <tbody>
+              ${t.map((e) => `
+                <tr style="background:${e.type === 'receipt' ? 'var(--pink-50)' : ''}">
+                  <td>${esc(e.date)}${e.invoice_no ? `<br><small style="color:var(--text-soft);">${esc(e.invoice_no)}</small>` : ''}</td>
+                  <td>${esc(e.time || '—')}</td>
+                  <td>${esc(e.service_name || '—')}</td>
+                  <td><strong>${fmtRp(e.total || 0)}</strong></td>
+                  <td>${e.type === 'reservation' ? `<span class="badge badge-${e.status}">${e.status}</span> ${e.payment_status ? `<span class="badge badge-${e.payment_status}">${e.payment_status}</span>` : ''}` : '<small style="color:var(--primary);">🧾 kwitansi</small>'}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        ` : '<p style="text-align:center;color:var(--text-soft);padding:20px;">Belum ada kunjungan.</p>'}
+      </div>
+      <div style="margin-top:18px;display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;">
+        <a href="https://wa.me/${c.whatsapp_intl}" target="_blank" class="btn btn-wa" style="text-decoration:none;">💬 Chat WhatsApp</a>
+        <button class="btn btn-primary" onclick="closeModal();navigate('broadcast');setTimeout(()=>{document.getElementById('bcFilterStatus').value='approved';document.getElementById('bcFilterPay').value='';},200);">📢 Broadcast ke Customer Serupa</button>
+        <button class="btn btn-view" onclick="closeModal()">Tutup</button>
+      </div>
+    `;
+    openModal(html);
+  } catch (e) { alert('Gagal: ' + e.message); }
+}
+
+function renderHeatmap(h) {
+  const wrap = document.getElementById('crmHeatmap');
+  if (!wrap || !h || !h.grid) return;
+  const days = ['Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu', 'Minggu'];
+  const max = Math.max(h.max || 0, 1);
+  // Only render hours with any data + 0–21 (last slot stays implicit).
+  wrap.innerHTML = `
+    <h3 style="margin:14px 0 6px;font-size:1.05rem;">🕒 Heatmap Jam Sibuk (${h.total} reservasi total)</h3>
+    <p style="color:var(--text-soft);font-size:0.82rem;margin:0 0 8px;">Cell lebih gelap = lebih banyak booking pada jam tersebut. Berguna untuk atur jadwal bidan.</p>
+    <div style="overflow-x:auto;">
+      <table class="heatmap" style="border-collapse:separate;border-spacing:2px;font-size:0.7rem;">
+        <thead>
+          <tr>
+            <th style="background:transparent;padding:4px 6px;"></th>
+            ${Array.from({ length: 22 }, (_, i) => `<th style="background:transparent;padding:4px 6px;font-weight:600;color:var(--text-soft);">${i.toString().padStart(2, '0')}</th>`).join('')}
+          </tr>
+        </thead>
+        <tbody>
+          ${h.grid.map((row, di) => `
+            <tr>
+              <th style="background:transparent;padding:4px 8px;font-weight:600;color:var(--text-soft);text-align:left;">${days[di]}</th>
+              ${row.map((count, hi) => `
+                <td style="padding:0;">
+                  <div title="${count} booking on ${days[di]} jam ${hi.toString().padStart(2,'0')}:00"
+                    style="height:24px;width:24px;border-radius:4px;background:${count === 0 ? 'var(--bg)' : 'rgba(238,90,138,' + (0.15 + 0.65 * (count / max)) + ')'};color:${count > max / 2 ? 'white' : 'var(--text)'};font-weight:600;display:flex;align-items:center;justify-content:center;font-size:0.65rem;cursor:default;">
+                    ${count > 0 ? count : ''}
+                  </div>
+                </td>
+              `).join('')}
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+// ---------- ACCOUNTING — P&L (Pendapatan vs Beban) ----------
+let ACCT_DATA = null;
+let ACCT_CATEGORIES = [];
+let ACCT_TAB = 'pnl'; // 'pnl' | 'expenses' | 'categories'
+let ACCT_INCOME_CHART = null;
+let ACCT_EXPENSE_CHART = null;
+
+async function renderAccounting() {
+  const c = document.getElementById('pageContent');
+  c.innerHTML = `
+    <div class="admin-header">
+      <div>
+        <h1>💰 Akunting — P&L</h1>
+        <p style="color:var(--text-soft);margin:4px 0 0;">Laba Rugi = Pendapatan (reservasi lunas) − Beban operasional. Bantu admin lihat profit bersih per bulan.</p>
+      </div>
+      <div style="display:flex;gap:8px;">
+        <button onclick="acctSwitchTab('pnl')" id="acctTabPnl" class="btn-sm btn-pay">📈 P&L Bulanan</button>
+        <button onclick="acctSwitchTab('expenses')" id="acctTabExp" class="btn-sm btn-view">💸 Catat Beban</button>
+        <button onclick="acctSwitchTab('categories')" id="acctTabCat" class="btn-sm btn-view">🏷️ Kategori</button>
+      </div>
+    </div>
+    <div id="acctBody">Loading...</div>
+  `;
+  await Promise.all([
+    api('/api/admin/accounting/summary?months=6').then(d => { ACCT_DATA = d; }).catch(() => { ACCT_DATA = null; }),
+    api('/api/admin/expense-categories').then(cs => { ACCT_CATEGORIES = cs; }).catch(() => { ACCT_CATEGORIES = []; }),
+  ]);
+  acctSwitchTab(ACCT_TAB);
+}
+
+function acctSwitchTab(tab) {
+  ACCT_TAB = tab;
+  ['pnl', 'expenses', 'categories'].forEach((t) => {
+    const el = document.getElementById('acctTab' + (t === 'pnl' ? 'Pnl' : t === 'expenses' ? 'Exp' : 'Cat'));
+    if (!el) return;
+    el.className = t === tab ? 'btn-sm btn-pay' : 'btn-sm btn-view';
+  });
+  if (tab === 'pnl') renderAcctPnl();
+  else if (tab === 'expenses') renderAcctExpenses();
+  else renderAcctCategories();
+}
+
+function renderAcctPnl() {
+  const body = document.getElementById('acctBody');
+  if (!body) return;
+  const d = ACCT_DATA;
+  if (!d) { body.innerHTML = '<div class="alert alert-error">Tidak ada data.</div>'; return; }
+  body.innerHTML = `
+    <div class="setting-card" style="margin-bottom:18px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:8px;">
+        <h3 style="margin:0;">📊 ${d.months} Bulan Terakhir</h3>
+        <div style="font-size:0.82rem;color:var(--text-soft);">Pendapatan dari reservasi lunas. Beban dari pencatatan manual di tab "Catat Beban".</div>
+      </div>
+      <div class="stat-grid" style="margin-bottom:14px;">
+        <div class="stat-card peach">
+          <div class="label">💰 Total Pendapatan</div>
+          <div class="value">${fmtRp(d.totals.income)}</div>
+        </div>
+        <div class="stat-card" style="background:#fde0e4;color:#c43050;">
+          <div class="label" style="color:#c43050;">💸 Total Beban</div>
+          <div class="value" style="color:#c43050;">${fmtRp(d.totals.expense)}</div>
+        </div>
+        <div class="stat-card ${d.totals.profit < 0 ? '' : 'pink'}">
+          <div class="label">${d.totals.profit < 0 ? '⚠️ Rugi Bersih' : '📈 Laba Bersih'}</div>
+          <div class="value" style="color:${d.totals.profit < 0 ? '#c43050' : ''};">${fmtRp(d.totals.profit)}</div>
+        </div>
+        <div class="stat-card">
+          <div class="label">Margin</div>
+          <div class="value">${d.totals.income > 0 ? Math.round((d.totals.profit / d.totals.income) * 100) + '%' : '—'}</div>
+        </div>
+      </div>
+      <div class="chart-card" style="background:transparent;border:1px solid var(--border);border-radius:12px;padding:14px;">
+        <h4 style="margin:0 0 8px;">📈 Income vs Expense per Bulan</h4>
+        <div class="chart-canvas-wrap" style="height:280px;"><canvas id="acctIncomeChart"></canvas></div>
+      </div>
+      ${d.expenses_by_category && Object.keys(d.expenses_by_category).length ? `
+        <div class="chart-card" style="background:transparent;border:1px solid var(--border);border-radius:12px;padding:14px;margin-top:12px;">
+          <h4 style="margin:0 0 8px;">🍩 Beban per Kategori (${d.months} bulan)</h4>
+          <div class="chart-canvas-wrap" style="height:240px;"><canvas id="acctExpenseChart"></canvas></div>
+        </div>
+      ` : ''}
+      <h4 style="margin:18px 0 8px;">📋 Detail per Bulan</h4>
+      <div style="overflow:auto;border:1px solid var(--border);border-radius:10px;">
+        <table class="data-table">
+          <thead><tr><th>Bulan</th><th>Pendapatan</th><th>Beban</th><th>Laba / Rugi</th><th>Margin</th></tr></thead>
+          <tbody>
+            ${d.byMonth.map((m) => `
+              <tr style="${m.profit < 0 ? 'background:rgba(196,48,80,0.05);' : ''}">
+                <td><strong>${m.month}</strong></td>
+                <td>${fmtRp(m.income)}</td>
+                <td>${fmtRp(m.expense)}</td>
+                <td><strong style="color:${m.profit < 0 ? '#c43050' : 'var(--primary)'};">${fmtRp(m.profit)}</strong></td>
+                <td>${m.income > 0 ? Math.round((m.profit / m.income) * 100) + '%' : '—'}</td>
+              </tr>
+            `).join('')}
+            <tr style="background:var(--primary);color:white;font-weight:700;">
+              <td>TOTAL</td>
+              <td>${fmtRp(d.totals.income)}</td>
+              <td>${fmtRp(d.totals.expense)}</td>
+              <td>${fmtRp(d.totals.profit)}</td>
+              <td>${d.totals.income > 0 ? Math.round((d.totals.profit / d.totals.income) * 100) + '%' : '—'}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+  drawAcctCharts(d);
+}
+
+function drawAcctCharts(d) {
+  if (typeof window.Chart !== 'function') return; // CDN failure → skip silently
+  // Income vs Expense line chart
+  const labels = d.monthList.map((m) => m.slice(2)); // MM-YY
+  const incomeCtx = document.getElementById('acctIncomeChart');
+  if (ACCT_INCOME_CHART) { try { ACCT_INCOME_CHART.destroy(); } catch {} }
+  if (incomeCtx) {
+    ACCT_INCOME_CHART = new Chart(incomeCtx, {
+      type: 'bar',
+      data: {
+        labels,
+        datasets: [
+          { label: 'Pendapatan', data: d.byMonth.map((m) => m.income), backgroundColor: 'rgba(238,90,138,0.7)', borderRadius: 6 },
+          { label: 'Beban', data: d.byMonth.map((m) => m.expense), backgroundColor: 'rgba(196,48,80,0.6)', borderRadius: 6 },
+          { type: 'line', label: 'Laba Bersih', data: d.byMonth.map((m) => m.profit), borderColor: '#1e8957', backgroundColor: '#1e8957', borderWidth: 2.5, pointRadius: 5, tension: 0.3, fill: false }
+        ]
+      },
+      options: chartOpts({ y: { ticks: { callback: (v) => 'Rp' + (v / 1000) + 'k' } } })
+    });
+  }
+  const expenseCtx = document.getElementById('acctExpenseChart');
+  if (ACCT_EXPENSE_CHART) { try { ACCT_EXPENSE_CHART.destroy(); } catch {} }
+  if (expenseCtx && d.expenses_by_category) {
+    const labels = Object.keys(d.expenses_by_category);
+    const data = labels.map((k) => d.expenses_by_category[k]);
+    ACCT_EXPENSE_CHART = new Chart(expenseCtx, {
+      type: 'doughnut',
+      data: {
+        labels,
+        datasets: [{ data, backgroundColor: ['#ee5a8a', '#ffb979', '#a070d8', '#5cb8b1', '#ffa76a', '#7c8390'] }]
+      },
+      options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'right' } } }
+    });
+  }
+}
+
+async function renderAcctExpenses() {
+  const body = document.getElementById('acctBody');
+  if (!body) return;
+  // Re-fetch to make sure we have the latest categories (CRUD from
+  // the Categories tab reflects on this dropdown immediately).
+  try { ACCT_CATEGORIES = await api('/api/admin/expense-categories'); } catch {}
+  const month = new Date().toISOString().slice(0, 7);
+  body.innerHTML = `
+    <div class="setting-card" style="margin-bottom:14px;">
+      <h3>💸 Catat Pengeluaran</h3>
+      <p style="color:var(--text-soft);font-size:0.85rem;margin:6px 0 14px;">Catat beban operasional bulanan: bensin, supplies, marketing, dll. Setiap entry langsung masuk ke P&L.</p>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;">
+        <div class="form-group"><label>Tanggal</label><input type="date" id="exDate" value="${new Date().toISOString().slice(0, 10)}" style="width:100%;padding:8px 12px;border:1.5px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-family:inherit;"></div>
+        <div class="form-group"><label>Kategori</label>
+          <select id="exCat" style="width:100%;padding:8px 12px;border:1.5px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-family:inherit;">
+            ${ACCT_CATEGORIES.map((c) => `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join('')}
+          </select>
+        </div>
+        <div class="form-group"><label>Jumlah (Rp)</label><input type="number" id="exAmount" min="1" placeholder="cth: 50000" style="width:100%;padding:8px 12px;border:1.5px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-family:inherit;"></div>
+      </div>
+      <div class="form-group"><label>Keterangan (opsional)</label><input type="text" id="exDesc" maxlength="200" placeholder="cth: Bensin ke rumah Bunda Rina di Cilacap" style="width:100%;padding:8px 12px;border:1.5px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-family:inherit;"></div>
+      <button onclick="acctAddExpense()" class="btn btn-primary" style="margin-top:8px;">💸 Catat Pengeluaran</button>
+      <div id="exFeedback" style="margin-top:10px;"></div>
+    </div>
+    <div class="setting-card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px;">
+        <h3 style="margin:0;">📋 Riwayat Beban</h3>
+        <select id="exFilterMonth" onchange="acctReloadExpenses()" style="padding:8px 12px;border:1.5px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-family:inherit;font-weight:600;">
+          <option value="">Semua Waktu</option>
+          ${buildMonthOptions(month, 6)}
+        </select>
+      </div>
+      <div id="exList">Loading...</div>
+    </div>
+  `;
+  acctReloadExpenses();
+}
+
+function buildMonthOptions(selectedMonth, count) {
+  const today = new Date();
+  let out = '';
+  for (let i = 0; i < count; i++) {
+    const d = new Date(today.getFullYear(), today.getMonth() - i, 1);
+    const m = d.toISOString().slice(0, 7);
+    out += `<option value="${m}" ${m === selectedMonth ? 'selected' : ''}>${d.toLocaleDateString('id-ID', { month: 'long', year: 'numeric' })}</option>`;
+  }
+  return out;
+}
+
+async function acctReloadExpenses() {
+  const month = document.getElementById('exFilterMonth')?.value || '';
+  const wrap = document.getElementById('exList');
+  if (!wrap) return;
+  wrap.innerHTML = '<p style="text-align:center;color:var(--text-soft);">Memuat…</p>';
+  try {
+    const rows = await api('/api/admin/expenses' + (month ? '?month=' + month : ''));
+    if (!rows.length) {
+      wrap.innerHTML = '<p style="text-align:center;color:var(--text-soft);padding:20px;background:var(--bg);border-radius:10px;">Belum ada catatan beban' + (month ? ' di ' + month : '') + '.</p>';
+      return;
+    }
+    const catMap = Object.fromEntries(ACCT_CATEGORIES.map((c) => [c.id, c]));
+    const total = rows.reduce((s, r) => s + r.amount, 0);
+    wrap.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;background:var(--pink-50);padding:10px 14px;border-radius:10px;">
+        <strong style="color:var(--primary);">Total ${rows.length} beban${month ? ' di ' + month : ''}</strong>
+        <strong style="color:var(--primary);">${fmtRp(total)}</strong>
+      </div>
+      <div style="overflow:auto;border:1px solid var(--border);border-radius:10px;">
+        <table class="data-table">
+          <thead><tr><th>Tanggal</th><th>Kategori</th><th>Keterangan</th><th>Jumlah</th><th>Aksi</th></tr></thead>
+          <tbody>
+            ${rows.map((r) => `
+              <tr>
+                <td>${fmtDate(r.date)}</td>
+                <td>${esc((catMap[r.category] && catMap[r.category].name) || r.category)}</td>
+                <td style="font-size:0.85rem;color:var(--text-soft);">${esc(r.description || '—')}</td>
+                <td><strong>${fmtRp(r.amount)}</strong></td>
+                <td>
+                  <button class="btn-sm btn-view" onclick="acctEditExpense(${r.id})">✏️</button>
+                  <button class="btn-sm btn-del" onclick="acctDelExpense(${r.id})">🗑️</button>
+                </td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    `;
+  } catch (e) { wrap.innerHTML = `<div class="alert alert-error">${esc(e.message)}</div>`; }
+}
+
+async function acctAddExpense() {
+  const date = document.getElementById('exDate').value;
+  const category = document.getElementById('exCat').value;
+  const amount = document.getElementById('exAmount').value;
+  const description = document.getElementById('exDesc').value;
+  const fb = document.getElementById('exFeedback');
+  fb.innerHTML = '';
+  if (!date || !category || !amount) { fb.innerHTML = '<div class="alert alert-error">Tanggal, kategori, jumlah wajib diisi.</div>'; return; }
+  try {
+    const exp = await api('/api/admin/expenses', { method: 'POST', body: JSON.stringify({ date, category, amount, description }) });
+    document.getElementById('exAmount').value = '';
+    document.getElementById('exDesc').value = '';
+    fb.innerHTML = `<div class="alert alert-success">✅ Tercatat: ${fmtRp(exp.amount)} untuk ${esc(exp.description || exp.category)}.</div>`;
+    acctReloadExpenses();
+    // Refresh P&L so charts reflect the new entry
+    ACCT_DATA = await api('/api/admin/accounting/summary?months=6');
+  } catch (e) { fb.innerHTML = `<div class="alert alert-error">${esc(e.message)}</div>`; }
+}
+
+async function acctEditExpense(id) {
+  const desc = prompt('Edit keterangan (kosongkan jika tidak diubah):');
+  const amtStr = prompt('Edit jumlah (Rp, kosongkan jika tidak diubah):');
+  if (desc === null && amtStr === null) return;
+  const patch = {};
+  if (desc !== null) patch.description = desc;
+  if (amtStr && amtStr.trim()) {
+    const a = parseInt(amtStr, 10);
+    if (!Number.isFinite(a) || a <= 0) return alert('Jumlah harus angka > 0');
+    patch.amount = a;
+  }
+  try {
+    await api('/api/admin/expenses/' + id, { method: 'PATCH', body: JSON.stringify(patch) });
+    acctReloadExpenses();
+    ACCT_DATA = await api('/api/admin/accounting/summary?months=6');
+  } catch (e) { alert('Gagal: ' + e.message); }
+}
+
+async function acctDelExpense(id) {
+  if (!confirm('Hapus catatan beban ini?')) return;
+  try {
+    await api('/api/admin/expenses/' + id, { method: 'DELETE' });
+    acctReloadExpenses();
+    ACCT_DATA = await api('/api/admin/accounting/summary?months=6');
+  } catch (e) { alert('Gagal: ' + e.message); }
+}
+
+async function renderAcctCategories() {
+  const body = document.getElementById('acctBody');
+  if (!body) return;
+  try { ACCT_CATEGORIES = await api('/api/admin/expense-categories'); } catch {}
+  body.innerHTML = `
+    <div class="setting-card">
+      <h3>🏷️ Kategori Beban</h3>
+      <p style="color:var(--text-soft);font-size:0.85rem;margin:6px 0 14px;">Edit kategori biaya operasional sesuai jenis usaha Anda. Default sudah termasuk kategori umum.</p>
+      <div id="acctCatList" style="display:flex;flex-direction:column;gap:8px;margin-bottom:14px;"></div>
+      <button onclick="acctSaveCategories()" class="btn btn-primary">💾 Simpan Kategori</button>
+      <button onclick="acctAddCategory()" class="btn btn-view" style="margin-left:8px;">+ Tambah</button>
+    </div>
+  `;
+  renderAcctCategoryInputs();
+}
+
+function renderAcctCategoryInputs() {
+  const wrap = document.getElementById('acctCatList');
+  if (!wrap) return;
+  wrap.innerHTML = ACCT_CATEGORIES.map((c, i) => `
+    <div style="display:grid;grid-template-columns:1fr 70px 50px;gap:8px;align-items:center;padding:10px;background:var(--bg);border-radius:10px;">
+      <input type="text" value="${esc(c.name)}" placeholder="Nama kategori" oninput="ACCT_CATEGORIES[${i}].name=this.value" style="padding:8px 12px;border:1.5px solid var(--border);border-radius:8px;background:var(--card);color:var(--text);font-family:inherit;">
+      <input type="color" value="${esc(c.color)}" oninput="ACCT_CATEGORIES[${i}].color=this.value" style="width:50px;height:38px;border:1px solid var(--border);border-radius:8px;cursor:pointer;padding:2px;">
+      <button class="btn-sm btn-del" onclick="ACCT_CATEGORIES.splice(${i},1);renderAcctCategoryInputs();">×</button>
+    </div>
+  `).join('');
+}
+
+function acctAddCategory() {
+  ACCT_CATEGORIES.push({ id: 'cat_' + Date.now().toString(36), name: 'Kategori Baru', color: '#7c8390' });
+  renderAcctCategoryInputs();
+}
+
+async function acctSaveCategories() {
+  try {
+    ACCT_CATEGORIES = await api('/api/admin/expense-categories', { method: 'PUT', body: JSON.stringify(ACCT_CATEGORIES) });
+    renderAcctCategoryInputs();
+    alert('✅ Kategori disimpan.');
+  } catch (e) { alert('Gagal: ' + e.message); }
 }
 
 // ---------- BACKUP / RESTORE ----------
@@ -835,7 +3638,7 @@ async function renderBackup() {
         <button onclick="doRestore()" class="btn btn-outline" style="margin-top:14px;">📤 Restore</button>
       </div>
     </div>
-    <style>@media(max-width:920px){#bkGrid{grid-template-columns:1fr !important;}}</style>
+    <style>@media(max-width:920px),(hover:none) and (pointer:coarse) and (max-width:1024px){#bkGrid{grid-template-columns:1fr !important;}}</style>
   `;
 }
 
@@ -854,8 +3657,20 @@ async function doRestore() {
   const text = await f.text();
   let data;
   try { data = JSON.parse(text); } catch { return alert('File tidak valid'); }
-  const res = await api('/api/admin/restore', { method: 'POST', body: JSON.stringify({ ...data, mode }) });
-  alert(`✅ Restore selesai: ${res.imported.reservations} reservasi, ${res.imported.receipts} kwitansi`);
+  try {
+    const res = await api('/api/admin/restore', { method: 'POST', body: JSON.stringify({ ...data, mode, sync_reservations: true }) });
+    const i = res.imported || {};
+    let msg = `✅ Restore selesai (mode: ${res.mode})\n\n` +
+              `Reservasi: ${i.reservations} masuk, ${i.reservations_skipped || 0} dilewati\n` +
+              `Kwitansi: ${i.receipts} masuk, ${i.receipts_skipped || 0} dilewati\n\n` +
+              `🔗 Kwitansi yang di-restore otomatis dibuatkan reservasi mirror supaya muncul di Rekap Bulanan.`;
+    alert(msg);
+    // Refresh the relevant views so the admin sees the new data
+    if (typeof loadReceipts === 'function') loadReceipts();
+    if (typeof loadReservations === 'function') loadReservations();
+  } catch (e) {
+    alert('Gagal restore: ' + e.message);
+  }
 }
 
 // ---------- SETTINGS ----------
@@ -917,6 +3732,90 @@ async function renderSettings() {
       </div>
 
       <div class="setting-card">
+        <h3>✍️ Tanda Tangan Bidan/Pemilik</h3>
+        <p style="color:var(--text-soft);font-size:0.85rem;margin:6px 0 10px;line-height:1.55;">
+          Tanda tangan ini akan otomatis muncul di blok <strong>"Hormat kami,"</strong> pada setiap kwitansi yang dicetak dari sistem ini, sehingga bidan/pemilik tidak perlu tanda tangan ulang di setiap kwitansi. Simpan sekali, pakai selamanya.
+        </p>
+        <div id="ownerSigPreviewWrap" style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;margin-bottom:14px;padding:12px;background:var(--bg);border:1px dashed var(--border);border-radius:12px;">
+          <div id="ownerSigPreviewBox" style="width:200px;min-height:80px;background:var(--card);border:1px solid var(--border);border-radius:10px;display:flex;align-items:center;justify-content:center;padding:8px;">
+            ${s.has_owner_signature ? `<img src="${apiUrl('/api/owner-signature')}?v=${Date.now()}" style="max-height:80px;max-width:180px;display:block;" alt="Tanda tangan">` : '<span style="color:var(--text-soft);font-size:0.85rem;">Belum ada tanda tangan</span>'}
+          </div>
+          <div style="flex:1;min-width:200px;">
+            <div style="font-weight:700;margin-bottom:2px;">${s.has_owner_signature ? '✅ Tanda tangan tersimpan' : '⚠️ Belum ada tanda tangan'}</div>
+            ${s.has_owner_signature ? `
+              <small style="color:var(--text-soft);display:block;margin-bottom:6px;">
+                📅 ${esc(s.owner_signature_at ? new Date(s.owner_signature_at).toLocaleString('id-ID', {day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'}) : '—')}
+                · 📥 ${esc(s.owner_signature_method || 'unknown')}
+                ${s.owner_signature_via ? ' · 🔖 ' + esc(s.owner_signature_via) : ''}
+              </small>
+              <button onclick="deleteOwnerSignature()" class="btn-sm btn-del">🗑️ Hapus</button>
+            ` : '<small style="color:var(--text-soft);display:block;">Pilih salah satu metode di bawah untuk menambahkan tanda tangan.</small>'}
+          </div>
+        </div>
+
+        <!-- 3-tab mode picker -->
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;">
+          <button type="button" id="ownerSigTabLangsung" onclick="switchOwnerSigTab('langsung')" class="btn-sm btn-pay">✏️ Tanda Tangan Langsung</button>
+          <button type="button" id="ownerSigTabUpload" onclick="switchOwnerSigTab('upload')" class="btn-sm btn-view">📁 Upload Gambar</button>
+          <button type="button" id="ownerSigTabScan" onclick="switchOwnerSigTab('scan')" class="btn-sm btn-view">📷 Scan / Barcode</button>
+        </div>
+
+        <!-- Mode: langsung -->
+        <div id="ownerSigModeLangsung" style="display:none;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+            <strong style="font-size:0.92rem;">✏️ Gambar tanda tangan di area putih</strong>
+            <button type="button" onclick="ownerSigClear()" class="btn-sm btn-view">🔄 Reset</button>
+          </div>
+          <div id="ownerSigPadWrap" style="background:#fdfafc;border:2px dashed var(--pink-200);border-radius:10px;overflow:hidden;">
+            <canvas id="ownerSigPad" style="display:block;touch-action:none;width:100%;height:180px;"></canvas>
+          </div>
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;flex-wrap:wrap;gap:8px;">
+            <small style="color:var(--text-soft);">💡 Pakai mouse, touchpad, atau jari di HP/tablet</small>
+            <button type="button" onclick="ownerSigSave('langsung')" class="btn btn-primary">💾 Simpan Tanda Tangan</button>
+          </div>
+        </div>
+
+        <!-- Mode: upload -->
+        <div id="ownerSigModeUpload" style="display:none;">
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+            <input type="file" id="ownerSigUploadFile" accept="image/png,image/jpeg,image/webp,image/gif" style="flex:1;min-width:200px;padding:8px 12px;border:1.5px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-family:inherit;">
+            <input type="text" id="ownerSigUploadVia" placeholder="Keterangan sumber (opsional)" maxlength="64" style="flex:1;min-width:180px;padding:8px 12px;border:1.5px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-family:inherit;">
+            <button type="button" onclick="uploadOwnerSignature()" class="btn btn-primary">📤 Upload</button>
+          </div>
+          <small style="color:var(--text-soft);display:block;margin-top:6px;">PNG / JPEG / WebP / GIF. Maksimal 1.5 MB. Tinggi disarankan 200-400px.</small>
+        </div>
+
+        <!-- Mode: scan -->
+        <div id="ownerSigModeScan" style="display:none;">
+          <div style="display:flex;flex-direction:column;gap:8px;">
+            <div>
+              <label style="font-weight:600;font-size:0.88rem;display:block;margin-bottom:4px;">Metode input</label>
+              <select id="ownerSigScanMethod" style="width:100%;padding:8px 12px;border:1.5px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-family:inherit;">
+                <option value="barcode">📊 Barcode / QR — hasil decode QR yang menyisipkan gambar tanda tangan</option>
+                <option value="ocr">📷 OCR — gambar hasil scan kamera HP / aplikasi OCR</option>
+                <option value="langsung">✏️ Paste dari canvas (toDataURL)</option>
+              </select>
+            </div>
+            <div>
+              <label style="font-weight:600;font-size:0.88rem;display:block;margin-bottom:4px;">Sumber / aplikasi (untuk audit)</label>
+              <input type="text" id="ownerSigScanVia" placeholder="mis: Google Lens, Adobe Scan, QR Scanner" maxlength="64" style="width:100%;padding:8px 12px;border:1.5px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-family:inherit;">
+            </div>
+            <div>
+              <label style="font-weight:600;font-size:0.88rem;display:block;margin-bottom:4px;">Paste base64 atau data URL di sini</label>
+              <textarea id="ownerSigScanB64" rows="4" placeholder='data:image/png;base64,iVBORw0KGgoAA... atau langsung base64 string tanpa prefix' style="width:100%;font-family:monospace;font-size:0.8rem;padding:10px 12px;border:1.5px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);resize:vertical;"></textarea>
+            </div>
+            <div style="display:flex;justify-content:flex-end;gap:8px;">
+              <button type="button" onclick="saveOwnerSignatureScan()" class="btn btn-primary">💾 Simpan dari Scan</button>
+            </div>
+            <small style="color:var(--text-soft);line-height:1.5;">
+              💡 Cara cepat: di HP, buka foto tanda tangan → bagikan ke aplikasi QR Scanner / Google Lens → pilih "Salin base64" → paste di sini.
+              Sistem akan validasi magic bytes PNG/JPEG/WebP dan menolak payload non-image.
+            </small>
+          </div>
+        </div>
+      </div>
+
+      <div class="setting-card">
         <h3>🏦 Rekening Bank</h3>
         <p style="color:var(--text-soft);font-size:0.85rem;margin-bottom:10px;">Tampil saat pelanggan pilih Transfer.</p>
         <div id="bankList"></div>
@@ -927,6 +3826,20 @@ async function renderSettings() {
         <h3>🕒 Jam Operasional</h3>
         <p style="color:var(--text-soft);font-size:0.85rem;margin-bottom:10px;">Akan tampil di beranda. Centang "Tutup" untuk hari libur.</p>
         <div id="hoursList"></div>
+      </div>
+
+      <div class="setting-card">
+        <h3>🚫 Hari Libur (Blackout Dates)</h3>
+        <p style="color:var(--text-soft);font-size:0.85rem;margin-bottom:10px;">Tanggal yang ditandai "Libur" tidak bisa dipilih pasien saat reservasi. Cocok untuk hari besar, cuti bersama, atau hari admin off.</p>
+        <div id="blackoutList" style="display:flex;flex-direction:column;gap:8px;margin-bottom:10px;"></div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+          <input type="date" id="blackoutNewDate" style="padding:8px 12px;border:1.5px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-family:inherit;">
+          <input type="text" id="blackoutNewNote" placeholder="Keterangan (opsional, mis: Libur Natal)" maxlength="80" style="padding:8px 12px;border:1.5px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-family:inherit;flex:1;min-width:160px;">
+          <button type="button" onclick="addBlackoutDate()" class="btn-sm btn-approve">+ Tambah Tanggal</button>
+        </div>
+        <small style="display:block;margin-top:8px;color:var(--text-soft);font-size:0.78rem;">
+          💡 Tekan <strong>💾 Simpan Semua</strong> di atas setelah selesai mengubah daftar.
+        </small>
       </div>
 
       <div class="setting-card">
@@ -974,10 +3887,34 @@ async function renderSettings() {
 
       <div class="setting-card">
         <h3>🔐 Profil Admin</h3>
-        <div class="form-group"><label>Nama</label><input type="text" value="${esc(USER?.name||'')}" disabled></div>
-        <div class="form-group"><label>Email</label><input type="email" value="${esc(USER?.email||'')}" disabled></div>
-        <div class="form-group"><label>Role</label><input type="text" value="${esc(USER?.role||'')}" disabled></div>
-        <button onclick="logout()" class="btn-sm btn-del" style="padding:10px 20px;margin-top:10px;">🚪 Logout</button>
+        <p style="color:var(--text-soft);font-size:0.85rem;margin-bottom:14px;">
+          Ubah email dan password login admin. Password saat ini wajib diisi untuk konfirmasi.
+        </p>
+        <div id="profileAlert"></div>
+        <div class="form-group">
+          <label>Nama (tidak bisa diubah dari sini)</label>
+          <input type="text" value="${esc(USER?.name||'')}" disabled>
+        </div>
+        <div class="form-group">
+          <label>Email Login</label>
+          <input type="email" id="pf_email" value="${esc(USER?.email||'')}" placeholder="admin@adzkiya.id" autocomplete="email">
+        </div>
+        <div class="form-group">
+          <label>Password Saat Ini <span style="color:var(--danger)">*</span></label>
+          <input type="password" id="pf_current" placeholder="Wajib diisi untuk konfirmasi" autocomplete="current-password">
+        </div>
+        <div class="form-group">
+          <label>Password Baru <small style="color:var(--text-soft);font-weight:500;">— kosongkan jika tidak ingin ganti</small></label>
+          <input type="password" id="pf_new" placeholder="Minimal 8 karakter" autocomplete="new-password" minlength="8">
+        </div>
+        <div class="form-group">
+          <label>Konfirmasi Password Baru</label>
+          <input type="password" id="pf_confirm" placeholder="Ketik ulang password baru" autocomplete="new-password">
+        </div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:6px;">
+          <button type="button" onclick="saveProfile()" class="btn btn-primary" id="pfSaveBtn">💾 Simpan Profil</button>
+          <button type="button" onclick="logout()" class="btn-sm btn-del" style="padding:10px 20px;">🚪 Logout</button>
+        </div>
       </div>
 
       <div class="setting-card">
@@ -998,6 +3935,7 @@ async function renderSettings() {
   renderHours();
   renderSocials();
   renderTestimonials();
+  renderBlackouts();
 }
 
 function renderHours() {
@@ -1007,17 +3945,85 @@ function renderHours() {
   el.innerHTML = '';
   SETTINGS.hours.forEach((h, i) => {
     const row = document.createElement('div');
-    row.style.cssText = 'display:grid;grid-template-columns:90px 1fr 1fr auto;gap:8px;margin-bottom:6px;align-items:center;';
+    row.className = 'settings-row';
     row.innerHTML = `
-      <div style="font-weight:600;font-size:0.9rem;">${esc(h.day)}</div>
-      <input type="time" value="${esc(h.open||'08:00')}" ${h.closed ? 'disabled' : ''} oninput="SETTINGS.hours[${i}].open=this.value" style="padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);">
-      <input type="time" value="${esc(h.close||'20:00')}" ${h.closed ? 'disabled' : ''} oninput="SETTINGS.hours[${i}].close=this.value" style="padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);">
-      <label style="display:flex;gap:4px;align-items:center;font-size:0.82rem;cursor:pointer;white-space:nowrap;">
+      <div class="settings-row-day" style="font-weight:600;font-size:0.9rem;">${esc(h.day)}</div>
+      <input type="time" class="settings-row-open" value="${esc(h.open||'08:00')}" ${h.closed ? 'disabled' : ''} oninput="SETTINGS.hours[${i}].open=this.value" style="padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);">
+      <input type="time" class="settings-row-close" value="${esc(h.close||'20:00')}" ${h.closed ? 'disabled' : ''} oninput="SETTINGS.hours[${i}].close=this.value" style="padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);">
+      <label class="settings-row-label" style="display:flex;gap:4px;align-items:center;font-size:0.82rem;cursor:pointer;white-space:nowrap;">
         <input type="checkbox" ${h.closed ? 'checked' : ''} onchange="SETTINGS.hours[${i}].closed=this.checked;renderHours();"> Tutup
       </label>
     `;
     el.appendChild(row);
   });
+}
+
+// ===== BLACKOUT DATES (Hari Libur) =====
+// Renders the "Hari Libur" list in Settings. Each entry has a date
+// and an optional note ("Libur Natal", "Cuti bersama", dll).
+// Sorted ascending by date so the admin sees the next upcoming
+// tanggal libur first.
+function renderBlackouts() {
+  const el = document.getElementById('blackoutList');
+  if (!el) return;
+  SETTINGS.blackout_dates = SETTINGS.blackout_dates || [];
+  SETTINGS.blackout_notes = SETTINGS.blackout_notes || {};
+  el.innerHTML = '';
+  if (SETTINGS.blackout_dates.length === 0) {
+    el.innerHTML = '<p style="color:var(--text-soft);font-size:0.85rem;text-align:center;padding:14px;background:var(--bg);border-radius:8px;">Belum ada tanggal libur. Semua tanggal aktif untuk reservasi.</p>';
+  } else {
+    // Sort the dates so the next upcoming holiday is at the top.
+    const today = new Date().toISOString().slice(0, 10);
+    const sorted = SETTINGS.blackout_dates.slice().sort();
+    sorted.forEach((date) => {
+      const note = SETTINGS.blackout_notes[date] || '';
+      const isPast = date < today;
+      const row = document.createElement('div');
+      row.style.cssText = `display:flex;gap:8px;align-items:center;padding:10px 12px;background:var(--bg);border:1px solid var(--border);border-radius:10px;${isPast ? 'opacity:0.55;' : ''}`;
+      const labelDate = new Date(date + 'T00:00:00').toLocaleDateString('id-ID', { weekday: 'long', day: '2-digit', month: 'long', year: 'numeric' });
+      row.innerHTML = `
+        <div style="font-size:1.4rem;flex-shrink:0;">🚫</div>
+        <div style="flex:1;min-width:0;">
+          <div style="font-weight:700;color:var(--text);">${esc(labelDate)}</div>
+          <input type="text" value="${esc(note)}" placeholder="Tambah keterangan..." maxlength="80"
+            oninput="SETTINGS.blackout_notes['${date}']=this.value"
+            style="margin-top:4px;width:100%;padding:4px 8px;border:1px solid var(--border);border-radius:6px;background:var(--card);color:var(--text);font-family:inherit;font-size:0.82rem;">
+        </div>
+        <button type="button" onclick="removeBlackoutDate('${date}')" class="btn-sm btn-del" style="padding:6px 10px;flex-shrink:0;" title="Hapus dari daftar hitam">🗑️</button>
+      `;
+      el.appendChild(row);
+    });
+  }
+}
+
+function addBlackoutDate() {
+  const dateEl = document.getElementById('blackoutNewDate');
+  const noteEl = document.getElementById('blackoutNewNote');
+  const date = (dateEl.value || '').trim();
+  if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    alert('Pilih tanggal yang valid (YYYY-MM-DD).');
+    dateEl.focus();
+    return;
+  }
+  SETTINGS.blackout_dates = SETTINGS.blackout_dates || [];
+  SETTINGS.blackout_notes = SETTINGS.blackout_notes || {};
+  if (SETTINGS.blackout_dates.includes(date)) {
+    alert('Tanggal ini sudah ada di daftar hitam.');
+    return;
+  }
+  SETTINGS.blackout_dates.push(date);
+  const note = (noteEl.value || '').trim();
+  if (note) SETTINGS.blackout_notes[date] = note;
+  renderBlackouts();
+  dateEl.value = '';
+  noteEl.value = '';
+  dateEl.focus();
+}
+
+function removeBlackoutDate(date) {
+  SETTINGS.blackout_dates = (SETTINGS.blackout_dates || []).filter((d) => d !== date);
+  if (SETTINGS.blackout_notes) delete SETTINGS.blackout_notes[date];
+  renderBlackouts();
 }
 
 function renderTestimonials() {
@@ -1055,14 +4061,21 @@ function renderSocials() {
   const icons = { 'Instagram':'📷','TikTok':'🎵','Facebook':'📘','YouTube':'▶️','Twitter/X':'🐦','WhatsApp':'💬','Telegram':'✈️','LinkedIn':'💼','Threads':'@','Lainnya':'🌐' };
   SETTINGS.socials.forEach((sc, i) => {
     const row = document.createElement('div');
-    row.style.cssText = 'display:grid;grid-template-columns:140px 50px 1fr 36px;gap:8px;margin-bottom:8px;align-items:center;';
+    row.className = 'social-row';
+    row.style.marginBottom = '8px';
+    const hasIcon = !!sc.icon_b64;
     row.innerHTML = `
-      <select onchange="onSocialPlatformChange(${i}, this)" style="padding:8px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);">
+      <select class="social-platform" onchange="onSocialPlatformChange(${i}, this)">
         ${platforms.map(p => `<option value="${p}" data-icon="${icons[p]}" ${sc.platform===p?'selected':''}>${icons[p]} ${p}</option>`).join('')}
       </select>
-      <input type="text" value="${esc(sc.icon || icons[sc.platform] || '🌐')}" oninput="SETTINGS.socials[${i}].icon=this.value" style="padding:8px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);text-align:center;font-size:1.1rem;">
-      <input type="url" placeholder="https://instagram.com/username" value="${esc(sc.url || '')}" oninput="SETTINGS.socials[${i}].url=this.value" style="padding:8px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);">
-      <button class="rm-btn" onclick="SETTINGS.socials.splice(${i},1);renderSocials();" style="height:38px;background:#fde0e4;color:#c43050;border:none;border-radius:8px;cursor:pointer;">×</button>
+      <div class="social-avatar" style="background:${hasIcon ? `url(data:${sc.icon_mime||'image/png'};base64,${sc.icon_b64}) center/cover` : 'var(--pink-100)'};">${hasIcon ? '' : esc(sc.icon || icons[sc.platform] || '🌐')}</div>
+      <input class="social-url" type="url" placeholder="https://instagram.com/username" value="${esc(sc.url || '')}" oninput="SETTINGS.socials[${i}].url=this.value">
+      <label class="btn-sm btn-approve social-upload">
+        📷
+        <input type="file" accept="image/*" onchange="uploadSocialIcon(${i}, this)" style="display:none;">
+      </label>
+      ${hasIcon ? `<button class="btn-sm btn-del social-delete" onclick="deleteSocialIcon(${i})">🗑️</button>` : `<span class="social-spacer"></span>`}
+      <button class="rm-btn social-remove" onclick="SETTINGS.socials.splice(${i},1);renderSocials();">×</button>
     `;
     el.appendChild(row);
   });
@@ -1079,6 +4092,49 @@ function addSocial() {
   SETTINGS.socials = SETTINGS.socials || [];
   SETTINGS.socials.push({ platform: 'Instagram', icon: '📷', url: '' });
   renderSocials();
+}
+
+async function uploadSocialIcon(idx, fileInput) {
+  const file = fileInput.files && fileInput.files[0];
+  if (!file) return;
+  if (file.size > 500 * 1024) {
+    alert('Ukuran foto profil maksimal 500 KB. Crop jadi kecil atau kompres dulu, lalu coba lagi.');
+    fileInput.value = '';
+    return;
+  }
+  const fd = new FormData();
+  fd.append('file', file);
+  fd.append('idx', String(idx));
+  try {
+    const res = await fetch(apiUrl('/api/admin/socials/icon'), {
+      method: 'POST',
+      headers: { Authorization: 'Bearer ' + TOKEN },
+      body: fd
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) { alert('Gagal upload: ' + (data.error || res.statusText)); fileInput.value = ''; return; }
+    // Update the local SETTINGS so the preview is correct without a refetch.
+    if (SETTINGS.socials && SETTINGS.socials[idx]) {
+      // Re-fetch settings to get the saved base64 (the server is the source of truth).
+      SETTINGS = await api('/api/admin/settings');
+    }
+    renderSocials();
+    fileInput.value = '';
+  } catch (e) {
+    alert('Error: ' + e.message);
+    fileInput.value = '';
+  }
+}
+
+async function deleteSocialIcon(idx) {
+  if (!confirm('Hapus foto profil untuk media sosial ini?')) return;
+  try {
+    await api('/api/admin/socials/icon/' + idx, { method: 'DELETE' });
+    SETTINGS = await api('/api/admin/settings');
+    renderSocials();
+  } catch (e) {
+    alert('Gagal: ' + e.message);
+  }
 }
 
 // ---------- NOTIFICATIONS (realtime polling) ----------
@@ -1243,7 +4299,7 @@ function renderNotifList(d) {
         </div>`).join('') : '<p style="color:var(--text-soft);padding:14px;background:var(--card);border-radius:12px;text-align:center;">Belum ada reservasi.</p>'}
     </div>
   </div>
-  <style>@media(max-width:920px){#notifInner{grid-template-columns:1fr !important;}}</style>`;
+  <style>@media(max-width:920px),(hover:none) and (pointer:coarse) and (max-width:1024px){#notifInner{grid-template-columns:1fr !important;}}</style>`;
 }
 
 function resetNotifSeen() {
@@ -1311,11 +4367,86 @@ async function saveAllSettings() {
     socials: (SETTINGS.socials || []).filter(s => s && s.url),
     reminder_hours_before: parseFloat(document.getElementById('se_reminder')?.value) || 2,
     notif_sound: document.getElementById('se_notif_sound')?.checked !== false,
-    bank_accounts: (SETTINGS.bank_accounts || []).filter(b => b.bank || b.number || b.name)
+    bank_accounts: (SETTINGS.bank_accounts || []).filter(b => b.bank || b.number || b.name),
+    // Hari Libur (blackout dates). Deduped + sorted on the server
+    // too, but we filter client-side to be safe.
+    blackout_dates: Array.from(new Set((SETTINGS.blackout_dates || []).filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)))).sort(),
+    blackout_notes: (SETTINGS.blackout_notes && typeof SETTINGS.blackout_notes === 'object') ? SETTINGS.blackout_notes : {}
   };
   await api('/api/admin/settings', { method: 'PUT', body: JSON.stringify(body) });
   alert('✅ Pengaturan disimpan');
   await loadCache();
+}
+
+// Save admin profile (email + password). Validates inputs client-side
+// first so we get instant feedback; the server also re-validates and
+// checks the current password before making any change.
+async function saveProfile() {
+  const alertBox = document.getElementById('profileAlert');
+  const btn = document.getElementById('pfSaveBtn');
+  if (alertBox) alertBox.innerHTML = '';
+
+  const emailEl = document.getElementById('pf_email');
+  const curEl = document.getElementById('pf_current');
+  const newEl = document.getElementById('pf_new');
+  const confEl = document.getElementById('pf_confirm');
+
+  const email = (emailEl?.value || '').trim();
+  const current_password = curEl?.value || '';
+  const new_password = newEl?.value || '';
+  const confirm = confEl?.value || '';
+
+  if (!current_password) {
+    alertBox.innerHTML = '<div class="alert alert-error">❌ Password saat ini wajib diisi untuk konfirmasi.</div>';
+    curEl?.focus();
+    return;
+  }
+  if (new_password && new_password.length < 8) {
+    alertBox.innerHTML = '<div class="alert alert-error">❌ Password baru minimal 8 karakter.</div>';
+    newEl?.focus();
+    return;
+  }
+  if (new_password && new_password !== confirm) {
+    alertBox.innerHTML = '<div class="alert alert-error">❌ Konfirmasi password baru tidak cocok.</div>';
+    confEl?.focus();
+    return;
+  }
+  const emailChanged = email && email.toLowerCase() !== (USER?.email || '').toLowerCase();
+  const passwordChanged = !!new_password;
+  if (!emailChanged && !passwordChanged) {
+    alertBox.innerHTML = '<div class="alert alert-error">❌ Tidak ada perubahan. Edit email atau password baru dulu.</div>';
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = 'Menyimpan...';
+  try {
+    const body = { current_password };
+    if (emailChanged) body.email = email;
+    if (passwordChanged) body.new_password = new_password;
+    const data = await api('/api/admin/profile', { method: 'PUT', body: JSON.stringify(body) });
+
+    if (data.user) {
+      USER = data.user;
+      localStorage.setItem('adm_user', JSON.stringify(USER));
+    }
+
+    if (curEl) curEl.value = '';
+    if (newEl) newEl.value = '';
+    if (confEl) confEl.value = '';
+
+    const lines = [];
+    if (data.email_changed) lines.push('✅ Email diperbarui' + (data.requires_relogin ? ' (silakan login ulang dengan email baru)' : ''));
+    if (data.password_changed) lines.push('✅ Password diperbarui' + (data.requires_relogin ? '' : ' — gunakan password baru untuk login berikutnya'));
+    alertBox.innerHTML = '<div class="alert alert-success">' + lines.join('<br>') + '</div>';
+
+    renderSettings();
+  } catch (e) {
+    alertBox.innerHTML = '<div class="alert alert-error">❌ ' + esc(e.message) + '</div>';
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '💾 Simpan Profil';
+  }
 }
 
 // ---------- MODAL ----------
@@ -1327,12 +4458,660 @@ function openModal(html) {
 }
 function closeModal() { document.getElementById('modalRoot').innerHTML = ''; }
 
+// ===== OWNER SIGNATURE (Bidan / Pemilik) =====
+// Saved-once signature that auto-embeds into every kwitansi's
+// "Hormat kami," block. Three input modes accepted:
+//
+//   1. langsung   admin draws on a <canvas>; signature.save('langsung')
+//   2. upload     admin picks an image file; uploadOwnerSignature()
+//   3. scan       admin pastes base64 from QR decoder / OCR app;
+//                  saveOwnerSignatureScan()
+//
+// All three end up calling POST /api/admin/settings/owner-signature
+// (multipart) or POST /api/admin/settings/owner-signature/scan (JSON).
+// The server re-checks magic bytes before saving so we never persist a
+// non-image payload.
+let _ownerSigTab = null;
+function switchOwnerSigTab(tab) {
+  _ownerSigTab = tab;
+  // Toggle button styles + section visibility
+  const tabs = {
+    langsung: ['ownerSigTabLangsung', 'ownerSigModeLangsung'],
+    upload:   ['ownerSigTabUpload',   'ownerSigModeUpload'],
+    scan:     ['ownerSigTabScan',     'ownerSigModeScan']
+  };
+  Object.entries(tabs).forEach(([key, [btnId, modeId]]) => {
+    const btn = document.getElementById(btnId);
+    const mode = document.getElementById(modeId);
+    if (btn) btn.className = key === tab ? 'btn-sm btn-pay' : 'btn-sm btn-view';
+    if (mode) mode.style.display = key === tab ? '' : 'none';
+  });
+  if (tab === 'langsung') {
+    // Initialize the canvas the first time the tab opens (it has a
+    // CSS-driven size, so we need to defer until layout completes).
+    requestAnimationFrame(() => attachOwnerSigPad('ownerSigPad', 'ownerSigPadWrap'));
+  }
+}
+
+function attachOwnerSigPad(canvasId, wrapId) {
+  const canvas = document.getElementById(canvasId);
+  const wrap = document.getElementById(wrapId);
+  if (!canvas || !wrap) return;
+  // If already attached (event listeners + helpers exist), just resize.
+  if (canvas._ownerSigAttached) {
+    sizeOwnerSigCanvas();
+    return;
+  }
+  function sizeOwnerSigCanvas() {
+    const r = wrap.getBoundingClientRect();
+    if (r.width <= 0) return;
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.round(r.width * dpr);
+    canvas.height = 180 * dpr;
+    canvas.style.width = r.width + 'px';
+    canvas.style.height = '180px';
+    const ctx = canvas.getContext('2d');
+    ctx.setTransform(1, 0, 0, 1, 0, 0); // reset any prior scale
+    ctx.scale(dpr, dpr);
+    ctx.lineWidth = 2.5;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.strokeStyle = '#2a1822';
+  }
+  sizeOwnerSigCanvas();
+  const ctx2d = canvas.getContext('2d');
+  let drawing = false, last = null;
+  function pos(e) {
+    const r = canvas.getBoundingClientRect();
+    const t = e.touches ? e.touches[0] : e;
+    return { x: t.clientX - r.left, y: t.clientY - r.top };
+  }
+  function start(e) {
+    e.preventDefault();
+    drawing = true;
+    last = pos(e);
+  }
+  function move(e) {
+    if (!drawing) return;
+    e.preventDefault();
+    const p = pos(e);
+    ctx2d.beginPath();
+    ctx2d.moveTo(last.x, last.y);
+    ctx2d.lineTo(p.x, p.y);
+    ctx2d.stroke();
+    last = p;
+  }
+  function end(e) {
+    if (!drawing) return;
+    if (e && e.preventDefault) e.preventDefault();
+    drawing = false;
+    last = null;
+  }
+  canvas.addEventListener('mousedown', start);
+  canvas.addEventListener('mousemove', move);
+  window.addEventListener('mouseup', end);
+  canvas.addEventListener('touchstart', start, { passive: false });
+  canvas.addEventListener('touchmove', move, { passive: false });
+  canvas.addEventListener('touchend', end);
+  canvas.addEventListener('touchcancel', end);
+  // Helper methods for save/clear
+  canvas._clearSig = () => {
+    ctx2d.save();
+    ctx2d.setTransform(1, 0, 0, 1, 0, 0);
+    ctx2d.clearRect(0, 0, canvas.width, canvas.height);
+    ctx2d.restore();
+  };
+  canvas._isOwnerBlank = () => {
+    const blank = document.createElement('canvas');
+    blank.width = canvas.width;
+    blank.height = canvas.height;
+    return canvas.toDataURL() === blank.toDataURL();
+  };
+  canvas._getSigDataUrl = () => {
+    if (canvas._isOwnerBlank()) return null;
+    return canvas.toDataURL('image/png');
+  };
+  canvas._ownerSigAttached = true;
+  // Re-size on window resize so the canvas matches its CSS box.
+  window.addEventListener('resize', sizeOwnerSigCanvas);
+}
+
+function ownerSigClear() {
+  const canvas = document.getElementById('ownerSigPad');
+  if (canvas && canvas._clearSig) canvas._clearSig();
+}
+
+async function ownerSigSave(method) {
+  const canvas = document.getElementById('ownerSigPad');
+  if (!canvas) return alert('Tanda tangan pad belum siap.');
+  const dataUrl = canvas._getSigDataUrl ? canvas._getSigDataUrl() : null;
+  if (!dataUrl) return alert('Belum ada tanda tangan. Gambar dulu di area putih.');
+  try {
+    await saveOwnerSignatureScan({ b64: dataUrl, method, via: 'canvas pad' });
+  } catch (e) {
+    alert('Gagal menyimpan tanda tangan: ' + e.message);
+  }
+}
+
+async function uploadOwnerSignature() {
+  const fileEl = document.getElementById('ownerSigUploadFile');
+  const viaEl = document.getElementById('ownerSigUploadVia');
+  const file = fileEl?.files?.[0];
+  if (!file) return alert('Pilih file gambar dulu.');
+  if (file.size > 1.5 * 1024 * 1024) {
+    return alert('Ukuran file maksimal 1.5 MB. Kompres dulu atau pilih file lain.');
+  }
+  if (!file.type.startsWith('image/')) {
+    return alert('File harus gambar (PNG/JPEG/WebP/GIF).');
+  }
+  const fd = new FormData();
+  fd.append('file', file);
+  if (viaEl?.value) fd.append('via', viaEl.value.trim().slice(0, 64));
+  try {
+    const res = await fetch(apiUrl('/api/admin/settings/owner-signature'), {
+      method: 'POST',
+      headers: { Authorization: 'Bearer ' + TOKEN },
+      body: fd
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || res.statusText);
+    alert('✅ Tanda tangan diupload (' + data.bytes + ' bytes, ' + data.mime + ').');
+    await loadCache();
+    renderSettings();
+  } catch (e) {
+    alert('Gagal upload: ' + e.message);
+  }
+}
+
+async function saveOwnerSignatureScan(opts) {
+  // opts = { b64, method, via }
+  // If `opts` is not provided, read from the scan tab form.
+  let b64, method, via;
+  if (opts) {
+    ({ b64, method, via } = opts);
+  } else {
+    b64 = document.getElementById('ownerSigScanB64')?.value?.trim();
+    method = document.getElementById('ownerSigScanMethod')?.value || 'ocr';
+    via = document.getElementById('ownerSigScanVia')?.value?.trim() || null;
+  }
+  if (!b64) return alert('Belum ada data base64. Paste gambar hasil scan/QR.');
+  try {
+    const res = await fetch(apiUrl('/api/admin/settings/owner-signature/scan'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + TOKEN },
+      body: JSON.stringify({ b64, method, via })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || res.statusText);
+    if (!opts) alert('✅ Tanda tangan dari ' + method + ' tersimpan (' + data.bytes + ' bytes, ' + data.mime + ').');
+    await loadCache();
+    renderSettings();
+  } catch (e) {
+    if (!opts) alert('Gagal simpan: ' + e.message);
+    throw e;
+  }
+}
+
+async function deleteOwnerSignature() {
+  if (!confirm('Hapus tanda tangan bidan/pemilik? Kwitansi yang dicetak setelah ini tidak akan menampilkan tanda tangan sampai yang baru di-upload.')) return;
+  try {
+    await api('/api/admin/settings/owner-signature', { method: 'DELETE' });
+    await loadCache();
+    renderSettings();
+  } catch (e) {
+    alert('Gagal hapus: ' + e.message);
+  }
+}
+
+// ===== KWITANSI PDF EXPORT (Direct download, no print dialog) =====
+// Three paper sizes supported. Default = A5 portrait — the most
+// common receipt size for Indonesian baby-spa / home-service
+// businesses. The @page CSS rules in the inline print template
+// (see printReceipt below) read this and bake the page size into
+// the generated PDF so the user's printer doesn't have to be
+// reconfigured.
+//
+// A4  : 210 × 297 mm — full letter size, for shops that use a
+//       normal printer with cut-to-size receipt printer paper.
+// A5  : 148 × 210 mm — half-letter, the default for kwitansi
+//       bayi/spa in Indonesia. Fits roughly 60% of the screen.
+// F4  : 215 × 330 mm — Folio (common in Indonesia for legal docs).
+// Thermal-80mm : 80 × auto mm — narrow thermal receipt printer
+//       (Epson TM-T82, etc.). Auto height = sum of content.
+// Thermal-58mm : 58 × auto mm — narrower thermal printer.
+//
+// The "lock layout" promise: no matter which size admin picks, the
+// content reflows to fit without text overlap. We achieve this by:
+//   1. Wrapping the invoice in a fixed-WIDTH container sized to
+//      match the chosen paper.
+//   2. Using `font-size: clamp(min, ideal, max)` so text shrinks
+//      proportionally when paper is narrow.
+//   3. Using `flex-wrap: wrap` on the 2-column footer so Penerima /
+//      Hormat kami stack vertically when there's no horizontal room.
+//   4. Hiding non-essential UI (signature pad, etc.) in the PDF
+//      output — only the clean receipt goes into the file.
+// ===== KWITANSI PDF EXPORT (Direct download, no print dialog) =====
+//
+// Paper-size aware PDF generation. Each size embeds its own page
+// dimensions so when the PDF is opened elsewhere + printed, the
+// user doesn't have to manually configure the print dialog.
+//
+// A4  : 210 × 297 mm — full letter, for shops using normal printers
+// A5  : 148 × 210 mm — kwitansi bayi/spa paling umum di Indonesia
+// F4  : 215 × 330 mm — Folio (legal docs in Indonesia)
+// Thermal-80mm : 80mm × auto — printer struk Epson TM-T82 dll
+// Thermal-58mm : 58mm × auto — printer struk kecil
+//
+// Lock layout promise: content reflows to fit, never overflows,
+// never overlaps. Implemented via:
+//   - Wrap pinned to paper width with explicit padding (6mm)
+//   - Inline <style> at top of wrap replicates .invoice CSS rules
+//     so html2canvas renders correctly even though the global CSS
+//     file isn't loaded for detached elements
+//   - Per-paper-size font scale (Thermal: 9pt, A5: 10pt, A4/F4: 11pt)
+//   - flex-wrap so 2-column footer stacks when paper is narrow
+//   - word-break: break-word on long strings (nama panjang, alamat)
+//
+// Library strategy: jsPDF + html2canvas bundled together. We do
+// NOT use html2pdf.js 0.10.x because its off-screen rendering +
+// pagebreak options are buggy and silently produce blank PDFs.
+const KW_PAPER_SIZES = {
+  'A5':           { width: 148, height: 210, label: 'A5 (148×210mm) — kwitansi bayi/spa',     icon: '📄', fontPt: 10 },
+  'A4':           { width: 210, height: 297, label: 'A4 (210×297mm) — full letter',         icon: '📃', fontPt: 11 },
+  'F4':           { width: 215, height: 330, label: 'F4 (215×330mm) — Folio legal',         icon: '📋', fontPt: 11 },
+  'Thermal-80mm': { width:  80, height:   0, label: 'Thermal 80mm (printer struk)',         icon: '🧾', fontPt:  9, autoHeight: true },
+  'Thermal-58mm': { width:  58, height:   0, label: 'Thermal 58mm (printer struk kecil)',   icon: '🧾', fontPt:  8, autoHeight: true }
+};
+
+// Load jsPDF and html2canvas once. Both bundled together from a
+// single CDN script. ~80KB gzipped combined. The library is loaded
+// as a UMD module that exposes jsPDF as window.jspdf.
+async function ensureJsPdfLoaded() {
+  if (window.jspdf && window.jspdf.jsPDF) return window.jspdf.jsPDF;
+  await new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js';
+    s.onload = () => resolve();
+    s.onerror = () => reject(new Error('Gagal memuat jsPDF dari CDN. Cek koneksi internet.'));
+    document.head.appendChild(s);
+  });
+  return window.jspdf.jsPDF;
+}
+
+async function ensureHtml2CanvasLoaded() {
+  if (typeof window.html2canvas === 'function') return window.html2canvas;
+  await new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js';
+    s.onload = () => resolve();
+    s.onerror = () => reject(new Error('Gagal memuat html2canvas dari CDN. Cek koneksi internet.'));
+    document.head.appendChild(s);
+  });
+  return window.html2canvas;
+}
+
+// Build the full inline-style block that replicates the .invoice
+// CSS from /css/style.css. We can't <link rel="stylesheet"> from
+// the off-screen DOM because html2canvas only captures inline + style
+// rules that are scoped to the element being rasterized.
+//
+// Note: this is a copy of the production CSS rules. If the global
+// /css/style.css .invoice rules ever change, mirror the changes
+// here. (Slight duplication for reliability.)
+function buildInvoiceInlineCSS(fontPt) {
+  return `
+    .kw-pdf-wrap { font-family: 'Plus Jakarta Sans','Helvetica Neue',Arial,sans-serif; color: #2a1822; font-size: ${fontPt}pt; line-height: 1.45; }
+    .kw-pdf-wrap, .kw-pdf-wrap * { box-sizing: border-box; }
+    .kw-pdf-wrap .invoice { width: 100%; background: white; border: 1px solid #f0e0e5; border-radius: 8px; padding: 5mm; margin: 0; }
+    .kw-pdf-wrap .invoice-header { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 4mm; padding-bottom: 3mm; border-bottom: 2px solid #ee5a8a; }
+    .kw-pdf-wrap .invoice-brand { display: flex; gap: 3mm; align-items: center; flex: 1 1 60%; min-width: 0; }
+    .kw-pdf-wrap .invoice-brand img { max-width: 20mm; max-height: 20mm; object-fit: contain; display: block; }
+    .kw-pdf-wrap .invoice-brand h2 { font-size: 1.2em; margin: 0 0 1mm; font-weight: 800; color: #2a1822; }
+    .kw-pdf-wrap .invoice-brand small { font-size: 0.85em; line-height: 1.4; color: #6a5a64; word-break: break-word; display: block; }
+    .kw-pdf-wrap .invoice-meta { text-align: right; flex: 0 0 auto; min-width: 0; }
+    .kw-pdf-wrap .invoice-meta strong { display: block; font-size: 0.95em; letter-spacing: 1px; color: #6a5a64; margin-bottom: 1mm; }
+    .kw-pdf-wrap .invoice-meta-no { display: block; font-size: 1.05em; font-weight: 700; color: #2a1822; margin-bottom: 1mm; }
+    .kw-pdf-wrap .invoice-meta small { font-size: 0.82em; color: #6a5a64; }
+    .kw-pdf-wrap .invoice-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4mm; margin: 4mm 0 3mm; }
+    .kw-pdf-wrap .invoice-block { min-width: 0; }
+    .kw-pdf-wrap .invoice-block h4 { font-size: 0.78em; text-transform: uppercase; letter-spacing: 0.5px; color: #8b6878; margin: 0 0 2mm; font-weight: 700; }
+    .kw-pdf-wrap .invoice-block-body { font-size: 0.95em; line-height: 1.45; word-break: break-word; margin: 0; color: #2a1822; }
+    .kw-pdf-wrap .invoice-table { width: 100%; border-collapse: collapse; margin: 3mm 0; font-size: 0.92em; table-layout: fixed; }
+    .kw-pdf-wrap .invoice-table thead { background: #ee5a8a; color: white; }
+    .kw-pdf-wrap .invoice-table th, .kw-pdf-wrap .invoice-table td { border-bottom: 1px solid #ffd6e2; padding: 2mm 2.5mm; text-align: left; word-break: break-word; vertical-align: top; }
+    .kw-pdf-wrap .invoice-table th { font-weight: 700; }
+    .kw-pdf-wrap .invoice-table th.num, .kw-pdf-wrap .invoice-table td.num { text-align: right; white-space: nowrap; }
+    .kw-pdf-wrap .totals { margin: 3mm 0; }
+    .kw-pdf-wrap .totals .row { display: flex; justify-content: space-between; padding: 1.5mm 0; font-size: 0.95em; border-bottom: 1px dashed #ffe0e8; }
+    .kw-pdf-wrap .totals .row.grand { font-weight: 800; font-size: 1.15em; border-top: 2px solid #ee5a8a; border-bottom: none; padding-top: 2.5mm; margin-top: 2mm; color: #2a1822; }
+    .kw-pdf-wrap .invoice-footer { margin-top: 4mm; padding-top: 3mm; border-top: 1px dashed #ffd6e2; }
+    .kw-pdf-wrap .footer-row { display: flex; gap: 4mm; flex-wrap: wrap; justify-content: space-between; align-items: flex-start; }
+    .kw-pdf-wrap .footer-col { flex: 1 1 45%; min-width: 0; }
+    .kw-pdf-wrap .footer-col.right { text-align: right; }
+    .kw-pdf-wrap .footer-label { font-size: 0.85em; color: #6a5a64; margin-bottom: 1mm; }
+    .kw-pdf-wrap .footer-name { border-top: 1px solid #2a1822; padding-top: 2mm; margin-top: 14mm; font-weight: 700; font-size: 1em; color: #2a1822; word-break: break-word; }
+    .kw-pdf-wrap .footer-col.right .footer-name { margin-top: 14mm; }
+    .kw-pdf-wrap #ownerSigEmbed { max-height: 16mm !important; max-width: 100% !important; height: auto !important; display: block; margin: 1mm 0 1mm auto !important; }
+    .kw-pdf-wrap .thank-you { text-align: center; margin-top: 5mm; padding-top: 3mm; border-top: 1px dashed #ffd6e2; font-size: 0.88em; color: #6a5a64; }
+    .kw-pdf-wrap .thank-you strong { color: #2a1822; display: block; margin-bottom: 1mm; font-size: 1.1em; }
+    .kw-pdf-wrap .kwitansi-time-chip { display: inline-block; margin: 1mm 1mm 1mm 0; padding: 1mm 2mm; background: #fff5f8; border: 1px solid #ffd6e2; border-radius: 6px; font-size: 0.82em; font-weight: 700; color: #ee5a8a; word-break: keep-all; }
+  `;
+}
+
+// Thermal-specific overrides: even tighter padding and smaller font
+// so a 58mm paper still fits a meaningful receipt.
+function buildThermalOverrides(fontPt) {
+  return `
+    .kw-pdf-wrap { font-size: ${fontPt}pt; }
+    .kw-pdf-wrap .invoice { padding: 2mm; border-radius: 0; border: none; }
+    .kw-pdf-wrap .invoice-header { padding-bottom: 2mm; gap: 2mm; border-bottom-width: 1px; }
+    .kw-pdf-wrap .invoice-brand img { max-width: 12mm; max-height: 12mm; }
+    .kw-pdf-wrap .invoice-brand h2 { font-size: 1.1em; }
+    .kw-pdf-wrap .invoice-brand small { font-size: 0.78em; line-height: 1.3; }
+    .kw-pdf-wrap .invoice-meta strong { font-size: 0.85em; }
+    .kw-pdf-wrap .invoice-meta-no { font-size: 0.95em; }
+    .kw-pdf-wrap .invoice-grid { grid-template-columns: 1fr; gap: 2mm; margin: 2mm 0; }
+    .kw-pdf-wrap .invoice-block h4 { font-size: 0.72em; margin-bottom: 1mm; }
+    .kw-pdf-wrap .invoice-block-body { font-size: 0.85em; line-height: 1.35; }
+    .kw-pdf-wrap .invoice-table { font-size: 0.82em; margin: 2mm 0; }
+    .kw-pdf-wrap .invoice-table th, .kw-pdf-wrap .invoice-table td { padding: 1mm 1.5mm; }
+    .kw-pdf-wrap .totals .row { padding: 0.8mm 0; font-size: 0.85em; }
+    .kw-pdf-wrap .totals .row.grand { font-size: 1em; }
+    .kw-pdf-wrap .invoice-footer { margin-top: 2mm; padding-top: 2mm; }
+    .kw-pdf-wrap .footer-row { flex-direction: column; gap: 3mm; }
+    .kw-pdf-wrap .footer-col { flex: 1 1 100%; }
+    .kw-pdf-wrap .footer-col.right { text-align: left; }
+    .kw-pdf-wrap .footer-label { font-size: 0.78em; }
+    .kw-pdf-wrap .footer-name { margin-top: 8mm; padding-top: 1mm; font-size: 0.92em; }
+    .kw-pdf-wrap .thank-you { margin-top: 2mm; padding-top: 2mm; font-size: 0.78em; }
+    .kw-pdf-wrap #ownerSigEmbed { max-height: 12mm !important; }
+    .kw-pdf-wrap .kwitansi-time-chip { font-size: 0.78em; padding: 0.8mm 1.5mm; }
+  `;
+}
+
+// Build the HTML body of the invoice (no <html>, no <head> —
+// html2canvas only needs the inner DOM). Returns a string.
+function buildKwitansiHtmlForExport(r) {
+  const items = Array.isArray(r.items) ? r.items : (r.items || JSON.parse(r.items_json || '[]'));
+  const biz = SETTINGS || {};
+  const logoSrc = biz.has_logo ? apiUrl('/api/logo') : null;
+  const times = (Array.isArray(r.service_times) && r.service_times.length)
+    ? r.service_times
+    : (r.service_time ? [r.service_time] : []);
+  const timesHtml = times.length
+    ? times.map((t) => `<span class="kwitansi-time-chip">⏰ ${esc(t)} WIB</span>`).join(' ')
+    : '<span style="color:#6a5a64;">—</span>';
+  const sessionsLabel = times.length > 1 ? ` <strong style="color:#ee5a8a;">${times.length} sesi</strong>` : '';
+  return `
+    <div class="invoice">
+      <div class="invoice-header">
+        <div class="invoice-brand">
+          ${logoSrc ? `<img src="${logoSrc}" alt="" crossorigin="anonymous">` : '<span style="font-size:2.4rem;">🌸</span>'}
+          <div>
+            <h2>${esc(biz.business_name || 'Adzkiya Mom Baby Care')}</h2>
+            <small>${esc(biz.tagline || 'Layanan Kesehatan Ibu & Anak Terpercaya')}<br>
+            ${esc(biz.address || '')}<br>
+            WA: ${esc(biz.phone || '085887018194')}</small>
+          </div>
+        </div>
+        <div class="invoice-meta">
+          <strong>KWITANSI</strong>
+          <span class="invoice-meta-no">${esc(r.invoice_no || '')}</span>
+          <small>${new Date(r.created_at).toLocaleDateString('id-ID', { day:'2-digit', month:'long', year:'numeric' })}</small>
+        </div>
+      </div>
+      <div class="invoice-grid">
+        <div class="invoice-block">
+          <h4>Kepada</h4>
+          <p class="invoice-block-body">
+            <strong>${esc(r.patient_name || '-')}</strong><br>
+            ${esc(r.whatsapp || '')}<br>
+            ${esc(r.address || '')}
+          </p>
+        </div>
+        <div class="invoice-block">
+          <h4>Tanggal & Waktu Layanan ${sessionsLabel}</h4>
+          <p class="invoice-block-body">
+            ${r.service_date ? new Date(r.service_date).toLocaleDateString('id-ID', { day:'2-digit', month:'long', year:'numeric' }) : '-'}
+            <div style="margin-top:2mm;">${timesHtml}</div>
+          </p>
+        </div>
+      </div>
+      <table class="invoice-table">
+        <thead><tr><th>Layanan</th><th class="num">Qty</th><th class="num">Harga</th><th class="num">Subtotal</th></tr></thead>
+        <tbody>
+          ${items.map(it => `<tr>
+            <td>${esc(it.name)}</td>
+            <td class="num">${it.qty}</td>
+            <td class="num">${fmtRp(it.price)}</td>
+            <td class="num">${fmtRp(it.price * it.qty)}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+      <div class="totals">
+        <div class="row"><span>Subtotal</span><span>${fmtRp(r.subtotal)}</span></div>
+        ${r.transport_fee ? `<div class="row"><span>Transportasi</span><span>${fmtRp(r.transport_fee)}</span></div>` : ''}
+        ${r.discount ? `<div class="row"><span>Diskon</span><span>-${fmtRp(r.discount)}</span></div>` : ''}
+        <div class="row grand"><span>TOTAL</span><span>${fmtRp(r.total)}</span></div>
+      </div>
+      <div class="invoice-footer">
+        <div class="footer-row">
+          <div class="footer-col">
+            <div class="footer-label">Penerima,</div>
+            <div class="footer-name">${esc(r.patient_name || '-')}</div>
+            <div class="footer-label" style="margin-top:1mm;">Nama jelas &amp; tanda tangan</div>
+          </div>
+          <div class="footer-col right">
+            <div class="footer-label">Hormat kami,</div>
+            <img id="ownerSigEmbed" alt="" crossorigin="anonymous" />
+            <div id="ownerSigUnderline" class="footer-name"><em>${esc(biz.practitioner || 'Tasya Hanifah Pramesti, A.Md. Keb., CBME')}</em></div>
+            <div class="footer-label" style="margin-top:1mm;">${esc(biz.business_name || 'Adzkiya Mom Baby Care')}</div>
+          </div>
+        </div>
+        <div class="thank-you">
+          <strong>Terima kasih atas kepercayaan Anda 🌸</strong>
+          Kwitansi ini sah dan diproses secara elektronik oleh sistem.
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// Main entry point. r = receipt object, paperSize = KW_PAPER_SIZES key.
+async function saveKwitansiAsPDF(r, paperSize) {
+  const ps = KW_PAPER_SIZES[paperSize] || KW_PAPER_SIZES['A5'];
+  const isThermal = !!ps.autoHeight;
+
+  // Step 1: build off-screen DOM. Use position:fixed with z-index:-1
+  // + opacity:0 so html2canvas still rasterizes (it skips elements
+  // with display:none or visibility:hidden but NOT opacity:0).
+  const wrap = document.createElement('div');
+  wrap.className = 'kw-pdf-wrap';
+  // Padding 0 because the .invoice inside has its own 5mm padding.
+  wrap.style.cssText = [
+    'position:fixed',
+    'left:0',
+    'top:0',
+    'z-index:-1',
+    'opacity:0',
+    'pointer-events:none',
+    'background:white',
+    'color:#2a1822',
+    `width:${ps.width}mm`,
+    'padding:0',
+    'margin:0',
+    'box-sizing:border-box',
+    'font-family:"Plus Jakarta Sans","Helvetica Neue",Arial,sans-serif'
+  ].join(';');
+
+  // Inject the inline <style> block FIRST so subsequent elements
+  // inherit the rules. We append it as a child <style> node, NOT
+  // to document.head, so the rules only apply to this wrap.
+  const style = document.createElement('style');
+  style.textContent = buildInvoiceInlineCSS(ps.fontPt) + (isThermal ? buildThermalOverrides(ps.fontPt) : '');
+  wrap.appendChild(style);
+
+  // Inject the invoice HTML as a child.
+  const body = document.createElement('div');
+  body.innerHTML = buildKwitansiHtmlForExport(r);
+  wrap.appendChild(body);
+
+  document.body.appendChild(wrap);
+
+  // Step 2: populate owner signature (if any) so it renders into
+  // the captured canvas. We wait for FileReader explicitly so
+  // html2canvas captures the loaded image (otherwise the img.src
+  // is set but image data isn't loaded yet when canvas is drawn).
+  const ownerImg = wrap.querySelector('#ownerSigEmbed');
+  const ownerUnderline = wrap.querySelector('#ownerSigUnderline');
+  const wantOwner = !!(SETTINGS && SETTINGS.has_owner_signature);
+  if (wantOwner && ownerImg) {
+    try {
+      const r2 = await fetch(apiUrl('/api/owner-signature'), { credentials: 'omit' });
+      if (r2.ok) {
+        const blob = await r2.blob();
+        // Convert blob → data URL via FileReader (NOT URL.createObjectURL,
+        // because createObjectURL'd images may not be in the same origin
+        // for html2canvas's tainting check).
+        const dataUrl = await new Promise((resolve, reject) => {
+          const fr = new FileReader();
+          fr.onload = () => resolve(fr.result);
+          fr.onerror = () => reject(new Error('FileReader gagal'));
+          fr.readAsDataURL(blob);
+        });
+        ownerImg.src = dataUrl;
+        ownerImg.style.display = 'block';
+        if (ownerUnderline) ownerUnderline.style.marginTop = '2mm';
+        // Wait for the image to actually load in DOM before snapshot
+        await new Promise((resolve) => {
+          if (ownerImg.complete && ownerImg.naturalWidth > 0) resolve();
+          else ownerImg.onload = () => resolve();
+        });
+      } else if (ownerUnderline) {
+        ownerUnderline.style.marginTop = '14mm';
+      }
+    } catch (e) {
+      console.warn('Owner signature fetch failed:', e);
+      if (ownerUnderline) ownerUnderline.style.marginTop = '14mm';
+    }
+  } else if (ownerUnderline) {
+    ownerUnderline.style.marginTop = '14mm';
+  }
+
+  // Step 3: load jsPDF + html2canvas from CDN. Both UMD modules.
+  const jsPDF = await ensureJsPdfLoaded();
+  const html2canvas = await ensureHtml2CanvasLoaded();
+
+  // Step 4: rasterize the wrap to canvas. Force a synchronous layout
+  // pass so getBoundingClientRect returns the post-style values
+  // (not the initial 0).
+  wrap.getBoundingClientRect();
+  const wrapHeightPx = wrap.offsetHeight;
+  // Step 5: rasterize to canvas.
+  let canvas;
+  try {
+    canvas = await html2canvas(wrap, {
+      scale: 2, // 2x for crisp output on retina/print
+      backgroundColor: '#ffffff',
+      useCORS: true,
+      logging: false,
+      // Critical: html2canvas needs to know the wrap's height
+      // explicitly when computing the canvas. Without `windowHeight`,
+      // it sometimes uses just the viewport height and clips.
+      windowWidth: Math.max(wrap.scrollWidth, wrap.offsetWidth),
+      windowHeight: Math.max(wrap.scrollHeight, wrap.offsetHeight),
+      scrollX: 0,
+      scrollY: 0
+    });
+  } catch (e) {
+    document.body.removeChild(wrap);
+    throw new Error('Gagal render kwitansi ke canvas: ' + e.message);
+  }
+
+  // Step 6: compute PDF dimensions.
+  // Canvas dimensions are in pixels at scale=2. Convert to mm
+  // using the same scale factor (96 DPI standard for screen → mm).
+  //   px → mm:  px / 96 * 25.4
+  //   But because we used scale=2, canvas pixels are 2x the layout
+  //   pixels. So the conversion is: (canvas.px / 2) / 96 * 25.4
+  const pxPerMm = 96 / 25.4; // layout pixels per mm
+  const canvasWidthMm = canvas.width / 2 / pxPerMm;
+  const canvasHeightMm = canvas.height / 2 / pxPerMm;
+
+  // For thermal: use canvas height as the page height (auto-fit).
+  // For fixed sizes: cap to the paper height — if content is shorter
+  // than the paper, that's fine (PDF will have whitespace at the
+  // bottom). We don't auto-shrink because that would force the
+  // next receipt to a different page size, which is confusing.
+  let pageWidthMm, pageHeightMm;
+  if (isThermal) {
+    pageWidthMm = ps.width;
+    pageHeightMm = Math.max(canvasHeightMm, 50); // min 50mm so an empty receipt is still printable
+  } else {
+    pageWidthMm = ps.width;
+    pageHeightMm = ps.height;
+  }
+
+  // Step 7: instantiate jsPDF with the right format. Different rules
+  // per size:
+  //   • jsPDF native formats ('a4', 'a5') → pass the name directly
+  //   • Custom sizes (F4, Thermal) → pass an explicit [w, h] array
+  // jsPDF does NOT recognize 'f4' as a known format name — passing it
+  // as a string would silently fall back to Letter size, producing a
+  // wrong-sized PDF. Always pass F4 as an explicit width/height array.
+  let pdf;
+  if (isThermal || paperSize === 'F4') {
+    pdf = new jsPDF({
+      unit: 'mm',
+      format: [pageWidthMm, pageHeightMm],
+      orientation: pageWidthMm > pageHeightMm ? 'landscape' : 'portrait'
+    });
+  } else {
+    pdf = new jsPDF({
+      unit: 'mm',
+      format: paperSize.toLowerCase(), // 'a5' or 'a4' — both are jsPDF native
+      orientation: 'portrait'
+    });
+  }
+
+  // Step 8: add the rasterized image to the PDF, sized to the page.
+  const imgData = canvas.toDataURL('image/jpeg', 0.95);
+  // Scale image to fit page width, preserving aspect ratio.
+  const targetWidth = pageWidthMm;
+  const targetHeight = (canvasHeightMm / canvasWidthMm) * pageWidthMm;
+  // If image is taller than page (rare with our padding rules), scale
+  // it down to fit page height. For thermal autoHeight this never
+  // triggers because we sized the page to match.
+  let drawWidth = targetWidth;
+  let drawHeight = targetHeight;
+  if (drawHeight > pageHeightMm && !isThermal) {
+    drawHeight = pageHeightMm;
+    drawWidth = (canvasWidthMm / canvasHeightMm) * pageHeightMm;
+  }
+  pdf.addImage(imgData, 'JPEG', 0, 0, drawWidth, drawHeight, undefined, 'FAST');
+
+  // Step 9: trigger browser download. jsPDF's .save() does this
+  // by creating a temporary <a download> and clicking it.
+  const filename = (r.invoice_no || 'kwitansi') + '.pdf';
+  try {
+    pdf.save(filename);
+  } finally {
+    document.body.removeChild(wrap);
+  }
+}
+
+
+
 // INIT
 if (API_BASE) {
   document.querySelectorAll('.brand-logo img').forEach((image) => { image.src = apiUrl('/api/logo'); });
   const favicon = document.querySelector('link[rel="icon"]');
   if (favicon) favicon.href = apiUrl('/api/logo');
 }
+// If admin.html's Chart.js multi-CDN fallback exhausts every option,
+// flip a global flag so drawCharts() can route to its HTML-table
+// fallback instead of trying to instantiate Chart() in vain.
+window.addEventListener('chartjs:unavailable', () => { window.__chartJsFailed = true; });
 if (TOKEN && USER) {
   api('/api/admin/stats').then(() => showApp()).catch(() => showLogin());
 } else {

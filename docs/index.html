@@ -8,16 +8,16 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Playfair+Display:wght@600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="css/style.css">
-<link rel="icon" href="img/logo.png" type="image/png">
+<link rel="stylesheet" href="/css/style.css">
+<link rel="icon" href="/api/logo">
 </head>
 <body>
 
 <nav class="nav">
   <div class="nav-inner">
-    <a href="index.html" class="brand">
-      <div class="brand-logo">
-        <img src="img/logo.png" alt="Adzkiya" onerror="this.parentElement.innerHTML='🌸';this.parentElement.classList.add('fallback');" style="width:100%;height:100%;object-fit:contain;">
+    <a href="/" class="brand">
+      <div class="brand-logo" id="brandLogoImg">
+        <img src="/api/logo" alt="Adzkiya" onerror="this.parentElement.innerHTML='🌸';this.parentElement.classList.add('fallback');" style="width:100%;height:100%;object-fit:contain;">
       </div>
       <div class="brand-text">
         <span id="brandName">Adzkiya Mom Baby Care</span>
@@ -30,10 +30,10 @@
       <a href="#layanan">Layanan</a>
       <a href="#tentang">Tentang</a>
       <a href="#testimoni">Testimoni</a>
-      <a href="kalender.html">Kalender</a>
+      <a href="/kalender.html">Kalender</a>
       <a href="#kontak">Kontak</a>
       <button class="theme-toggle" id="themeToggle" title="Toggle theme">🌙</button>
-      <a href="reservasi.html" class="btn-nav">Reservasi</a>
+      <a href="/reservasi.html" class="btn-nav">Reservasi</a>
     </div>
   </div>
 </nav>
@@ -47,7 +47,7 @@
       <h1>Sentuhan Lembut untuk <span>Bunda & Si Kecil</span></h1>
       <p class="lead" id="heroTagline">Spa, massage, dan perawatan profesional khusus ibu hamil, nifas, bayi, balita & kids. Dipandu bidan tersertifikasi langsung ke rumah Anda.</p>
       <div class="hero-ctas">
-        <a href="reservasi.html" class="btn btn-primary">📅 Reservasi Sekarang</a>
+        <a href="/reservasi.html" class="btn btn-primary">📅 Reservasi Sekarang</a>
         <a href="https://wa.me/6285887018194?text=Halo%20Adzkiya%20Mom%20Baby%20Care%2C%20saya%20ingin%20bertanya" target="_blank" class="btn btn-wa">💬 Chat WhatsApp</a>
       </div>
       <div class="hero-stats">
@@ -59,7 +59,7 @@
     <div class="hero-visual" id="heroVisual">
       <div class="hero-blob"></div>
       <div class="hero-logo-wrap" id="heroLogoWrap">
-        <img src="img/logo.png" alt="Adzkiya" id="heroLogoImg" onerror="document.getElementById('heroLogoWrap').innerHTML='<div class=hero-emoji>🤱</div>'">
+        <img src="/api/logo" alt="Adzkiya" id="heroLogoImg" onerror="document.getElementById('heroLogoWrap').innerHTML='<div class=hero-emoji>🤱</div>'">
       </div>
       <div class="float-card fc1"><div class="ic" style="background:var(--pink-400)">💆</div>Mom Spa<br><small style="color:var(--text-soft);font-weight:500">Mulai 80rb</small></div>
       <div class="float-card fc2"><div class="ic" style="background:var(--peach-300)">👶</div>Baby Treatment<br><small style="color:var(--text-soft);font-weight:500">Mulai 25rb</small></div>
@@ -102,7 +102,7 @@
   <div class="container">
     <div class="about-grid">
       <div class="about-visual" id="aboutVisual">
-        <img src="img/logo.png" alt="Adzkiya" onerror="this.parentElement.innerHTML='🌷'" style="width:65%;height:auto;object-fit:contain;">
+        <img src="/api/logo" alt="Adzkiya" onerror="this.parentElement.innerHTML='🌷'" style="width:65%;height:auto;object-fit:contain;">
       </div>
       <div class="about-content">
         <span class="section-eyebrow">Tentang Adzkiya</span>
@@ -129,7 +129,9 @@
       <h2>Testimoni Pelanggan</h2>
       <p>Cerita nyata dari ibu-ibu yang sudah mempercayakan perawatan kepada kami.</p>
     </div>
-    <div class="testi-grid" id="testiGrid"></div>
+    <div class="testi-grid" id="testiGrid">
+      <div style="text-align:center;color:var(--text-soft);grid-column:1/-1;padding:30px;">Memuat testimoni...</div>
+    </div>
     <div style="text-align:center;margin-top:30px;">
       <a id="gmapsBtn" href="https://maps.app.goo.gl/V5RcUDQbep3T5ryp7" target="_blank" rel="noopener" class="btn btn-primary">
         ⭐ Lihat Semua Ulasan di Google Maps
@@ -153,7 +155,7 @@
       <div class="contact-card"><div class="icn">🚗</div><strong>Jenis Layanan</strong><span>Home Service (Bidan ke rumah)</span></div>
       <div class="contact-card" style="grid-column:span 2;">
         <div class="icn">🕒</div><strong>Jam Operasional</strong>
-        <div id="hoursList" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:6px;margin-top:8px;width:100%;font-size:0.88rem;text-align:left;"></div>
+        <div id="hoursList" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:6px;margin-top:8px;width:100%;font-size:0.88rem;text-align:left;">Memuat...</div>
       </div>
       <div class="contact-card" style="grid-column:span 2;" id="socialContactCard" style="display:none;">
         <div class="icn">🌐</div><strong>Media Sosial</strong>
@@ -161,13 +163,11 @@
       </div>
       <div class="contact-card" style="grid-column:span 2;" id="gmapsCard">
         <div class="icn">📍</div><strong>Lokasi di Google Maps</strong>
-        <div id="gmapsWrap" style="width:100%;margin-top:10px;border-radius:14px;overflow:hidden;">
-          <a href="https://maps.app.goo.gl/V5RcUDQbep3T5ryp7" target="_blank" rel="noopener" style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:30px;background:linear-gradient(135deg,#ffe2ed,#fff1e1);border-radius:14px;text-decoration:none;color:var(--pink-700);font-weight:700;">🗺️ Buka di Google Maps →</a>
-        </div>
+        <div id="gmapsWrap" style="width:100%;margin-top:10px;border-radius:14px;overflow:hidden;"></div>
       </div>
     </div>
     <div style="text-align:center; margin-top:40px;">
-      <a href="reservasi.html" class="btn btn-primary">📅 Reservasi Sekarang</a>
+      <a href="/reservasi.html" class="btn btn-primary">📅 Reservasi Sekarang</a>
     </div>
   </div>
 </section>
@@ -178,44 +178,31 @@
       © 2026 <span id="footerBrand">Adzkiya Mom Baby Care</span> · Layanan Kesehatan Ibu & Anak Terpercaya
       <div id="socialLinks" style="display:flex;gap:12px;margin-top:10px;flex-wrap:wrap;"></div>
     </div>
+    <div><a href="/admin">Admin Login</a></div>
   </div>
 </footer>
 
-<script src="js/api-config.js"></script>
-<script src="js/main.js"></script>
+<script src="/js/main.js"></script>
 <script>
-// Render static fallback first, then re-render when live settings arrive.
-function applyPublicSettings(s) {
+// Load business settings to update name/contact/hero
+fetch('/api/public-settings').then(r => r.json()).then(s => {
   if (s.business_name) {
     document.getElementById('brandName').textContent = s.business_name;
     document.getElementById('footerBrand').textContent = s.business_name;
-    document.title = s.business_name + ' — ' + (s.tagline || '');
+    document.title = `${s.business_name} — ${s.tagline || ''}`;
   }
   if (s.tagline) document.getElementById('heroTagline').textContent = s.tagline;
-  if (s.primary_color) document.documentElement.style.setProperty('--pink-500', s.primary_color);
-  if (s.accent_color) document.documentElement.style.setProperty('--peach-400', s.accent_color);
-  if (s.has_logo) {
-    document.querySelectorAll('img[src="img/logo.png"]').forEach(function(img) {
-      img.src = publicApiUrl('/api/logo') + '?v=' + Date.now();
-    });
-    var favicon = document.querySelector('link[rel="icon"]');
-    if (favicon) favicon.href = publicApiUrl('/api/logo');
-  }
-  if (s.has_hero) {
-    var heroBg = document.getElementById('heroBg');
-    if (heroBg) {
-      heroBg.style.backgroundImage = 'linear-gradient(rgba(255,255,255,.72),rgba(255,255,255,.72)),url("' + publicApiUrl('/api/hero') + '?v=' + Date.now() + '")';
-      heroBg.style.backgroundSize = 'cover';
-      heroBg.style.backgroundPosition = 'center';
-    }
-  }
   if (s.address) document.getElementById('contactAddress').textContent = s.address;
   if (s.phone) {
     const intl = s.phone.replace(/[^\d]/g, '').replace(/^0/, '62');
-    document.getElementById('contactPhone').innerHTML = '<a href="https://wa.me/' + intl + '" target="_blank">' + s.phone + '</a>';
+    document.getElementById('contactPhone').innerHTML = `<a href="https://wa.me/${intl}" target="_blank">${s.phone}</a>`;
   }
   if (s.area) document.getElementById('contactArea').textContent = s.area;
   if (s.practitioner) document.getElementById('practitionerName').textContent = s.practitioner.split(',')[0];
+  if (s.has_hero) {
+    document.getElementById('heroBg').style.backgroundImage = `url(/api/hero)`;
+    document.getElementById('heroBg').classList.add('active');
+  }
 
   // Testimoni
   const tg = document.getElementById('testiGrid');
@@ -224,57 +211,76 @@ function applyPublicSettings(s) {
     if (!list.length) {
       tg.innerHTML = '<div style="text-align:center;color:var(--text-soft);grid-column:1/-1;padding:30px;">Belum ada testimoni.</div>';
     } else {
-      tg.innerHTML = list.map(function(t) {
-        var stars = '★'.repeat(t.rating || 5) + '☆'.repeat(5 - (t.rating || 5));
-        var initial = (t.name || '?').trim().charAt(0).toUpperCase();
-        var safe = function(str) { return String(str || '').replace(/[<>&]/g, function(c) { return {'<':'&lt;','>':'&gt;','&':'&amp;'}[c]; }); };
-        return '<div class="testi-card">' +
-          '<div class="testi-head">' +
-            '<div class="testi-avatar">' + safe(initial) + '</div>' +
-            '<div>' +
-              '<div class="testi-name">' + safe(t.name) + '</div>' +
-              '<div class="testi-stars">' + stars + '</div>' +
-            '</div>' +
-          '</div>' +
-          '<p class="testi-text">"' + safe(t.text) + '"</p>' +
-          '<div class="testi-src">— ' + safe(t.source || 'Google Maps') + '</div>' +
-        '</div>';
+      tg.innerHTML = list.map(t => {
+        const stars = '★'.repeat(t.rating || 5) + '☆'.repeat(5 - (t.rating || 5));
+        const initial = (t.name || '?').trim().charAt(0).toUpperCase();
+        const safe = (str) => String(str || '').replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
+        return `
+          <div class="testi-card">
+            <div class="testi-head">
+              <div class="testi-avatar">${safe(initial)}</div>
+              <div>
+                <div class="testi-name">${safe(t.name)}</div>
+                <div class="testi-stars">${stars}</div>
+              </div>
+            </div>
+            <p class="testi-text">"${safe(t.text)}"</p>
+            <div class="testi-src">— ${safe(t.source || 'Google Maps')}</div>
+          </div>
+        `;
       }).join('');
     }
   }
   if (s.gmaps_url) {
-    var btn = document.getElementById('gmapsBtn');
+    const btn = document.getElementById('gmapsBtn');
     if (btn) btn.href = s.gmaps_url;
   }
 
   // Jam Operasional
-  var hEl = document.getElementById('hoursList');
+  const hEl = document.getElementById('hoursList');
   if (hEl && Array.isArray(s.hours) && s.hours.length) {
-    var todayIdx = (new Date().getDay() + 6) % 7; // 0=Senin
-    hEl.innerHTML = s.hours.map(function(h, i) {
-      var isToday = (i === todayIdx);
-      return '<div style="display:flex;justify-content:space-between;padding:6px 10px;border-radius:8px;' + (isToday ? 'background:var(--pink-100);font-weight:700;color:var(--pink-700);' : '') + '">' +
-        '<span>' + h.day + (isToday ? ' (Hari ini)' : '') + '</span>' +
-        '<span>' + (h.closed ? '<em style="color:#c43050;">Tutup</em>' : h.open + ' – ' + h.close) + '</span>' +
-      '</div>';
-    }).join('');
+    const todayIdx = (new Date().getDay() + 6) % 7; // 0=Senin
+    hEl.innerHTML = s.hours.map((h, i) => `
+      <div style="display:flex;justify-content:space-between;padding:6px 10px;border-radius:8px;${i === todayIdx ? 'background:var(--pink-100);font-weight:700;color:var(--pink-700);' : ''}">
+        <span>${h.day}${i === todayIdx ? ' (Hari ini)' : ''}</span>
+        <span>${h.closed ? '<em style="color:#c43050;">Tutup</em>' : `${h.open} – ${h.close}`}</span>
+      </div>
+    `).join('');
   }
 
-  // Socials
-  var socials = Array.isArray(s.socials) ? s.socials.filter(function(x) { return x && x.url; }) : [];
-  if (s.instagram && !socials.find(function(x) { return /instagram/i.test(x.platform); })) {
-    var url = s.instagram.trim();
-    if (!/^https?:\/\//i.test(url)) url = 'https://instagram.com/' + url.replace(/^@/, '');
-    socials.unshift({ platform: 'Instagram', icon: '📷', url: url });
+  // Google Maps embed (or link card)
+  const gw = document.getElementById('gmapsWrap');
+  const gcard = document.getElementById('gmapsCard');
+  if (s.gmaps_embed && gw) {
+    // Sanitize: keep only iframe tag
+    const m = s.gmaps_embed.match(/<iframe[^>]*src=["']([^"']+)["'][^>]*><\/iframe>/i);
+    if (m) {
+      gw.innerHTML = `<iframe src="${m[1]}" style="width:100%;height:280px;border:0;" loading="lazy" referrerpolicy="no-referrer-when-downgrade"></iframe>`;
+    } else {
+      gw.innerHTML = s.gmaps_embed;
+    }
+  } else if (s.gmaps_url && gw) {
+    gw.innerHTML = `<a href="${s.gmaps_url}" target="_blank" rel="noopener" style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:30px;background:linear-gradient(135deg,#ffe2ed,#fff1e1);border-radius:14px;text-decoration:none;color:var(--pink-700);font-weight:700;">🗺️ Buka di Google Maps →</a>`;
+  } else if (gcard) {
+    gcard.style.display = 'none';
   }
-  var footerSocial = document.getElementById('socialLinks');
-  var contactSocial = document.getElementById('socialContactList');
-  var contactCard = document.getElementById('socialContactCard');
+
+  // Socials (footer + contact)
+  const socials = Array.isArray(s.socials) ? s.socials.filter(x => x && x.url) : [];
+  // Auto-add IG legacy field if present and not duplicated
+  if (s.instagram && !socials.find(x => /instagram/i.test(x.platform))) {
+    let url = s.instagram.trim();
+    if (!/^https?:\/\//i.test(url)) url = 'https://instagram.com/' + url.replace(/^@/, '');
+    socials.unshift({ platform: 'Instagram', icon: '📷', url });
+  }
+  const footerSocial = document.getElementById('socialLinks');
+  const contactSocial = document.getElementById('socialContactList');
+  const contactCard = document.getElementById('socialContactCard');
   if (socials.length) {
-    var html = socials.map(function(soc) {
-      var icon = soc.icon || '🌐';
-      var socUrl = soc.url.indexOf('http') === 0 ? soc.url : 'https://' + soc.url;
-      return '<a href="' + socUrl + '" target="_blank" rel="noopener" title="' + soc.platform + '" style="display:inline-flex;align-items:center;gap:6px;padding:8px 14px;background:var(--pink-100);color:var(--pink-700);border-radius:999px;text-decoration:none;font-weight:700;font-size:0.88rem;transition:all .15s;">' + icon + ' ' + soc.platform + '</a>';
+    const html = socials.map(soc => {
+      const icon = soc.icon || '🌐';
+      const url = soc.url.startsWith('http') ? soc.url : 'https://' + soc.url;
+      return `<a href="${url}" target="_blank" rel="noopener" title="${soc.platform}" style="display:inline-flex;align-items:center;gap:6px;padding:8px 14px;background:var(--pink-100);color:var(--pink-700);border-radius:999px;text-decoration:none;font-weight:700;font-size:0.88rem;transition:all .15s;">${icon} ${soc.platform}</a>`;
     }).join('');
     if (footerSocial) footerSocial.innerHTML = html;
     if (contactSocial) contactSocial.innerHTML = html;
@@ -282,10 +288,6 @@ function applyPublicSettings(s) {
   } else {
     if (contactCard) contactCard.style.display = 'none';
   }
-}
-applyPublicSettings(SETTINGS_DATA);
-window.addEventListener('adzkiya:settings', function(event) {
-  applyPublicSettings(event.detail);
 });
 </script>
 </body>
