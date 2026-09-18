@@ -4035,6 +4035,80 @@ async function renderSettings() {
         </div>
       </div>
 
+      <div class="setting-card" style="border:2px solid #7c3aed;background:linear-gradient(135deg,#f5f3ff 0%,#fff5f8 100%);">
+        <h3 style="display:flex;align-items:center;gap:8px;">🤖 AI Booking Assistant <span id="aiAssistantStatusBadge" style="font-size:0.72rem;padding:2px 8px;border-radius:999px;background:#e5e7eb;color:#374151;font-weight:700;letter-spacing:0.5px;">CHECKING…</span></h3>
+        <p style="color:var(--text-soft);font-size:0.85rem;margin:6px 0 14px;line-height:1.5;">
+          Otomatiskan customer service 24/7. AI menjawab chat di beranda + WA Business, bantu pilih layanan, dan arahkan ke admin untuk konfirmasi final.
+          <br><strong>Dual AI:</strong> Google Gemini (free tier) sebagai primary, OpenRouter sebagai fallback otomatis.
+        </p>
+
+        <!-- Toggle on/off -->
+        <label style="display:flex;align-items:center;gap:10px;padding:12px;background:white;border:1.5px solid var(--border);border-radius:10px;margin-bottom:12px;cursor:pointer;">
+          <input type="checkbox" id="aiAssistantEnabled" style="width:20px;height:20px;cursor:pointer;accent-color:#7c3aed;">
+          <div style="flex:1;">
+            <div style="font-weight:700;color:var(--text);">Aktifkan AI Assistant</div>
+            <div style="font-size:0.78rem;color:var(--text-soft);">Chat widget di beranda + auto-reply WA Business akan aktif</div>
+          </div>
+        </label>
+
+        <!-- API keys section -->
+        <div style="background:white;border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:12px;">
+          <div style="font-weight:700;color:var(--text);font-size:0.92rem;margin-bottom:10px;">🔑 API Keys</div>
+
+          <div class="form-group">
+            <label>🤖 Google Gemini API Key <span style="color:var(--text-soft);font-weight:500;">(primary, gratis di ai.google.dev)</span></label>
+            <input type="password" id="aiGeminiKey" placeholder="AIzaSy..." style="font-family:monospace;font-size:0.85rem;">
+            <small style="color:var(--text-soft);display:block;margin-top:4px;">Dapatkan gratis di <a href="https://aistudio.google.com/apikey" target="_blank" style="color:#7c3aed;">aistudio.google.com/apikey</a></small>
+          </div>
+
+          <div class="form-group" style="margin-top:10px;">
+            <label>🌐 OpenRouter API Key <span style="color:var(--text-soft);font-weight:500;">(fallback)</span></label>
+            <input type="password" id="aiOpenRouterKey" placeholder="sk-or-v1-..." style="font-family:monospace;font-size:0.85rem;">
+            <small style="color:var(--text-soft);display:block;margin-top:4px;">Dapatkan di <a href="https://openrouter.ai/keys" target="_blank" style="color:#7c3aed;">openrouter.ai/keys</a> (opsional, sebagai backup)</small>
+          </div>
+        </div>
+
+        <!-- WA Business API section -->
+        <details style="background:white;border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:12px;">
+          <summary style="cursor:pointer;font-weight:700;color:var(--text);font-size:0.92rem;">📱 WhatsApp Business API (opsional, untuk auto-reply WA)</summary>
+          <div style="margin-top:12px;padding-top:12px;border-top:1px dashed var(--border);font-size:0.84rem;color:var(--text-soft);line-height:1.6;">
+            <p style="margin:0 0 8px;">Setup WA Business API di <a href="https://developers.facebook.com/apps" target="_blank" style="color:#7c3aed;">Meta for Developers</a>. Butuh app + WhatsApp product + phone number terverifikasi. Setelah dapat credentials:</p>
+          </div>
+          <div class="form-group" style="margin-top:10px;">
+            <label>Phone Number ID</label>
+            <input type="text" id="aiWaPhoneId" placeholder="123456789012345" style="font-family:monospace;font-size:0.85rem;">
+          </div>
+          <div class="form-group" style="margin-top:10px;">
+            <label>Access Token (permanent)</label>
+            <input type="password" id="aiWaAccessToken" placeholder="EAAxxxxxxx..." style="font-family:monospace;font-size:0.85rem;">
+          </div>
+          <div class="form-group" style="margin-top:10px;">
+            <label>Webhook Verify Token <span style="color:var(--text-soft);font-weight:500;">(string apa saja, untuk verifikasi webhook)</span></label>
+            <input type="text" id="aiWaVerifyToken" placeholder="adzkiya-verify-2026" style="font-family:monospace;font-size:0.85rem;">
+          </div>
+          <div class="form-group" style="margin-top:10px;">
+            <label>📍 Webhook URL <span style="color:var(--text-soft);font-weight:500;">(paste di Meta Dashboard)</span></label>
+            <div style="display:flex;gap:6px;">
+              <input type="text" id="aiWebhookUrl" readonly style="font-family:monospace;font-size:0.82rem;background:#f9fafb;flex:1;">
+              <button type="button" onclick="(function(){const el=document.getElementById('aiWebhookUrl');el.select();document.execCommand('copy');})()" style="padding:6px 12px;background:#7c3aed;color:white;border:none;border-radius:8px;cursor:pointer;font-size:0.82rem;">Copy</button>
+            </div>
+          </div>
+        </details>
+
+        <!-- Custom persona prompt -->
+        <div class="form-group" style="margin-top:8px;">
+          <label>🎭 Custom Persona Prompt <span style="color:var(--text-soft);font-weight:500;">(opsional, override default instructions)</span></label>
+          <textarea id="aiBasePrompt" rows="3" placeholder="Kosongkan untuk pakai default. Tambahkan instruksi khusus misal: 'Selalu sebut diskon 10% untuk paket 4 sesi'"></textarea>
+        </div>
+
+        <!-- Save button -->
+        <div style="display:flex;gap:8px;align-items:center;margin-top:12px;">
+          <button type="button" id="aiAssistantSaveBtn" class="btn btn-primary" style="flex:1;justify-content:center;padding:10px 16px;background:#7c3aed;">💾 Simpan Konfigurasi AI</button>
+          <button type="button" id="aiAssistantLogsBtn" class="btn btn-outline" style="padding:10px 14px;">📋 Log Percakapan</button>
+        </div>
+        <div id="aiAssistantFeedback" style="margin-top:10px;font-size:0.84rem;"></div>
+      </div>
+
       <div class="setting-card">
         <h3>ℹ️ Tentang Sistem</h3>
         <div style="font-size:0.92rem;color:var(--text-soft);line-height:1.8;">
@@ -4054,6 +4128,113 @@ async function renderSettings() {
   renderSocials();
   renderTestimonials();
   renderBlackouts();
+  // Phase 3: AI Assistant settings
+  wireAIAssistantSettings();
+}
+
+// Wire up AI Assistant settings panel — called after renderSettings.
+// Reads/writes SETTINGS.ai_* fields directly (they come back from /api/admin/settings
+// with has_* flags; secret keys are read from a separate /api/admin/ai/config endpoint).
+async function wireAIAssistantSettings() {
+  const enabledEl = document.getElementById('aiAssistantEnabled');
+  const geminiEl = document.getElementById('aiGeminiKey');
+  const openrouterEl = document.getElementById('aiOpenRouterKey');
+  const phoneIdEl = document.getElementById('aiWaPhoneId');
+  const accessTokenEl = document.getElementById('aiWaAccessToken');
+  const verifyTokenEl = document.getElementById('aiWaVerifyToken');
+  const basePromptEl = document.getElementById('aiBasePrompt');
+  const webhookUrlInput = document.getElementById('aiWebhookUrl');
+  const saveBtn = document.getElementById('aiAssistantSaveBtn');
+  const logsBtn = document.getElementById('aiAssistantLogsBtn');
+  const feedback = document.getElementById('aiAssistantFeedback');
+  const statusBadge = document.getElementById('aiAssistantStatusBadge');
+  if (!enabledEl) return;
+
+  // Show AI status (without leaking keys)
+  try {
+    const cfg = await api('/api/admin/ai/config');
+    if (cfg.enabled) {
+      statusBadge.textContent = '🟢 ACTIVE';
+      statusBadge.style.background = '#4ade80';
+      statusBadge.style.color = '#064e3b';
+    } else {
+      statusBadge.textContent = '⚪ OFF';
+      statusBadge.style.background = '#e5e7eb';
+      statusBadge.style.color = '#374151';
+    }
+    enabledEl.checked = !!cfg.enabled;
+    verifyTokenEl.value = cfg.wa_verify_token || '';
+    basePromptEl.value = cfg.base_prompt || '';
+    // For API keys: show "****" if set, otherwise empty
+    geminiEl.placeholder = cfg.has_gemini ? '•••••••• (set, kosongkan untuk tetap)' : 'AIzaSy...';
+    openrouterEl.placeholder = cfg.has_openrouter ? '•••••••• (set, kosongkan untuk tetap)' : 'sk-or-v1-...';
+    phoneIdEl.placeholder = cfg.has_wa_phone_id ? '•••••••• (set)' : '123456789012345';
+    accessTokenEl.placeholder = cfg.has_wa_token ? '•••••••• (set)' : 'EAAxxxxxxx...';
+    // Webhook URL = the API base + /api/webhook/whatsapp
+    const base = (window.API_BASE || (window.location.origin + (window.location.pathname.indexOf('/Adzkiyamombabycareweb') >= 0 ? '/Adzkiyamombabycareweb' : '')));
+    webhookUrlInput.value = (base || '') + '/api/webhook/whatsapp';
+  } catch (e) {
+    console.error('AI config fetch failed:', e);
+  }
+
+  saveBtn.addEventListener('click', async () => {
+    feedback.textContent = '⏳ Menyimpan...';
+    feedback.style.color = 'var(--text-soft)';
+    try {
+      const body = {
+        ai_assistant_enabled: enabledEl.checked,
+        ai_assistant_verify_token: verifyTokenEl.value.trim(),
+        ai_assistant_base_prompt: basePromptEl.value.trim()
+      };
+      // Only update keys if admin typed something new
+      if (geminiEl.value.trim()) body.ai_gemini_api_key = geminiEl.value.trim();
+      if (openrouterEl.value.trim()) body.ai_openrouter_api_key = openrouterEl.value.trim();
+      if (phoneIdEl.value.trim()) body.ai_assistant_phone_id = phoneIdEl.value.trim();
+      if (accessTokenEl.value.trim()) body.ai_assistant_access_token = accessTokenEl.value.trim();
+      await api('/api/admin/settings', { method: 'PUT', body: JSON.stringify(body) });
+      // Clear key fields after save so admin sees placeholder-only next time
+      geminiEl.value = '';
+      openrouterEl.value = '';
+      phoneIdEl.value = '';
+      accessTokenEl.value = '';
+      feedback.textContent = '✅ Tersimpan! AI Assistant ' + (enabledEl.checked ? 'aktif' : 'nonaktif') + '.';
+      feedback.style.color = 'var(--success, #1e8957)';
+      // Re-fetch to update badge + placeholders
+      setTimeout(() => wireAIAssistantSettings(), 200);
+    } catch (e) {
+      feedback.textContent = '❌ Gagal menyimpan: ' + e.message;
+      feedback.style.color = '#c43050';
+    }
+  });
+
+  logsBtn.addEventListener('click', async () => {
+    try {
+      const logs = await api('/api/admin/ai/conversations?limit=50');
+      if (!logs.length) {
+        alert('Belum ada percakapan AI yang tercatat.');
+        return;
+      }
+      const text = logs.map((l, i) => {
+        const when = new Date(l.ts).toLocaleString('id-ID', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+        const sender = l.sender_name || l.from_phone || l.session_id || 'anon';
+        const provider = l.provider ? ' [' + l.provider + ']' : '';
+        return `${i + 1}. [${when}] ${l.channel.toUpperCase()} ${sender}${provider}
+   👤 ${l.user.slice(0, 200)}
+   🤖 ${l.assistant.slice(0, 200)}
+`;
+      }).join('\n---\n');
+      openModal(`
+        <h3>📋 Log Percakapan AI (50 terbaru)</h3>
+        <pre style="white-space:pre-wrap;font-size:0.8rem;background:var(--bg);padding:14px;border-radius:8px;max-height:60vh;overflow-y:auto;font-family:monospace;">${esc(text)}</pre>
+        <div style="margin-top:14px;display:flex;gap:8px;justify-content:flex-end;">
+          <button class="btn-sm btn-del" onclick="if(confirm('Hapus semua log percakapan?')){api('/api/admin/ai/conversations',{method:'DELETE'}).then(()=>{closeModal();alert('Log dihapus.')}).catch(e=>alert('Gagal: '+e.message));}">🗑️ Hapus Semua Log</button>
+          <button class="btn-sm btn-view" onclick="closeModal()">Tutup</button>
+        </div>
+      `);
+    } catch (e) {
+      alert('Gagal load log: ' + e.message);
+    }
+  });
 }
 
 function renderHours() {

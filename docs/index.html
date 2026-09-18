@@ -290,5 +290,415 @@ fetch('/api/public-settings').then(r => r.json()).then(s => {
   }
 });
 </script>
+
+<!-- ============================================
+     AI CHAT WIDGET (Phase 2: Public Chat Widget)
+     Floating button bottom-right. Powered by /api/ai/chat
+     (Gemini + OpenRouter fallback). Falls back to WA
+     when AI is disabled.
+     ============================================ -->
+<style>
+.ai-chat-fab {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  width: 60px;
+  height: 60px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #ee5a8a 0%, #ff7ea4 100%);
+  color: white;
+  border: none;
+  font-size: 28px;
+  cursor: pointer;
+  box-shadow: 0 8px 24px rgba(238, 90, 138, 0.4);
+  z-index: 999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform .2s, box-shadow .2s;
+}
+.ai-chat-fab:hover { transform: scale(1.08); box-shadow: 0 12px 32px rgba(238, 90, 138, 0.5); }
+.ai-chat-fab:active { transform: scale(0.95); }
+.ai-chat-fab.has-unread::after {
+  content: '';
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 12px;
+  height: 12px;
+  background: #ff3860;
+  border-radius: 50%;
+  border: 2px solid white;
+  animation: ai-pulse 2s infinite;
+}
+@keyframes ai-pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.3); } }
+
+.ai-chat-panel {
+  position: fixed;
+  right: 18px;
+  bottom: 92px;
+  width: 360px;
+  max-width: calc(100vw - 36px);
+  height: 520px;
+  max-height: calc(100vh - 110px);
+  background: white;
+  border-radius: 20px;
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.18);
+  z-index: 999;
+  display: none;
+  flex-direction: column;
+  overflow: hidden;
+  font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+.ai-chat-panel.open { display: flex; animation: ai-slide-up .25s ease-out; }
+@keyframes ai-slide-up { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+
+.ai-chat-header {
+  padding: 14px 16px;
+  background: linear-gradient(135deg, #ee5a8a 0%, #ffb979 100%);
+  color: white;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+.ai-chat-header-avatar {
+  width: 36px;
+  height: 36px;
+  background: rgba(255,255,255,0.25);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+}
+.ai-chat-header-text { flex: 1; min-width: 0; }
+.ai-chat-header-name { font-weight: 800; font-size: 0.95rem; line-height: 1.2; }
+.ai-chat-header-status { font-size: 0.74rem; opacity: 0.9; display: flex; align-items: center; gap: 4px; }
+.ai-chat-header-status::before { content: ''; width: 6px; height: 6px; background: #4ade80; border-radius: 50%; box-shadow: 0 0 4px #4ade80; }
+.ai-chat-close {
+  background: rgba(255,255,255,0.2);
+  border: none;
+  color: white;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  cursor: pointer;
+  font-size: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.ai-chat-close:hover { background: rgba(255,255,255,0.35); }
+
+.ai-chat-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 14px;
+  background: linear-gradient(180deg, #fff5f8 0%, #ffffff 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.ai-msg {
+  max-width: 82%;
+  padding: 9px 12px;
+  border-radius: 14px;
+  font-size: 0.88rem;
+  line-height: 1.45;
+  word-wrap: break-word;
+  white-space: pre-wrap;
+}
+.ai-msg.bot {
+  align-self: flex-start;
+  background: white;
+  border: 1px solid #ffd6e2;
+  color: #2a1822;
+  border-bottom-left-radius: 4px;
+}
+.ai-msg.user {
+  align-self: flex-end;
+  background: linear-gradient(135deg, #ee5a8a, #ff7ea4);
+  color: white;
+  border-bottom-right-radius: 4px;
+}
+.ai-msg.typing {
+  align-self: flex-start;
+  background: white;
+  border: 1px solid #ffd6e2;
+  display: flex;
+  gap: 4px;
+  padding: 12px 14px;
+}
+.ai-msg.typing span {
+  width: 7px;
+  height: 7px;
+  background: #ee5a8a;
+  border-radius: 50%;
+  animation: ai-bounce 1.4s infinite;
+}
+.ai-msg.typing span:nth-child(2) { animation-delay: 0.2s; }
+.ai-msg.typing span:nth-child(3) { animation-delay: 0.4s; }
+@keyframes ai-bounce { 0%, 60%, 100% { transform: translateY(0); opacity: 0.5; } 30% { transform: translateY(-6px); opacity: 1; } }
+.ai-msg a { color: #ee5a8a; text-decoration: underline; font-weight: 700; }
+.ai-msg.user a { color: white; text-decoration: underline; }
+
+.ai-quick-replies {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 14px 8px;
+  background: linear-gradient(180deg, #fff5f8 0%, #ffffff 100%);
+}
+.ai-quick-replies button {
+  padding: 0;
+  background: white;
+  border: 1.5px solid #ee5a8a;
+  color: #ee5a8a;
+  font-size: 0.78rem;
+  font-weight: 700;
+  border-radius: 999px;
+  cursor: pointer;
+  padding: 5px 12px;
+  transition: all .15s;
+}
+.ai-quick-replies button:hover { background: #ee5a8a; color: white; }
+
+.ai-chat-input {
+  padding: 10px;
+  background: white;
+  border-top: 1px solid #ffd6e2;
+  display: flex;
+  gap: 6px;
+  align-items: flex-end;
+  flex-shrink: 0;
+}
+.ai-chat-input textarea {
+  flex: 1;
+  border: 1.5px solid #ffd6e2;
+  border-radius: 12px;
+  padding: 8px 10px;
+  font-family: inherit;
+  font-size: 0.88rem;
+  resize: none;
+  max-height: 80px;
+  outline: none;
+  background: #fffafc;
+  color: #2a1822;
+}
+.ai-chat-input textarea:focus { border-color: #ee5a8a; background: white; }
+.ai-chat-send {
+  background: linear-gradient(135deg, #ee5a8a, #ff7ea4);
+  color: white;
+  border: none;
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  cursor: pointer;
+  font-size: 18px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: opacity .15s;
+}
+.ai-chat-send:disabled { opacity: 0.5; cursor: not-allowed; }
+.ai-chat-footer-note {
+  font-size: 0.7rem;
+  color: var(--text-soft);
+  text-align: center;
+  padding: 4px 10px 8px;
+  background: white;
+}
+
+@media (max-width: 480px) {
+  .ai-chat-panel {
+    right: 8px;
+    bottom: 82px;
+    width: calc(100vw - 16px);
+    height: calc(100vh - 100px);
+    max-height: none;
+    border-radius: 16px;
+  }
+  .ai-chat-fab { right: 12px; bottom: 12px; }
+}
+</style>
+
+<button id="aiChatFab" class="ai-chat-fab" aria-label="Chat dengan Adzkiya Assistant" title="Chat dengan AI Assistant">
+  💬
+</button>
+
+<div id="aiChatPanel" class="ai-chat-panel" role="dialog" aria-labelledby="aiChatName">
+  <div class="ai-chat-header">
+    <div class="ai-chat-header-avatar">🌸</div>
+    <div class="ai-chat-header-text">
+      <div class="ai-chat-header-name" id="aiChatName">Adzkiya Assistant</div>
+      <div class="ai-chat-header-status">online · balas dalam detik</div>
+    </div>
+    <button id="aiChatClose" class="ai-chat-close" aria-label="Tutup chat">×</button>
+  </div>
+  <div id="aiChatMessages" class="ai-chat-messages"></div>
+  <div id="aiChatQuick" class="ai-quick-replies"></div>
+  <div class="ai-chat-input">
+    <textarea id="aiChatText" rows="1" placeholder="Ketik pesan... (Enter untuk kirim, Shift+Enter untuk baris baru)" maxlength="500"></textarea>
+    <button id="aiChatSend" class="ai-chat-send" aria-label="Kirim pesan" title="Kirim">➤</button>
+  </div>
+  <div class="ai-chat-footer-note">Powered by AI · untuk booking final via WhatsApp admin</div>
+</div>
+
+<script>
+(function() {
+  const fab = document.getElementById('aiChatFab');
+  const panel = document.getElementById('aiChatPanel');
+  const closeBtn = document.getElementById('aiChatClose');
+  const messagesEl = document.getElementById('aiChatMessages');
+  const quickEl = document.getElementById('aiChatQuick');
+  const inputEl = document.getElementById('aiChatText');
+  const sendBtn = document.getElementById('aiChatSend');
+  let sessionId = 'web-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+  let history = [];
+  let isOpen = false;
+  let isSending = false;
+
+  function escapeHtml(str) {
+    return String(str || '').replace(/[<>&"']/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&#39;' }[c]));
+  }
+
+  function linkifyAndEscape(text) {
+    // Escape HTML, then convert markdown links and bare URLs into anchors
+    const escaped = escapeHtml(text);
+    return escaped
+      .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
+      .replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" rel="noopener">$1</a>')
+      .replace(/(wa\.me\/\d+[^\s<]*)/g, '<a href="https://$1" target="_blank" rel="noopener">$1</a>');
+  }
+
+  function appendMessage(text, role) {
+    const div = document.createElement('div');
+    div.className = 'ai-msg ' + role;
+    div.innerHTML = linkifyAndEscape(text);
+    messagesEl.appendChild(div);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+    return div;
+  }
+
+  function appendTypingIndicator() {
+    const div = document.createElement('div');
+    div.className = 'ai-msg typing';
+    div.dataset.typing = '1';
+    div.innerHTML = '<span></span><span></span><span></span>';
+    messagesEl.appendChild(div);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+    return div;
+  }
+
+  function setQuickReplies(items) {
+    quickEl.innerHTML = '';
+    if (!items || !items.length) return;
+    items.forEach(label => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.textContent = label;
+      btn.addEventListener('click', () => {
+        quickEl.innerHTML = '';
+        sendUserMessage(label);
+      });
+      quickEl.appendChild(btn);
+    });
+  }
+
+  function openPanel() {
+    panel.classList.add('open');
+    fab.classList.remove('has-unread');
+    isOpen = true;
+    if (!messagesEl.children.length) {
+      // First-time greeting
+      appendMessage('Halo! 🌸 Saya Adzkiya Assistant. Ada yang bisa saya bantu untuk booking layanan kami?', 'bot');
+      setQuickReplies(['💆 Lihat layanan', '💰 Cek harga', '📅 Booking sekarang', '📍 Lokasi']);
+    }
+    setTimeout(() => inputEl.focus(), 100);
+  }
+
+  function closePanel() {
+    panel.classList.remove('open');
+    isOpen = false;
+  }
+
+  fab.addEventListener('click', () => {
+    if (isOpen) closePanel();
+    else openPanel();
+  });
+  closeBtn.addEventListener('click', closePanel);
+
+  function sendUserMessage(text) {
+    if (isSending || !text.trim()) return;
+    isSending = true;
+    sendBtn.disabled = true;
+    appendMessage(text, 'user');
+    history.push({ role: 'user', content: text });
+    setQuickReplies([]);
+    const typing = appendTypingIndicator();
+
+    fetch('/api/ai/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        message: text,
+        history: history.slice(-10),
+        session_id: sessionId
+      })
+    })
+    .then(r => r.json().then(data => ({ status: r.status, data })))
+    .then(({ status, data }) => {
+      typing.remove();
+      if (status >= 400 || data.error) {
+        // Friendly fallback to WA when AI is unavailable
+        const wa = data.fallback_wa || 'https://wa.me/6285887018194';
+        appendMessage('Maaf, saya sedang gangguan 😅. Silakan chat langsung via WhatsApp ya: ' + wa, 'bot');
+        history.push({ role: 'assistant', content: '[fallback]' });
+      } else {
+        appendMessage(data.reply, 'bot');
+        history.push({ role: 'assistant', content: data.reply });
+        if (history.length > 20) history = history.slice(-20);
+        // Suggest follow-up actions based on keywords in last user message
+        const lower = text.toLowerCase();
+        if (lower.includes('booking') || lower.includes('pesan') || lower.includes('janji')) {
+          setQuickReplies(['Konfirmasi via WhatsApp', 'Lihat layanan lagi']);
+        } else if (lower.includes('harga') || lower.includes('biaya')) {
+          setQuickReplies(['Layanan termurah', 'Paket bundle']);
+        }
+      }
+    })
+    .catch(() => {
+      typing.remove();
+      appendMessage('Tidak bisa terhubung. Silakan coba lagi atau chat WhatsApp: wa.me/6285887018194', 'bot');
+    })
+    .finally(() => {
+      isSending = false;
+      sendBtn.disabled = false;
+    });
+  }
+
+  sendBtn.addEventListener('click', () => {
+    const text = inputEl.value.trim();
+    if (text) {
+      inputEl.value = '';
+      inputEl.style.height = 'auto';
+      sendUserMessage(text);
+    }
+  });
+  inputEl.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      sendBtn.click();
+    }
+  });
+  inputEl.addEventListener('input', () => {
+    inputEl.style.height = 'auto';
+    inputEl.style.height = Math.min(80, inputEl.scrollHeight) + 'px';
+  });
+})();
+</script>
+
 </body>
 </html>
