@@ -1612,7 +1612,8 @@ function printReceipt(r) {
           </div>
           <div style="flex:1;min-width:200px;text-align:right;">
             <div style="font-size:0.82rem;color:var(--text-soft);">Hormat kami,</div>
-            <div style="margin-top:50px;border-top:1px solid #2a1822;padding-top:6px;font-weight:700;"><em>${esc(biz.practitioner || 'Tasya Hanifah Pramesti, A.Md. Keb., CBME')}</em></div>
+            <img id="ownerSigEmbed" src="" alt="Tanda tangan ${esc(biz.business_name || '')}" style="display:none;max-height:60px;max-width:220px;margin:4px 0 4px auto;background:transparent;" />
+            <div id="ownerSigUnderline" style="margin-top:50px;border-top:1px solid #2a1822;padding-top:6px;font-weight:700;"><em>${esc(biz.practitioner || 'Tasya Hanifah Pramesti, A.Md. Keb., CBME')}</em></div>
             <div style="font-size:0.78rem;color:var(--text-soft);">${esc(biz.business_name || 'Adzkiya Mom Baby Care')}</div>
           </div>
         </div>
@@ -1743,7 +1744,52 @@ function printReceipt(r) {
           img.style.display = 'none';
           if (placeholder) placeholder.style.marginTop = '50px';
         }
-        window.print();
+        // Also embed the saved owner signature (bidan/pemilik) into
+        // the "Hormat kami," block, if the parent's SETTINGS flag is
+        // true. We resolve it to a data URL via fetch so the print
+        // pipeline doesn't need auth headers. If the request fails
+        // (signature was deleted between settings-fetch and print,
+        // network glitch, etc.), we silently fall back to the empty
+        // placeholder — the printed kwitansi just shows the underline.
+        const ownerImg = document.getElementById('ownerSigEmbed');
+        const ownerUnderline = document.getElementById('ownerSigUnderline');
+        const wantOwner = window.__hasOwnerSignature === true;
+        function finalize() { window.print(); }
+        if (wantOwner && ownerImg) {
+          // Use the same origin the page was loaded from so /api works
+          // whether this print preview was opened from the same
+          // origin or a different one.
+          const url = (location.origin || '') + '/api/owner-signature';
+          fetch(url, { credentials: 'omit' })
+            .then((r) => r.ok ? r.blob() : null)
+            .then((blob) => {
+              if (!blob) {
+                if (ownerImg) ownerImg.style.display = 'none';
+                if (ownerUnderline) ownerUnderline.style.marginTop = '50px';
+                return;
+              }
+              const reader = new FileReader();
+              reader.onload = () => {
+                ownerImg.src = reader.result;
+                ownerImg.style.display = 'block';
+                if (ownerUnderline) ownerUnderline.style.marginTop = '6px';
+              };
+              reader.readAsDataURL(blob);
+            })
+            .catch(() => {
+              if (ownerImg) ownerImg.style.display = 'none';
+              if (ownerUnderline) ownerUnderline.style.marginTop = '50px';
+            })
+            .finally(() => {
+              // Wait a beat so the FileReader.onload fires before
+              // window.print() snapshots the layout.
+              setTimeout(finalize, 60);
+            });
+        } else {
+          if (ownerImg) ownerImg.style.display = 'none';
+          if (ownerUnderline) ownerUnderline.style.marginTop = '50px';
+          finalize();
+        }
       }
       // Expose to window so the inline onclick="embedSigAndPrint()" on
       // the printBtn (rendered before the script runs, but in the
@@ -1754,6 +1800,13 @@ function printReceipt(r) {
     </body></html>`;
   const w = window.open('', '_blank');
   w.document.write(html); w.document.close();
+  // Tell the print preview whether the owner signature is saved on
+  // the server. The inline script reads this in embedSigAndPrint() to
+  // decide whether to fetch /api/owner-signature before window.print().
+  try {
+    w.__hasOwnerSignature = !!(biz && biz.has_owner_signature);
+  } catch (e) {}
+
   // The new tab now owns its own canvas + listeners. Nothing for the
   // parent window to do — focus the new tab so the admin lands on
   // the print preview immediately.
@@ -3653,6 +3706,90 @@ async function renderSettings() {
       </div>
 
       <div class="setting-card">
+        <h3>✍️ Tanda Tangan Bidan/Pemilik</h3>
+        <p style="color:var(--text-soft);font-size:0.85rem;margin:6px 0 10px;line-height:1.55;">
+          Tanda tangan ini akan otomatis muncul di blok <strong>"Hormat kami,"</strong> pada setiap kwitansi yang dicetak dari sistem ini, sehingga bidan/pemilik tidak perlu tanda tangan ulang di setiap kwitansi. Simpan sekali, pakai selamanya.
+        </p>
+        <div id="ownerSigPreviewWrap" style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;margin-bottom:14px;padding:12px;background:var(--bg);border:1px dashed var(--border);border-radius:12px;">
+          <div id="ownerSigPreviewBox" style="width:200px;min-height:80px;background:var(--card);border:1px solid var(--border);border-radius:10px;display:flex;align-items:center;justify-content:center;padding:8px;">
+            ${s.has_owner_signature ? `<img src="${apiUrl('/api/owner-signature')}?v=${Date.now()}" style="max-height:80px;max-width:180px;display:block;" alt="Tanda tangan">` : '<span style="color:var(--text-soft);font-size:0.85rem;">Belum ada tanda tangan</span>'}
+          </div>
+          <div style="flex:1;min-width:200px;">
+            <div style="font-weight:700;margin-bottom:2px;">${s.has_owner_signature ? '✅ Tanda tangan tersimpan' : '⚠️ Belum ada tanda tangan'}</div>
+            ${s.has_owner_signature ? `
+              <small style="color:var(--text-soft);display:block;margin-bottom:6px;">
+                📅 ${esc(s.owner_signature_at ? new Date(s.owner_signature_at).toLocaleString('id-ID', {day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'}) : '—')}
+                · 📥 ${esc(s.owner_signature_method || 'unknown')}
+                ${s.owner_signature_via ? ' · 🔖 ' + esc(s.owner_signature_via) : ''}
+              </small>
+              <button onclick="deleteOwnerSignature()" class="btn-sm btn-del">🗑️ Hapus</button>
+            ` : '<small style="color:var(--text-soft);display:block;">Pilih salah satu metode di bawah untuk menambahkan tanda tangan.</small>'}
+          </div>
+        </div>
+
+        <!-- 3-tab mode picker -->
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;">
+          <button type="button" id="ownerSigTabLangsung" onclick="switchOwnerSigTab('langsung')" class="btn-sm btn-pay">✏️ Tanda Tangan Langsung</button>
+          <button type="button" id="ownerSigTabUpload" onclick="switchOwnerSigTab('upload')" class="btn-sm btn-view">📁 Upload Gambar</button>
+          <button type="button" id="ownerSigTabScan" onclick="switchOwnerSigTab('scan')" class="btn-sm btn-view">📷 Scan / Barcode</button>
+        </div>
+
+        <!-- Mode: langsung -->
+        <div id="ownerSigModeLangsung" style="display:none;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+            <strong style="font-size:0.92rem;">✏️ Gambar tanda tangan di area putih</strong>
+            <button type="button" onclick="ownerSigClear()" class="btn-sm btn-view">🔄 Reset</button>
+          </div>
+          <div id="ownerSigPadWrap" style="background:#fdfafc;border:2px dashed var(--pink-200);border-radius:10px;overflow:hidden;">
+            <canvas id="ownerSigPad" style="display:block;touch-action:none;width:100%;height:180px;"></canvas>
+          </div>
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;flex-wrap:wrap;gap:8px;">
+            <small style="color:var(--text-soft);">💡 Pakai mouse, touchpad, atau jari di HP/tablet</small>
+            <button type="button" onclick="ownerSigSave('langsung')" class="btn btn-primary">💾 Simpan Tanda Tangan</button>
+          </div>
+        </div>
+
+        <!-- Mode: upload -->
+        <div id="ownerSigModeUpload" style="display:none;">
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+            <input type="file" id="ownerSigUploadFile" accept="image/png,image/jpeg,image/webp,image/gif" style="flex:1;min-width:200px;padding:8px 12px;border:1.5px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-family:inherit;">
+            <input type="text" id="ownerSigUploadVia" placeholder="Keterangan sumber (opsional)" maxlength="64" style="flex:1;min-width:180px;padding:8px 12px;border:1.5px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-family:inherit;">
+            <button type="button" onclick="uploadOwnerSignature()" class="btn btn-primary">📤 Upload</button>
+          </div>
+          <small style="color:var(--text-soft);display:block;margin-top:6px;">PNG / JPEG / WebP / GIF. Maksimal 1.5 MB. Tinggi disarankan 200-400px.</small>
+        </div>
+
+        <!-- Mode: scan -->
+        <div id="ownerSigModeScan" style="display:none;">
+          <div style="display:flex;flex-direction:column;gap:8px;">
+            <div>
+              <label style="font-weight:600;font-size:0.88rem;display:block;margin-bottom:4px;">Metode input</label>
+              <select id="ownerSigScanMethod" style="width:100%;padding:8px 12px;border:1.5px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-family:inherit;">
+                <option value="barcode">📊 Barcode / QR — hasil decode QR yang menyisipkan gambar tanda tangan</option>
+                <option value="ocr">📷 OCR — gambar hasil scan kamera HP / aplikasi OCR</option>
+                <option value="langsung">✏️ Paste dari canvas (toDataURL)</option>
+              </select>
+            </div>
+            <div>
+              <label style="font-weight:600;font-size:0.88rem;display:block;margin-bottom:4px;">Sumber / aplikasi (untuk audit)</label>
+              <input type="text" id="ownerSigScanVia" placeholder="mis: Google Lens, Adobe Scan, QR Scanner" maxlength="64" style="width:100%;padding:8px 12px;border:1.5px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-family:inherit;">
+            </div>
+            <div>
+              <label style="font-weight:600;font-size:0.88rem;display:block;margin-bottom:4px;">Paste base64 atau data URL di sini</label>
+              <textarea id="ownerSigScanB64" rows="4" placeholder='data:image/png;base64,iVBORw0KGgoAA... atau langsung base64 string tanpa prefix' style="width:100%;font-family:monospace;font-size:0.8rem;padding:10px 12px;border:1.5px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);resize:vertical;"></textarea>
+            </div>
+            <div style="display:flex;justify-content:flex-end;gap:8px;">
+              <button type="button" onclick="saveOwnerSignatureScan()" class="btn btn-primary">💾 Simpan dari Scan</button>
+            </div>
+            <small style="color:var(--text-soft);line-height:1.5;">
+              💡 Cara cepat: di HP, buka foto tanda tangan → bagikan ke aplikasi QR Scanner / Google Lens → pilih "Salin base64" → paste di sini.
+              Sistem akan validasi magic bytes PNG/JPEG/WebP dan menolak payload non-image.
+            </small>
+          </div>
+        </div>
+      </div>
+
+      <div class="setting-card">
         <h3>🏦 Rekening Bank</h3>
         <p style="color:var(--text-soft);font-size:0.85rem;margin-bottom:10px;">Tampil saat pelanggan pilih Transfer.</p>
         <div id="bankList"></div>
@@ -4294,6 +4431,211 @@ function openModal(html) {
     </div>`;
 }
 function closeModal() { document.getElementById('modalRoot').innerHTML = ''; }
+
+// ===== OWNER SIGNATURE (Bidan / Pemilik) =====
+// Saved-once signature that auto-embeds into every kwitansi's
+// "Hormat kami," block. Three input modes accepted:
+//
+//   1. langsung   admin draws on a <canvas>; signature.save('langsung')
+//   2. upload     admin picks an image file; uploadOwnerSignature()
+//   3. scan       admin pastes base64 from QR decoder / OCR app;
+//                  saveOwnerSignatureScan()
+//
+// All three end up calling POST /api/admin/settings/owner-signature
+// (multipart) or POST /api/admin/settings/owner-signature/scan (JSON).
+// The server re-checks magic bytes before saving so we never persist a
+// non-image payload.
+let _ownerSigTab = null;
+function switchOwnerSigTab(tab) {
+  _ownerSigTab = tab;
+  // Toggle button styles + section visibility
+  const tabs = {
+    langsung: ['ownerSigTabLangsung', 'ownerSigModeLangsung'],
+    upload:   ['ownerSigTabUpload',   'ownerSigModeUpload'],
+    scan:     ['ownerSigTabScan',     'ownerSigModeScan']
+  };
+  Object.entries(tabs).forEach(([key, [btnId, modeId]]) => {
+    const btn = document.getElementById(btnId);
+    const mode = document.getElementById(modeId);
+    if (btn) btn.className = key === tab ? 'btn-sm btn-pay' : 'btn-sm btn-view';
+    if (mode) mode.style.display = key === tab ? '' : 'none';
+  });
+  if (tab === 'langsung') {
+    // Initialize the canvas the first time the tab opens (it has a
+    // CSS-driven size, so we need to defer until layout completes).
+    requestAnimationFrame(() => attachOwnerSigPad('ownerSigPad', 'ownerSigPadWrap'));
+  }
+}
+
+function attachOwnerSigPad(canvasId, wrapId) {
+  const canvas = document.getElementById(canvasId);
+  const wrap = document.getElementById(wrapId);
+  if (!canvas || !wrap) return;
+  // If already attached (event listeners + helpers exist), just resize.
+  if (canvas._ownerSigAttached) {
+    sizeOwnerSigCanvas();
+    return;
+  }
+  function sizeOwnerSigCanvas() {
+    const r = wrap.getBoundingClientRect();
+    if (r.width <= 0) return;
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.round(r.width * dpr);
+    canvas.height = 180 * dpr;
+    canvas.style.width = r.width + 'px';
+    canvas.style.height = '180px';
+    const ctx = canvas.getContext('2d');
+    ctx.setTransform(1, 0, 0, 1, 0, 0); // reset any prior scale
+    ctx.scale(dpr, dpr);
+    ctx.lineWidth = 2.5;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.strokeStyle = '#2a1822';
+  }
+  sizeOwnerSigCanvas();
+  const ctx2d = canvas.getContext('2d');
+  let drawing = false, last = null;
+  function pos(e) {
+    const r = canvas.getBoundingClientRect();
+    const t = e.touches ? e.touches[0] : e;
+    return { x: t.clientX - r.left, y: t.clientY - r.top };
+  }
+  function start(e) {
+    e.preventDefault();
+    drawing = true;
+    last = pos(e);
+  }
+  function move(e) {
+    if (!drawing) return;
+    e.preventDefault();
+    const p = pos(e);
+    ctx2d.beginPath();
+    ctx2d.moveTo(last.x, last.y);
+    ctx2d.lineTo(p.x, p.y);
+    ctx2d.stroke();
+    last = p;
+  }
+  function end(e) {
+    if (!drawing) return;
+    if (e && e.preventDefault) e.preventDefault();
+    drawing = false;
+    last = null;
+  }
+  canvas.addEventListener('mousedown', start);
+  canvas.addEventListener('mousemove', move);
+  window.addEventListener('mouseup', end);
+  canvas.addEventListener('touchstart', start, { passive: false });
+  canvas.addEventListener('touchmove', move, { passive: false });
+  canvas.addEventListener('touchend', end);
+  canvas.addEventListener('touchcancel', end);
+  // Helper methods for save/clear
+  canvas._clearSig = () => {
+    ctx2d.save();
+    ctx2d.setTransform(1, 0, 0, 1, 0, 0);
+    ctx2d.clearRect(0, 0, canvas.width, canvas.height);
+    ctx2d.restore();
+  };
+  canvas._isOwnerBlank = () => {
+    const blank = document.createElement('canvas');
+    blank.width = canvas.width;
+    blank.height = canvas.height;
+    return canvas.toDataURL() === blank.toDataURL();
+  };
+  canvas._getSigDataUrl = () => {
+    if (canvas._isOwnerBlank()) return null;
+    return canvas.toDataURL('image/png');
+  };
+  canvas._ownerSigAttached = true;
+  // Re-size on window resize so the canvas matches its CSS box.
+  window.addEventListener('resize', sizeOwnerSigCanvas);
+}
+
+function ownerSigClear() {
+  const canvas = document.getElementById('ownerSigPad');
+  if (canvas && canvas._clearSig) canvas._clearSig();
+}
+
+async function ownerSigSave(method) {
+  const canvas = document.getElementById('ownerSigPad');
+  if (!canvas) return alert('Tanda tangan pad belum siap.');
+  const dataUrl = canvas._getSigDataUrl ? canvas._getSigDataUrl() : null;
+  if (!dataUrl) return alert('Belum ada tanda tangan. Gambar dulu di area putih.');
+  try {
+    await saveOwnerSignatureScan({ b64: dataUrl, method, via: 'canvas pad' });
+  } catch (e) {
+    alert('Gagal menyimpan tanda tangan: ' + e.message);
+  }
+}
+
+async function uploadOwnerSignature() {
+  const fileEl = document.getElementById('ownerSigUploadFile');
+  const viaEl = document.getElementById('ownerSigUploadVia');
+  const file = fileEl?.files?.[0];
+  if (!file) return alert('Pilih file gambar dulu.');
+  if (file.size > 1.5 * 1024 * 1024) {
+    return alert('Ukuran file maksimal 1.5 MB. Kompres dulu atau pilih file lain.');
+  }
+  if (!file.type.startsWith('image/')) {
+    return alert('File harus gambar (PNG/JPEG/WebP/GIF).');
+  }
+  const fd = new FormData();
+  fd.append('file', file);
+  if (viaEl?.value) fd.append('via', viaEl.value.trim().slice(0, 64));
+  try {
+    const res = await fetch(apiUrl('/api/admin/settings/owner-signature'), {
+      method: 'POST',
+      headers: { Authorization: 'Bearer ' + TOKEN },
+      body: fd
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || res.statusText);
+    alert('✅ Tanda tangan diupload (' + data.bytes + ' bytes, ' + data.mime + ').');
+    await loadCache();
+    renderSettings();
+  } catch (e) {
+    alert('Gagal upload: ' + e.message);
+  }
+}
+
+async function saveOwnerSignatureScan(opts) {
+  // opts = { b64, method, via }
+  // If `opts` is not provided, read from the scan tab form.
+  let b64, method, via;
+  if (opts) {
+    ({ b64, method, via } = opts);
+  } else {
+    b64 = document.getElementById('ownerSigScanB64')?.value?.trim();
+    method = document.getElementById('ownerSigScanMethod')?.value || 'ocr';
+    via = document.getElementById('ownerSigScanVia')?.value?.trim() || null;
+  }
+  if (!b64) return alert('Belum ada data base64. Paste gambar hasil scan/QR.');
+  try {
+    const res = await fetch(apiUrl('/api/admin/settings/owner-signature/scan'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + TOKEN },
+      body: JSON.stringify({ b64, method, via })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || res.statusText);
+    if (!opts) alert('✅ Tanda tangan dari ' + method + ' tersimpan (' + data.bytes + ' bytes, ' + data.mime + ').');
+    await loadCache();
+    renderSettings();
+  } catch (e) {
+    if (!opts) alert('Gagal simpan: ' + e.message);
+    throw e;
+  }
+}
+
+async function deleteOwnerSignature() {
+  if (!confirm('Hapus tanda tangan bidan/pemilik? Kwitansi yang dicetak setelah ini tidak akan menampilkan tanda tangan sampai yang baru di-upload.')) return;
+  try {
+    await api('/api/admin/settings/owner-signature', { method: 'DELETE' });
+    await loadCache();
+    renderSettings();
+  } catch (e) {
+    alert('Gagal hapus: ' + e.message);
+  }
+}
 
 // INIT
 if (API_BASE) {
