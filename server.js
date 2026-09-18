@@ -309,6 +309,24 @@ function seedSettings() {
     area: 'Nusawungu, Cilacap',
     type: 'Home Service',
     practitioner: 'Tasya Hanifah Pramesti, A.Md. Keb., CBME',
+    // Owner signature (bidan/pemilik) — saved once, auto-embedded into
+    // every kwitansi's "Hormat kami," block so the admin doesn't have
+    // to sign by hand on every printout. Stored as base64 PNG/WebP so
+    // we can <img>-embed it without re-encoding on the print path.
+    // method records HOW the admin got the signature in here:
+    //   'langsung' — drawn on a canvas in the Settings UI
+    //   'upload'   — uploaded an image file
+    //   'barcode'  — scanned from a QR code that encodes the image
+    //   'ocr'      — extracted from a phone-camera OCR/scan
+    // via records the human-readable source (e.g. "QR Scanner app",
+    // "Google Lens", "Adobe Scan") for audit. at is the ISO date the
+    // signature was captured — useful to detect "needs re-capture"
+    // after a year, since ink and stamp impressions fade.
+    owner_signature_b64: null,
+    owner_signature_mime: null,
+    owner_signature_method: null,
+    owner_signature_via: null,
+    owner_signature_at: null,
     logo_b64,
     logo_mime: logo_b64 ? 'image/png' : null,
     hero_b64: null,
@@ -440,6 +458,14 @@ function ensureNewSettings() {
   // have this key; default to empty (admin can populate via the
   // Settings page).
   if (!Array.isArray(DB.settings.public_services_slugs)) DB.settings.public_services_slugs = [];
+  // Owner signature migration. Older data.json files won't have the
+  // owner_signature_* keys — initialize them to null so the rest of
+  // the API can safely check `if (s.owner_signature_b64) ...`.
+  if (DB.settings.owner_signature_b64 === undefined) DB.settings.owner_signature_b64 = null;
+  if (DB.settings.owner_signature_mime === undefined) DB.settings.owner_signature_mime = null;
+  if (DB.settings.owner_signature_method === undefined) DB.settings.owner_signature_method = null;
+  if (DB.settings.owner_signature_via === undefined) DB.settings.owner_signature_via = null;
+  if (DB.settings.owner_signature_at === undefined) DB.settings.owner_signature_at = null;
 }
 
 // Async boot — load persistent state, seed defaults, then start the API.
@@ -2135,7 +2161,8 @@ body { opacity: 1 !important; }
           </div>
           <div style="flex:1;min-width:200px;text-align:right;">
             <div style="font-size:0.82rem;color:var(--text-soft);">Hormat kami,</div>
-            <div style="margin-top:50px;border-top:1px solid #2a1822;padding-top:6px;font-weight:700;"><em>${practitioner}</em></div>
+            ${biz.has_owner_signature ? `<img id="ownerSigImg" src="/api/owner-signature" alt="Tanda tangan ${fullName}" style="display:block;max-height:60px;max-width:220px;margin:4px 0 4px auto;background:transparent;" />` : ''}
+            <div id="ownerSigUnderline" style="${biz.has_owner_signature ? 'margin-top:6px;' : 'margin-top:50px;'}border-top:1px solid #2a1822;padding-top:6px;font-weight:700;"><em>${practitioner}</em></div>
             <div style="font-size:0.78rem;color:var(--text-soft);">${fullName}</div>
           </div>
         </div>
@@ -2228,7 +2255,8 @@ app.get(/^\/kwitansi\/([^/?#]+)\/?$/, (req, res) => {
       address: s.address,
       phone: s.phone,
       practitioner: s.practitioner,
-      has_logo: !!s.logo_b64
+      has_logo: !!s.logo_b64,
+      has_owner_signature: !!s.owner_signature_b64
     }
   }));
 });
@@ -3391,16 +3419,99 @@ app.post('/api/admin/receipts/import-pdf', auth, pdfUpload.array('files', 50), a
 // ===== ADMIN — SETTINGS =====
 app.get('/api/admin/settings', auth, (req, res) => {
   const s = DB.settings || {};
-  // Don't return the giant base64 blobs — use flags + endpoints
-  const { logo_b64, hero_b64, qris_b64, ...rest } = s;
-  res.json({ ...rest, has_logo: !!logo_b64, has_hero: !!hero_b64, has_qris: !!qris_b64 });
+  // Don't return the giant base64 blobs — use flags + endpoints.
+  // owner_signature_b64 is a base64 PNG that can also be huge for
+  // high-DPI scans, so strip it the same way we do for logo/hero/qris.
+  // The frontend fetches it via /api/owner-signature when needed.
+  const { logo_b64, hero_b64, qris_b64, owner_signature_b64, ...rest } = s;
+  res.json({
+    ...rest,
+    has_logo: !!logo_b64,
+    has_hero: !!hero_b64,
+    has_qris: !!qris_b64,
+    has_owner_signature: !!owner_signature_b64
+  });
 });
 
 app.put('/api/admin/settings', auth, (req, res) => {
-  DB.settings = { ...DB.settings, ...req.body };
+  const body = req.body || {};
+  // Validate owner_signature base64 if present. We accept either a
+  // raw base64 string (no header) or a full data URL
+  // (data:image/png;base64,...). Both are stripped down to the raw
+  // base64 before saving so the read path is uniform.
+  if (body.owner_signature_b64 !== undefined) {
+    const result = sanitizeOwnerSignatureInput(
+      body.owner_signature_b64,
+      body.owner_signature_mime
+    );
+    if (!result) {
+      return res.status(400).json({
+        error: 'owner_signature_b64 harus berupa image/png, image/jpeg, atau image/webp (base64 / data URL valid)'
+      });
+    }
+    body.owner_signature_b64 = result.b64;
+    body.owner_signature_mime = result.mime;
+    if (!body.owner_signature_at) body.owner_signature_at = new Date().toISOString();
+  }
+  // Normalize optional metadata fields.
+  if (body.owner_signature_method !== undefined) {
+    body.owner_signature_method = String(body.owner_signature_method || '').slice(0, 32) || null;
+  }
+  if (body.owner_signature_via !== undefined) {
+    body.owner_signature_via = String(body.owner_signature_via || '').slice(0, 64) || null;
+  }
+  // Clear the signature when method is explicitly empty + b64 is empty.
+  if (body.owner_signature_b64 === '' || body.owner_signature_b64 === null) {
+    body.owner_signature_b64 = null;
+    body.owner_signature_mime = null;
+  }
+  DB.settings = { ...DB.settings, ...body };
   save();
   res.json({ ok: true });
 });
+
+// Decode + validate an owner-signature payload coming in via PUT /settings
+// or POST /owner-signature. Returns { b64, mime } on success or null on
+// bad input. We re-check the magic bytes (not just the data URL prefix)
+// so a malicious admin can't smuggle an HTML payload via the signature
+// field and have it rendered as <img> in the printed kwitansi.
+function sanitizeOwnerSignatureInput(input, mimeHint) {
+  if (input == null) return null;
+  if (typeof input !== 'string') return null;
+  const trimmed = input.trim();
+  if (!trimmed) return null;
+  let mime = null;
+  let b64 = null;
+  const dataUrlMatch = /^data:(image\/[a-zA-Z0-9.+-]+);base64,([A-Za-z0-9+/=\s]+)$/.exec(trimmed);
+  if (dataUrlMatch) {
+    mime = dataUrlMatch[1].toLowerCase();
+    b64 = dataUrlMatch[2].replace(/\s+/g, '');
+  } else if (/^[A-Za-z0-9+/=\s]+$/.test(trimmed) && trimmed.length > 32) {
+    b64 = trimmed.replace(/\s+/g, '');
+    mime = (mimeHint || 'image/png').toLowerCase();
+  } else {
+    return null;
+  }
+  if (!['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(mime)) {
+    return null;
+  }
+  let raw;
+  try { raw = Buffer.from(b64, 'base64'); } catch { return null; }
+  if (raw.length < 16) return null;
+  // Re-check the binary header. PNG starts with 89 50 4E 47 0D 0A 1A 0A,
+  // JPEG with FF D8 FF, WebP with RIFF....WEBP, GIF with GIF8.
+  const head = raw.subarray(0, 8);
+  let okMagic = false;
+  if (mime === 'image/png' && head[0] === 0x89 && head[1] === 0x50 && head[2] === 0x4e && head[3] === 0x47) okMagic = true;
+  else if (mime === 'image/jpeg' && head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff) okMagic = true;
+  else if (mime === 'image/webp' && head.subarray(0, 4).toString() === 'RIFF' && head.subarray(8, 12).toString() === 'WEBP') okMagic = true;
+  else if (mime === 'image/gif' && head.subarray(0, 3).toString() === 'GIF') okMagic = true;
+  if (!okMagic) return null;
+  // Cap at ~1.5 MB base64 (≈1.1 MB binary) to keep DB state from
+  // bloating. High-DPI scans rarely need more than that for a TTD.
+  if (raw.length > 1.5 * 1024 * 1024) return null;
+  return { b64, mime };
+}
 
 app.post('/api/admin/settings/upload', auth, upload.single('file'), (req, res) => {
   const kind = req.body.kind;
@@ -3415,13 +3526,106 @@ app.post('/api/admin/settings/upload', auth, upload.single('file'), (req, res) =
   res.json({ ok: true });
 });
 
-app.delete('/api/admin/settings/:kind', auth, (req, res) => {
-  const k = req.params.kind;
-  if (!['logo', 'hero', 'qris'].includes(k)) return res.status(400).json({ error: 'kind invalid' });
-  DB.settings[`${k}_b64`] = null;
-  DB.settings[`${k}_mime`] = null;
+// ----- OWNER SIGNATURE (bidan / pemilik) -----
+// Save once, embed in every kwitansi's "Hormat kami," block so the
+// admin doesn't have to sign each printed receipt by hand. Three input
+// modes are accepted via three endpoints (or just PUT /api/admin/settings
+// with the raw base64):
+//
+//   POST /api/admin/settings/owner-signature   (multipart file upload)
+//   POST /api/admin/settings/owner-signature/scan (JSON {b64, mime?, via?})
+//   DELETE /api/admin/settings/owner-signature   (clear)
+//
+// The same sanitizer runs on every path so we never store a
+// non-image payload in the signature field.
+const ownerSigUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 1.5 * 1024 * 1024, files: 1 },
+  fileFilter: (req, file, callback) => {
+    if (!file.mimetype.startsWith('image/')) {
+      return callback(new multer.MulterError('LIMIT_UNEXPECTED_FILE', file.fieldname));
+    }
+    callback(null, true);
+  }
+});
+
+app.post('/api/admin/settings/owner-signature', auth, ownerSigUpload.single('file'), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'file missing' });
+  const b64 = req.file.buffer.toString('base64');
+  const result = sanitizeOwnerSignatureInput(b64, req.file.mimetype);
+  if (!result) {
+    return res.status(400).json({
+      error: 'File signature harus PNG, JPEG, atau WebP (signature tidak valid atau terlalu besar >1.5MB)'
+    });
+  }
+  DB.settings.owner_signature_b64 = result.b64;
+  DB.settings.owner_signature_mime = result.mime;
+  DB.settings.owner_signature_method = 'upload';
+  DB.settings.owner_signature_via = req.body && req.body.via ? String(req.body.via).slice(0, 64) : null;
+  DB.settings.owner_signature_at = new Date().toISOString();
+  save();
+  res.json({
+    ok: true,
+    method: DB.settings.owner_signature_method,
+    mime: DB.settings.owner_signature_mime,
+    bytes: Math.floor(result.b64.length * 3 / 4),
+    at: DB.settings.owner_signature_at
+  });
+});
+
+// Save a signature from a data URL / base64 payload. Used for:
+//   - "langsung"   mode (canvas.toDataURL from the Settings UI)
+//   - "barcode"    mode (paste base64 decoded from a QR code that
+//                    encoded the signature image)
+//   - "ocr"        mode (paste base64 of a signature image extracted
+//                    from a phone-camera scan / OCR app)
+// The frontend just hands us the base64 + which method it used; we
+// validate the bytes, normalize the mime, and store.
+app.post('/api/admin/settings/owner-signature/scan', auth, (req, res) => {
+  const body = req.body || {};
+  const result = sanitizeOwnerSignatureInput(body.b64, body.mime);
+  if (!result) {
+    return res.status(400).json({
+      error: 'b64 harus berupa image/png, image/jpeg, atau image/webp (base64 / data URL valid, max 1.5MB)'
+    });
+  }
+  const allowedMethods = ['langsung', 'barcode', 'ocr', 'upload'];
+  const method = allowedMethods.includes(body.method) ? body.method : 'ocr';
+  DB.settings.owner_signature_b64 = result.b64;
+  DB.settings.owner_signature_mime = result.mime;
+  DB.settings.owner_signature_method = method;
+  DB.settings.owner_signature_via = body.via ? String(body.via).slice(0, 64) : null;
+  DB.settings.owner_signature_at = new Date().toISOString();
+  save();
+  res.json({
+    ok: true,
+    method: DB.settings.owner_signature_method,
+    mime: DB.settings.owner_signature_mime,
+    bytes: Math.floor(result.b64.length * 3 / 4),
+    at: DB.settings.owner_signature_at
+  });
+});
+
+app.delete('/api/admin/settings/owner-signature', auth, (req, res) => {
+  DB.settings.owner_signature_b64 = null;
+  DB.settings.owner_signature_mime = null;
+  DB.settings.owner_signature_method = null;
+  DB.settings.owner_signature_via = null;
+  DB.settings.owner_signature_at = null;
   save();
   res.json({ ok: true });
+});
+
+// Public: serve the saved signature image so the print-preview HTML
+// and the server-rendered kwitansi page can <img src='/api/owner-signature'>
+// without needing the admin token. Cached aggressively because the
+// file never changes once saved (only when the admin re-saves).
+app.get('/api/owner-signature', (req, res) => {
+  const s = DB.settings;
+  if (!s || !s.owner_signature_b64) return res.status(404).end();
+  res.setHeader('Content-Type', s.owner_signature_mime || 'image/png');
+  res.setHeader('Cache-Control', 'public, max-age=86400');
+  res.send(Buffer.from(s.owner_signature_b64, 'base64'));
 });
 
 // Upload an icon image for one social media entry (Instagram, TikTok, etc.).
@@ -3454,6 +3658,15 @@ app.delete('/api/admin/socials/icon/:idx', auth, (req, res) => {
   }
   delete DB.settings.socials[idx].icon_b64;
   delete DB.settings.socials[idx].icon_mime;
+  save();
+  res.json({ ok: true });
+});
+
+app.delete('/api/admin/settings/:kind', auth, (req, res) => {
+  const k = req.params.kind;
+  if (!['logo', 'hero', 'qris'].includes(k)) return res.status(400).json({ error: 'kind invalid' });
+  DB.settings[`${k}_b64`] = null;
+  DB.settings[`${k}_mime`] = null;
   save();
   res.json({ ok: true });
 });
