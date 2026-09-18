@@ -4830,8 +4830,19 @@ function buildThermalOverrides(fontPt) {
 }
 
 // Build the HTML body of the invoice (no <html>, no <head> —
-// html2canvas only needs the inner DOM). Returns a string.
-function buildKwitansiHtmlForExport(r) {
+// html2canvas only needs the inner DOM).
+//
+// IMPORTANT: All visual styling is applied via inline `style="..."`
+// attributes, NOT via a separate <style> block with class selectors.
+// html2canvas 1.4.1 has spotty support for <style> elements inside
+// the captured subtree (some selectors don't get applied), which
+// manifested as 9KB blank PDFs. Inline styles are applied directly
+// by the browser to the DOM, so html2canvas reads them via getComputedStyle
+// — no parsing required, no surprises.
+//
+// `fontPt` controls the base font size; `isThermal` switches to a
+// tighter one-column layout for receipt printers.
+function buildKwitansiHtmlForExport(r, fontPt, isThermal) {
   const items = Array.isArray(r.items) ? r.items : (r.items || JSON.parse(r.items_json || '[]'));
   const biz = SETTINGS || {};
   const logoSrc = biz.has_logo ? apiUrl('/api/logo') : null;
@@ -4839,77 +4850,136 @@ function buildKwitansiHtmlForExport(r) {
     ? r.service_times
     : (r.service_time ? [r.service_time] : []);
   const timesHtml = times.length
-    ? times.map((t) => `<span class="kwitansi-time-chip">⏰ ${esc(t)} WIB</span>`).join(' ')
+    ? times.map((t) => `<span style="display:inline-block;margin:1mm 1mm 1mm 0;padding:1mm 2mm;background:#fff5f8;border:1px solid #ffd6e2;border-radius:6px;font-size:0.82em;font-weight:700;color:#ee5a8a;word-break:keep-all;">⏰ ${esc(t)} WIB</span>`).join(' ')
     : '<span style="color:#6a5a64;">—</span>';
   const sessionsLabel = times.length > 1 ? ` <strong style="color:#ee5a8a;">${times.length} sesi</strong>` : '';
+
+  // Per-size tuning: thermal receipts use a single-column grid, tighter
+  // padding, smaller font. Standard sizes (A4/A5/F4) keep the
+  // 2-column "Kepada / Tanggal & Waktu" layout.
+  const s = isThermal
+    ? {
+        wrapPadding: '2mm',
+        headerGap: '2mm',
+        headerBorder: '1px solid #ee5a8a',
+        logoSize: '12mm',
+        h2Size: '1.1em',
+        smallSize: '0.78em',
+        gridCols: '1fr',
+        blockTitleSize: '0.72em',
+        blockBodySize: '0.85em',
+        tableSize: '0.82em',
+        cellPad: '1mm 1.5mm',
+        totalsRowSize: '0.85em',
+        totalsGrandSize: '1em',
+        footerGap: '2mm',
+        footerColDir: 'column',
+        footerLabelSize: '0.78em',
+        footerNameMargin: '8mm',
+        ownerSigMaxH: '12mm',
+        thankSize: '0.78em'
+      }
+    : {
+        wrapPadding: '5mm',
+        headerGap: '3mm',
+        headerBorder: '2px solid #ee5a8a',
+        logoSize: '20mm',
+        h2Size: '1.2em',
+        smallSize: '0.85em',
+        gridCols: '1fr 1fr',
+        blockTitleSize: '0.78em',
+        blockBodySize: '0.95em',
+        tableSize: '0.92em',
+        cellPad: '2mm 2.5mm',
+        totalsRowSize: '0.95em',
+        totalsGrandSize: '1.15em',
+        footerGap: '4mm',
+        footerColDir: 'row',
+        footerLabelSize: '0.85em',
+        footerNameMargin: '14mm',
+        ownerSigMaxH: '16mm',
+        thankSize: '0.88em'
+      };
+
   return `
-    <div class="invoice">
-      <div class="invoice-header">
-        <div class="invoice-brand">
-          ${logoSrc ? `<img src="${logoSrc}" alt="" crossorigin="anonymous">` : '<span style="font-size:2.4rem;">🌸</span>'}
-          <div>
-            <h2>${esc(biz.business_name || 'Adzkiya Mom Baby Care')}</h2>
-            <small>${esc(biz.tagline || 'Layanan Kesehatan Ibu & Anak Terpercaya')}<br>
+    <div style="width:100%;background:white;border:1px solid #f0e0e5;border-radius:8px;padding:${s.wrapPadding};box-sizing:border-box;color:#2a1822;font-family:'Plus Jakarta Sans','Helvetica Neue',Arial,sans-serif;font-size:${fontPt}pt;line-height:1.45;">
+      <div style="display:flex;flex-wrap:wrap;align-items:flex-start;justify-content:space-between;gap:${s.headerGap};padding-bottom:3mm;border-bottom:${s.headerBorder};">
+        <div style="display:flex;gap:3mm;align-items:center;flex:1 1 60%;min-width:0;">
+          ${logoSrc ? `<img src="${logoSrc}" alt="" crossorigin="anonymous" style="max-width:${s.logoSize};max-height:${s.logoSize};object-fit:contain;display:block;">` : '<span style="font-size:2.4rem;">🌸</span>'}
+          <div style="min-width:0;flex:1;">
+            <h2 style="font-size:${s.h2Size};margin:0 0 1mm;font-weight:800;color:#2a1822;">${esc(biz.business_name || 'Adzkiya Mom Baby Care')}</h2>
+            <small style="font-size:${s.smallSize};line-height:1.4;color:#6a5a64;word-break:break-word;display:block;">${esc(biz.tagline || 'Layanan Kesehatan Ibu & Anak Terpercaya')}<br>
             ${esc(biz.address || '')}<br>
             WA: ${esc(biz.phone || '085887018194')}</small>
           </div>
         </div>
-        <div class="invoice-meta">
-          <strong>KWITANSI</strong>
-          <span class="invoice-meta-no">${esc(r.invoice_no || '')}</span>
-          <small>${new Date(r.created_at).toLocaleDateString('id-ID', { day:'2-digit', month:'long', year:'numeric' })}</small>
+        <div style="text-align:right;flex:0 0 auto;min-width:0;">
+          <strong style="display:block;font-size:0.95em;letter-spacing:1px;color:#6a5a64;margin-bottom:1mm;">KWITANSI</strong>
+          <span style="display:block;font-size:1.05em;font-weight:700;color:#2a1822;margin-bottom:1mm;">${esc(r.invoice_no || '')}</span>
+          <small style="font-size:0.82em;color:#6a5a64;">${new Date(r.created_at).toLocaleDateString('id-ID', { day:'2-digit', month:'long', year:'numeric' })}</small>
         </div>
       </div>
-      <div class="invoice-grid">
-        <div class="invoice-block">
-          <h4>Kepada</h4>
-          <p class="invoice-block-body">
+      <div style="display:grid;grid-template-columns:${s.gridCols};gap:4mm;margin:4mm 0 3mm;">
+        <div style="min-width:0;">
+          <h4 style="font-size:${s.blockTitleSize};text-transform:uppercase;letter-spacing:0.5px;color:#8b6878;margin:0 0 2mm;font-weight:700;">Kepada</h4>
+          <p style="font-size:${s.blockBodySize};line-height:1.45;word-break:break-word;margin:0;color:#2a1822;">
             <strong>${esc(r.patient_name || '-')}</strong><br>
             ${esc(r.whatsapp || '')}<br>
             ${esc(r.address || '')}
           </p>
         </div>
-        <div class="invoice-block">
-          <h4>Tanggal & Waktu Layanan ${sessionsLabel}</h4>
-          <p class="invoice-block-body">
+        <div style="min-width:0;">
+          <h4 style="font-size:${s.blockTitleSize};text-transform:uppercase;letter-spacing:0.5px;color:#8b6878;margin:0 0 2mm;font-weight:700;">Tanggal & Waktu Layanan ${sessionsLabel}</h4>
+          <p style="font-size:${s.blockBodySize};line-height:1.45;word-break:break-word;margin:0;color:#2a1822;">
             ${r.service_date ? new Date(r.service_date).toLocaleDateString('id-ID', { day:'2-digit', month:'long', year:'numeric' }) : '-'}
             <div style="margin-top:2mm;">${timesHtml}</div>
           </p>
         </div>
       </div>
-      <table class="invoice-table">
-        <thead><tr><th>Layanan</th><th class="num">Qty</th><th class="num">Harga</th><th class="num">Subtotal</th></tr></thead>
+      <table style="width:100%;border-collapse:collapse;margin:3mm 0;font-size:${s.tableSize};table-layout:fixed;">
+        <thead>
+          <tr style="background:#ee5a8a;color:white;">
+            <th style="border-bottom:1px solid #ffd6e2;padding:${s.cellPad};text-align:left;font-weight:700;word-break:break-word;">Layanan</th>
+            <th style="border-bottom:1px solid #ffd6e2;padding:${s.cellPad};text-align:right;font-weight:700;word-break:break-word;width:14%;">Qty</th>
+            <th style="border-bottom:1px solid #ffd6e2;padding:${s.cellPad};text-align:right;font-weight:700;word-break:break-word;width:22%;">Harga</th>
+            <th style="border-bottom:1px solid #ffd6e2;padding:${s.cellPad};text-align:right;font-weight:700;word-break:break-word;width:25%;">Subtotal</th>
+          </tr>
+        </thead>
         <tbody>
           ${items.map(it => `<tr>
-            <td>${esc(it.name)}</td>
-            <td class="num">${it.qty}</td>
-            <td class="num">${fmtRp(it.price)}</td>
-            <td class="num">${fmtRp(it.price * it.qty)}</td>
+            <td style="border-bottom:1px solid #ffd6e2;padding:${s.cellPad};text-align:left;word-break:break-word;vertical-align:top;">${esc(it.name)}</td>
+            <td style="border-bottom:1px solid #ffd6e2;padding:${s.cellPad};text-align:right;white-space:nowrap;vertical-align:top;">${it.qty}</td>
+            <td style="border-bottom:1px solid #ffd6e2;padding:${s.cellPad};text-align:right;white-space:nowrap;vertical-align:top;">${fmtRp(it.price)}</td>
+            <td style="border-bottom:1px solid #ffd6e2;padding:${s.cellPad};text-align:right;white-space:nowrap;vertical-align:top;">${fmtRp(it.price * it.qty)}</td>
           </tr>`).join('')}
         </tbody>
       </table>
-      <div class="totals">
-        <div class="row"><span>Subtotal</span><span>${fmtRp(r.subtotal)}</span></div>
-        ${r.transport_fee ? `<div class="row"><span>Transportasi</span><span>${fmtRp(r.transport_fee)}</span></div>` : ''}
-        ${r.discount ? `<div class="row"><span>Diskon</span><span>-${fmtRp(r.discount)}</span></div>` : ''}
-        <div class="row grand"><span>TOTAL</span><span>${fmtRp(r.total)}</span></div>
+      <div style="margin:3mm 0;">
+        <div style="display:flex;justify-content:space-between;padding:1.5mm 0;font-size:${s.totalsRowSize};border-bottom:1px dashed #ffe0e8;">
+          <span>Subtotal</span><span>${fmtRp(r.subtotal)}</span>
+        </div>
+        ${r.transport_fee ? `<div style="display:flex;justify-content:space-between;padding:1.5mm 0;font-size:${s.totalsRowSize};border-bottom:1px dashed #ffe0e8;"><span>Transportasi</span><span>${fmtRp(r.transport_fee)}</span></div>` : ''}
+        ${r.discount ? `<div style="display:flex;justify-content:space-between;padding:1.5mm 0;font-size:${s.totalsRowSize};border-bottom:1px dashed #ffe0e8;"><span>Diskon</span><span>-${fmtRp(r.discount)}</span></div>` : ''}
+        <div style="display:flex;justify-content:space-between;padding:1.5mm 0;font-size:${s.totalsRowSize};font-weight:800;border-top:2px solid #ee5a8a;padding-top:2.5mm;margin-top:2mm;color:#2a1822;font-size:${s.totalsGrandSize};">
+          <span>TOTAL</span><span>${fmtRp(r.total)}</span>
+        </div>
       </div>
-      <div class="invoice-footer">
-        <div class="footer-row">
-          <div class="footer-col">
-            <div class="footer-label">Penerima,</div>
-            <div class="footer-name">${esc(r.patient_name || '-')}</div>
-            <div class="footer-label" style="margin-top:1mm;">Nama jelas &amp; tanda tangan</div>
+      <div style="margin-top:${s.footerGap};padding-top:3mm;border-top:1px dashed #ffd6e2;">
+        <div style="display:flex;flex-direction:${s.footerColDir};gap:4mm;flex-wrap:wrap;justify-content:space-between;align-items:flex-start;">
+          <div style="flex:1 1 45%;min-width:0;">
+            <div style="font-size:${s.footerLabelSize};color:#6a5a64;margin-bottom:1mm;">Penerima,</div>
+            <div style="border-top:1px solid #2a1822;padding-top:2mm;margin-top:${s.footerNameMargin};font-weight:700;font-size:1em;color:#2a1822;word-break:break-word;">${esc(r.patient_name || '-')}</div>
+            <div style="font-size:${s.footerLabelSize};color:#6a5a64;margin-top:1mm;">Nama jelas &amp; tanda tangan</div>
           </div>
-          <div class="footer-col right">
-            <div class="footer-label">Hormat kami,</div>
-            <img id="ownerSigEmbed" alt="" crossorigin="anonymous" />
-            <div id="ownerSigUnderline" class="footer-name"><em>${esc(biz.practitioner || 'Tasya Hanifah Pramesti, A.Md. Keb., CBME')}</em></div>
-            <div class="footer-label" style="margin-top:1mm;">${esc(biz.business_name || 'Adzkiya Mom Baby Care')}</div>
+          <div style="flex:1 1 45%;min-width:0;text-align:${isThermal ? 'left' : 'right'};">
+            <div style="font-size:${s.footerLabelSize};color:#6a5a64;margin-bottom:1mm;">Hormat kami,</div>
+            <img id="ownerSigEmbed" alt="" crossorigin="anonymous" style="display:none;max-height:${s.ownerSigMaxH};max-width:100%;height:auto;margin:1mm 0;${isThermal ? '' : 'margin-left:auto;'};" />
+            <div id="ownerSigUnderline" style="border-top:1px solid #2a1822;padding-top:2mm;margin-top:${s.footerNameMargin};font-weight:700;font-size:1em;color:#2a1822;word-break:break-word;"><em>${esc(biz.practitioner || 'Tasya Hanifah Pramesti, A.Md. Keb., CBME')}</em></div>
+            <div style="font-size:${s.footerLabelSize};color:#6a5a64;margin-top:1mm;">${esc(biz.business_name || 'Adzkiya Mom Baby Care')}</div>
           </div>
         </div>
-        <div class="thank-you">
-          <strong>Terima kasih atas kepercayaan Anda 🌸</strong>
+        <div style="text-align:center;margin-top:5mm;padding-top:3mm;border-top:1px dashed #ffd6e2;font-size:${s.thankSize};color:#6a5a64;">
+          <strong style="color:#2a1822;display:block;margin-bottom:1mm;font-size:1.1em;">Terima kasih atas kepercayaan Anda 🌸</strong>
           Kwitansi ini sah dan diproses secara elektronik oleh sistem.
         </div>
       </div>
@@ -4922,40 +4992,57 @@ async function saveKwitansiAsPDF(r, paperSize) {
   const ps = KW_PAPER_SIZES[paperSize] || KW_PAPER_SIZES['A5'];
   const isThermal = !!ps.autoHeight;
 
-  // Step 1: build off-screen DOM. Use position:fixed with z-index:-1
-  // + opacity:0 so html2canvas still rasterizes (it skips elements
-  // with display:none or visibility:hidden but NOT opacity:0).
+  // Step 1: build the visible wrap.
+  //
+  // After extensive testing, the only reliably-working approach with
+  // html2canvas 1.4.1 is to render the wrap VISIBLE in the document
+  // (no opacity:0, no display:none, no z-index:-1 — html2canvas skips
+  // or mis-renders all of those). We position the wrap just below
+  // the modal (so the user can see it briefly) and use pointer-events:none
+  // so it doesn't block clicks.
+  //
+  // Earlier versions used various hidden states (opacity:0, z-index:-1,
+  // top:100000px) and ALL of them produced 9KB blank PDFs because
+  // html2canvas captured an empty 0×0 canvas.
   const wrap = document.createElement('div');
   wrap.className = 'kw-pdf-wrap';
-  // Padding 0 because the .invoice inside has its own 5mm padding.
+  // Position the wrap just below the modal (~600px down). The user
+  // will see a brief flash of the invoice before it's snapshotted.
+  // We use position:absolute (relative to body since body isn't
+  // positioned) so it doesn't affect the document's normal flow.
   wrap.style.cssText = [
-    'position:fixed',
+    'position:absolute',
     'left:0',
-    'top:0',
-    'z-index:-1',
-    'opacity:0',
-    'pointer-events:none',
+    'top:0',                          // top-left of document body
     'background:white',
     'color:#2a1822',
     `width:${ps.width}mm`,
     'padding:0',
     'margin:0',
     'box-sizing:border-box',
-    'font-family:"Plus Jakarta Sans","Helvetica Neue",Arial,sans-serif'
+    'font-family:"Plus Jakarta Sans","Helvetica Neue",Arial,sans-serif',
+    'pointer-events:none',            // don't block clicks underneath
+    'z-index:2147483646'              // max-safe z-index minus 1
   ].join(';');
 
-  // Inject the inline <style> block FIRST so subsequent elements
-  // inherit the rules. We append it as a child <style> node, NOT
-  // to document.head, so the rules only apply to this wrap.
-  const style = document.createElement('style');
-  style.textContent = buildInvoiceInlineCSS(ps.fontPt) + (isThermal ? buildThermalOverrides(ps.fontPt) : '');
-  wrap.appendChild(style);
+  // No <style> block needed — all styling is inline on each element
+  // (see buildKwitansiHtmlForExport). html2canvas reads inline styles
+  // directly via getComputedStyle without needing to parse any
+  // stylesheet rules.
 
-  // Inject the invoice HTML as a child.
+  // Inject the invoice HTML as a child. All visual styling is now
+  // baked into the HTML as inline style="" attributes — no separate
+  // <style> block needed (which html2canvas had trouble with).
+  // The body wrapper uses display:inline-block so it shrinks to fit
+  // the invoice content (instead of stretching to 100% of body width).
   const body = document.createElement('div');
-  body.innerHTML = buildKwitansiHtmlForExport(r);
+  body.style.cssText = 'display:inline-block;background:white;color:#2a1822;';
+  body.innerHTML = buildKwitansiHtmlForExport(r, ps.fontPt, isThermal);
   wrap.appendChild(body);
 
+  // Append wrap directly to body. wrap is positioned absolute, so it
+  // doesn't affect document layout. The brief visual flash is
+  // acceptable for the reliability win over hidden positioning.
   document.body.appendChild(wrap);
 
   // Step 2: populate owner signature (if any) so it renders into
@@ -5004,27 +5091,55 @@ async function saveKwitansiAsPDF(r, paperSize) {
 
   // Step 4: rasterize the wrap to canvas. Force a synchronous layout
   // pass so getBoundingClientRect returns the post-style values
-  // (not the initial 0).
+  // (not the initial 0). Reading offsetHeight/Width also forces
+  // the browser to compute layout synchronously — without this,
+  // the next html2canvas call may capture an un-laid-out DOM.
   wrap.getBoundingClientRect();
   const wrapHeightPx = wrap.offsetHeight;
+  const wrapWidthPx = wrap.offsetWidth;
+  // Explicit canvas dimensions in CSS pixels at 96 DPI baseline.
+  // 1mm = 3.7795px. We compute this so html2canvas doesn't have to
+  // guess the wrap's size — it just uses our number. This is the
+  // single biggest fix for the "9KB blank PDF" symptom: if we
+  // don't pass width/height and the wrap is in an unusual CSS
+  // context (off-screen, opacity-0, behind elements), html2canvas
+  // may produce a 0×0 canvas.
+  const mmToPx = 96 / 25.4;
+  // Use the wrap's ACTUAL measured size if available; fall back to
+  // computed size from paper dimensions if measurement failed.
+  const wrapWidthCssPx = Math.max(
+    wrapWidthPx || Math.ceil(ps.width * mmToPx),
+    Math.ceil(ps.width * mmToPx)
+  );
+  const wrapHeightCssPx = Math.max(
+    wrapHeightPx || (isThermal ? 200 * mmToPx : ps.height * mmToPx),
+    100  // floor: never less than 100px so we always get a canvas
+  );
+  console.log('[kw-pdf] Capturing canvas:', wrapWidthCssPx, 'x', wrapHeightCssPx, 'px for paper size', paperSize);
   // Step 5: rasterize to canvas.
   let canvas;
   try {
     canvas = await html2canvas(wrap, {
-      scale: 2, // 2x for crisp output on retina/print
+      // Explicit size — html2canvas needs to know what dimensions to
+      // render. Without this, it sometimes captures only a portion of
+      // the wrap (e.g. just the visible viewport area), leading to
+      // partial or empty PDFs.
+      width: wrapWidthCssPx,
+      height: wrapHeightCssPx,
+      // scale:2 = 2x for crisp output on retina/print (canvas pixels
+      // are 2x CSS pixels — final canvas.width === wrapWidthCssPx*2).
+      scale: 2,
       backgroundColor: '#ffffff',
       useCORS: true,
       logging: false,
-      // Critical: html2canvas needs to know the wrap's height
-      // explicitly when computing the canvas. Without `windowHeight`,
-      // it sometimes uses just the viewport height and clips.
-      windowWidth: Math.max(wrap.scrollWidth, wrap.offsetWidth),
-      windowHeight: Math.max(wrap.scrollHeight, wrap.offsetHeight),
+      // Default windowWidth/windowHeight — wrap is visible at top:0
+      // in the viewport, so html2canvas sees it naturally.
       scrollX: 0,
-      scrollY: 0
+      scrollY: 0,
+      removeContainer: true
     });
   } catch (e) {
-    document.body.removeChild(wrap);
+    try { document.body.removeChild(wrap); } catch (e) {}
     throw new Error('Gagal render kwitansi ke canvas: ' + e.message);
   }
 
@@ -5096,7 +5211,7 @@ async function saveKwitansiAsPDF(r, paperSize) {
   try {
     pdf.save(filename);
   } finally {
-    document.body.removeChild(wrap);
+    try { document.body.removeChild(wrap); } catch (e) {}
   }
 }
 
