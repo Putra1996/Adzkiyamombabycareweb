@@ -46,6 +46,26 @@ async function loadServices() {
   } catch (e) { console.error(e); }
 }
 
+
+// Look up the translation for a raw category name from /api/services.
+// Falls back to the original ID name if no mapping exists, so older
+// servers that add new categories don't break the homepage.
+const CAT_KEY_MAP = {
+  'Basic Treatment Ibu': 'basic_ibu',
+  'Paket Spa Ibu Hamil': 'paket_spa_hamil',
+  'Basic Spa Untuk Ibu': 'basic_spa_ibu',
+  'Perawatan Ibu & Newborn': 'perawatan_ibu_newborn',
+  'Massage Laktasi (Paket)': 'massage_laktasi_paket',
+  'Baby Treatment (0–12 Bulan)': 'baby_treatment',
+  'Newborn Care': 'newborn_care',
+  'Toddler Treatment (1–3 Tahun)': 'toddler_treatment',
+  'Kids Treatment (4–5 Tahun)': 'kids_treatment',
+};
+function translateCat(rawCat) {
+  const key = CAT_KEY_MAP[rawCat];
+  return key ? window.t('home.cat.' + key) : rawCat;
+}
+
 // Build the tabs + grid using fresh translations every time the
 // language changes (the i18n module fires the `i18n:applied` event).
 function renderServices(filter) {
@@ -63,7 +83,7 @@ function renderServices(filter) {
   cats.forEach(c => {
     const b = document.createElement('button');
     b.className = 'cat-tab' + (filter === c.cat ? ' active' : '');
-    b.textContent = c.cat;
+    b.textContent = translateCat(c.cat);
     b.dataset.cat = c.cat;
     tabs.appendChild(b);
   });
@@ -85,7 +105,7 @@ function renderServices(filter) {
       const card = document.createElement('div');
       card.className = 'service-card';
       card.innerHTML = `
-        <div class="scat">${c.cat}</div>
+        <div class="scat">${translateCat(c.cat)}</div>
         <h4>${it.name}</h4>
         <div class="price">${fmtRp(it.price)} <small>${perSession}</small></div>
         <button class="order-btn" onclick="goReserve('${it.name.replace(/'/g, "\\'")}', ${it.price})">${orderLabel} →</button>

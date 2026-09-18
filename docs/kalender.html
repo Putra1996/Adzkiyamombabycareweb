@@ -4,9 +4,21 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Kalender Treatment — Adzkiya Mom Baby Care</title>
+<link rel="alternate" hreflang="id" href="/kalender.html?lang=id">
+<link rel="alternate" hreflang="en" href="/kalender.html?lang=en">
+<link rel="alternate" hreflang="x-default" href="/kalender.html">
+<meta name="description" content="Lihat jadwal ketersediaan treatment home service Adzkiya Mom Baby Care sebelum melakukan reservasi.">
+<meta name="theme-color" content="#ee5a8a" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#1c1118" media="(prefers-color-scheme: dark)">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Kalender Adzkiya">
+<meta property="og:title" content="Kalender Reservasi Adzkiya Mom Baby Care">
+<meta property="og:description" content="Cek jadwal treatment home service yang masih tersedia.">
+<meta property="og:image" content="/api/logo">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
 <link rel="stylesheet" href="/css/style.css">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='80' font-size='90'%3E🌸%3C/text%3E%3C/svg%3E">
 </head>
@@ -15,47 +27,60 @@
 <nav class="nav">
   <div class="nav-inner">
     <a href="/" class="brand">
-      <div class="brand-logo">🌸</div>
+      <div class="brand-logo" aria-hidden="true">🌸</div>
       <div class="brand-text">Adzkiya Mom Baby Care<small>Mom & Baby Care</small></div>
     </a>
-    <button class="mobile-toggle" onclick="document.getElementById('navLinks').classList.toggle('open')">☰</button>
+    <button class="mobile-toggle" onclick="document.getElementById('navLinks').classList.toggle('open')" aria-label="Buka menu">☰</button>
     <div class="nav-links" id="navLinks">
-      <a href="/">Beranda</a>
-      <a href="/#layanan">Layanan</a>
-      <a href="/kalender.html" class="active">Kalender</a>
-      <a href="/#kontak">Kontak</a>
-      <button class="theme-toggle" id="themeToggle">🌙</button>
-      <a href="/reservasi.html" class="btn-nav">Reservasi</a>
+      <a href="/" data-i18n="nav.beranda">Beranda</a>
+      <a href="/#layanan" data-i18n="nav.layanan">Layanan</a>
+      <a href="/kalender.html" class="active" aria-current="page" data-i18n="nav.kalender">Kalender</a>
+      <a href="/#kontak" data-i18n="nav.kontak">Kontak</a>
+      <button class="theme-toggle" id="themeToggle" aria-label="Toggle tema">🌙</button>
+      <button class="lang-toggle" id="langToggle" type="button" data-i18n-attr="aria-label:nav.language_toggle">🌐 EN</button>
+      <a href="/reservasi.html" class="btn-nav" data-i18n="nav.reservasi">Reservasi</a>
     </div>
   </div>
 </nav>
 
-<section class="section" style="padding-top: 50px;">
+<section class="section" style="padding-top: 40px; padding-bottom: 30px;">
   <div class="container">
-    <div class="section-head" style="margin-bottom: 28px;">
+    <div class="section-head" style="margin-bottom: 20px;">
       <span class="section-eyebrow">Jadwal Treatment</span>
-      <h2>📅 Kalender Reservasi</h2>
-      <p>Cek jadwal yang sudah dikonfirmasi sebelum melakukan reservasi.</p>
+      <h2 data-i18n="kalender.h_title">📅 Kalender Reservasi</h2>
+      <p data-i18n="kalender.h_sub">Cek jadwal yang sudah dikonfirmasi sebelum melakukan reservasi.</p>
     </div>
 
-    <div class="calendar-wrap">
+    <div class="calendar-wrap cal-compact">
       <div class="cal-header">
         <h3 id="calLabel">—</h3>
         <div class="cal-nav">
-          <button onclick="prevMonth()">‹</button>
-          <button onclick="todayBtn()">Hari ini</button>
-          <button onclick="nextMonth()">›</button>
+          <button onclick="prevMonth()" title="Bulan sebelumnya" aria-label="Bulan sebelumnya">‹</button>
+          <button onclick="todayBtn()" aria-label="Ke bulan ini" data-i18n="kalender.today">Hari ini</button>
+          <button onclick="nextMonth()" title="Bulan berikutnya" aria-label="Bulan berikutnya">›</button>
         </div>
       </div>
       <div class="cal-grid" id="calGrid"></div>
-      <div style="margin-top: 24px; display: flex; gap: 24px; justify-content: center; flex-wrap: wrap; font-size: 0.85rem; color: var(--text-soft);">
-        <div><span class="dot" style="display:inline-block;width:10px;height:10px;border-radius:50%;background:var(--primary);margin-right:6px;"></span>Ada treatment terjadwal</div>
-        <div>Hover ke tanggal untuk melihat detail</div>
+      <div class="cal-legend">
+        <span><span class="swatch today"></span><span data-i18n="kalender.today">Hari ini</span></span>
+        <span><span class="swatch has-events"></span>Ada treatment</span>
+        <span><span class="swatch full"></span>Penuh</span>
+        <span><span class="swatch blackout"></span><span data-i18n="kalender.libur">Hari Libur</span></span>
+        <span>💡 Klik tanggal untuk lihat detail</span>
       </div>
     </div>
 
-    <div style="text-align: center; margin-top: 30px;">
-      <a href="/reservasi.html" class="btn btn-primary">📅 Buat Reservasi Baru</a>
+    <!-- Detail modal (shown on date click) -->
+    <div id="dateDetail" style="display:none;margin-top:18px;background:var(--card);border-radius:12px;padding:18px;border:1px solid var(--border);">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+        <h3 style="margin:0;" id="dateDetailTitle">—</h3>
+        <button onclick="closeDetail()" class="btn-sm btn-view">Tutup</button>
+      </div>
+      <div id="dateDetailContent"></div>
+    </div>
+
+    <div style="text-align: center; margin-top: 24px;">
+      <a href="/reservasi.html" class="btn btn-primary" data-i18n="kalender.detail_cta">📅 Buat Reservasi Baru</a>
     </div>
   </div>
 </section>
@@ -63,79 +88,21 @@
 <footer>
   <div class="footer-inner">
     <div>© 2026 Adzkiya Mom Baby Care</div>
-    <div><a href="/admin">Admin Login</a></div>
+    <div><a href="/admin" data-i18n="nav.admin">Admin Login</a></div>
   </div>
 </footer>
 
-<script src="/js/main.js"></script>
-<script>
-let viewDate = new Date();
-let events = [];
-
-async function loadEvents() {
-  const res = await fetch('/api/calendar');
-  events = await res.json();
-  renderCalendar();
-}
-
-function renderCalendar() {
-  const y = viewDate.getFullYear();
-  const m = viewDate.getMonth();
-  const monthNames = ['Januari','Februari','Maret','April','Mei','Juni','Juli','Agustus','September','Oktober','November','Desember'];
-  document.getElementById('calLabel').textContent = `${monthNames[m]} ${y}`;
-  const grid = document.getElementById('calGrid');
-  grid.innerHTML = '';
-  const dayNames = ['Min','Sen','Sel','Rab','Kam','Jum','Sab'];
-  dayNames.forEach(d => {
-    const h = document.createElement('div');
-    h.className = 'cal-cell head'; h.textContent = d;
-    grid.appendChild(h);
-  });
-  const firstDay = new Date(y, m, 1).getDay();
-  const daysInMonth = new Date(y, m + 1, 0).getDate();
-  const prevDays = new Date(y, m, 0).getDate();
-  const todayStr = new Date().toISOString().slice(0, 10);
-
-  for (let i = firstDay - 1; i >= 0; i--) {
-    const c = document.createElement('div');
-    c.className = 'cal-cell muted';
-    c.innerHTML = `<span class="day-num">${prevDays - i}</span>`;
-    grid.appendChild(c);
-  }
-  for (let d = 1; d <= daysInMonth; d++) {
-    const dateStr = `${y}-${String(m + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
-    const dayEvents = events.filter(e => e.reservation_date === dateStr);
-    const c = document.createElement('div');
-    c.className = 'cal-cell' + (dateStr === todayStr ? ' today' : '');
-    c.innerHTML = `<span class="day-num">${d}</span>`;
-    dayEvents.slice(0, 2).forEach(e => {
-      const ev = document.createElement('div');
-      ev.className = 'ev';
-      ev.title = `${e.reservation_time} — ${e.service_name}`;
-      ev.textContent = `${e.reservation_time.slice(0,5)} ${e.service_name}`;
-      c.appendChild(ev);
-    });
-    if (dayEvents.length > 2) {
-      const more = document.createElement('div');
-      more.className = 'ev';
-      more.textContent = `+${dayEvents.length - 2} lainnya`;
-      c.appendChild(more);
-    }
-    grid.appendChild(c);
-  }
-  const cells = firstDay + daysInMonth;
-  const trail = (7 - (cells % 7)) % 7;
-  for (let i = 1; i <= trail; i++) {
-    const c = document.createElement('div');
-    c.className = 'cal-cell muted';
-    c.innerHTML = `<span class="day-num">${i}</span>`;
-    grid.appendChild(c);
-  }
-}
-function prevMonth() { viewDate.setMonth(viewDate.getMonth() - 1); renderCalendar(); }
-function nextMonth() { viewDate.setMonth(viewDate.getMonth() + 1); renderCalendar(); }
-function todayBtn() { viewDate = new Date(); renderCalendar(); }
-loadEvents();
+<script defer src="/js/i18n.js"></script>
+<script defer src="/js/main.js"></script>
+<script defer src="/js/kalender.js"></script>
+<script defer>
+// Bind the language toggle button (kalender.js builds the calendar;
+// main.js binds i18n:applied to re-render services if any). Re-render
+// the calendar grid on language change so blackout labels switch.
+document.addEventListener('DOMContentLoaded', () => {
+  if (window.i18n) window.i18n.bindToggle(document.getElementById('langToggle'));
+});
+document.addEventListener('i18n:applied', () => { try { renderCalendar(); } catch {} });
 </script>
 </body>
 </html>

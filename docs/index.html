@@ -26,14 +26,16 @@
     </a>
     <button class="mobile-toggle" onclick="document.getElementById('navLinks').classList.toggle('open')">☰</button>
     <div class="nav-links" id="navLinks">
-      <a href="#beranda" class="active">Beranda</a>
-      <a href="#layanan">Layanan</a>
-      <a href="#tentang">Tentang</a>
-      <a href="#testimoni">Testimoni</a>
-      <a href="/kalender.html">Kalender</a>
-      <a href="#kontak">Kontak</a>
+      <a href="#beranda" class="active" data-i18n="nav.beranda">Beranda</a>
+      <a href="#layanan" data-i18n="nav.layanan">Layanan</a>
+      <a href="#tentang" data-i18n="nav.tentang">Tentang</a>
+      <a href="#testimoni" data-i18n="nav.testimoni">Testimoni</a>
+      <a href="/kalender.html" data-i18n="nav.kalender">Kalender</a>
+      <a href="#kontak" data-i18n="nav.kontak">Kontak</a>
       <button class="theme-toggle" id="themeToggle" title="Toggle theme">🌙</button>
-      <a href="/reservasi.html" class="btn-nav">Reservasi</a>
+      <button class="theme-toggle" id="langToggle" type="button" data-i18n-attr="aria-label:nav.language_toggle">🌐 EN</button>
+      
+      <a href="/reservasi.html" class="btn-nav" data-i18n="nav.reservasi">Reservasi</a>
     </div>
   </div>
 </nav>
@@ -43,17 +45,17 @@
   <div class="hero-bg" id="heroBg"></div>
   <div class="hero-inner">
     <div>
-      <span class="eyebrow">✨ Home Service Nusawungu — Cilacap</span>
-      <h1>Sentuhan Lembut untuk <span>Bunda & Si Kecil</span></h1>
+      <span class="eyebrow" data-i18n="home.eyebrow">✨ Home Service Nusawungu — Cilacap</span>
+      <h1 data-i18n-html="home.hero_h1_full">Sentuhan Lembut untuk <span>Bunda &amp; Si Kecil</span></h1>
       <p class="lead" id="heroTagline">Spa, massage, dan perawatan profesional khusus ibu hamil, nifas, bayi, balita & kids. Dipandu bidan tersertifikasi langsung ke rumah Anda.</p>
       <div class="hero-ctas">
-        <a href="/reservasi.html" class="btn btn-primary">📅 Reservasi Sekarang</a>
-        <a href="https://wa.me/6285887018194?text=Halo%20Adzkiya%20Mom%20Baby%20Care%2C%20saya%20ingin%20bertanya" target="_blank" class="btn btn-wa">💬 Chat WhatsApp</a>
+        <a href="/reservasi.html" class="btn btn-primary" data-i18n="home.hero_cta">📅 Reservasi Sekarang</a>
+        <a href="https://wa.me/6285887018194?text=Halo%20Adzkiya%20Mom%20Baby%20Care%2C%20saya%20ingin%20bertanya" target="_blank" class="btn btn-wa" data-i18n="home.hero_wa">💬 Chat WhatsApp</a>
       </div>
       <div class="hero-stats">
-        <div><strong>40+</strong><span>Jenis Layanan</span></div>
-        <div><strong>100%</strong><span>Home Service</span></div>
-        <div><strong>CBME</strong><span>Bidan Bersertifikat</span></div>
+        <div><strong>40+</strong><span data-i18n="home.hero_stat1_label">Jenis Layanan</span></div>
+        <div><strong>100%</strong><span data-i18n="home.hero_stat2_label">Home Service</span></div>
+        <div><strong>CBME</strong><span data-i18n="home.hero_stat3_label">Bidan Bersertifikat</span></div>
       </div>
     </div>
     <div class="hero-visual" id="heroVisual">
@@ -61,8 +63,8 @@
       <div class="hero-logo-wrap" id="heroLogoWrap">
         <img src="/api/logo" alt="Adzkiya" id="heroLogoImg" onerror="document.getElementById('heroLogoWrap').innerHTML='<div class=hero-emoji>🤱</div>'">
       </div>
-      <div class="float-card fc1"><div class="ic" style="background:var(--pink-400)">💆</div>Mom Spa<br><small style="color:var(--text-soft);font-weight:500">Mulai 80rb</small></div>
-      <div class="float-card fc2"><div class="ic" style="background:var(--peach-300)">👶</div>Baby Treatment<br><small style="color:var(--text-soft);font-weight:500">Mulai 25rb</small></div>
+      <div class="float-card fc1"><div class="ic" style="background:var(--pink-400)">💆</div><span data-i18n="home.fc1_title">Mom Spa</span><br><small style="color:var(--text-soft);font-weight:500" data-i18n="home.fc1_sub">Mulai 80rb</small></div>
+      <div class="float-card fc2"><div class="ic" style="background:var(--peach-300)">👶</div><span data-i18n="home.fc2_title">Baby Treatment</span><br><small style="color:var(--text-soft);font-weight:500" data-i18n="home.fc2_sub">Mulai 25rb</small></div>
     </div>
   </div>
 </section>
@@ -71,15 +73,15 @@
 <section class="section">
   <div class="container">
     <div class="section-head">
-      <span class="section-eyebrow">Mengapa Memilih Kami</span>
-      <h2>Perawatan yang Bisa Dipercaya</h2>
-      <p>Dirancang dengan kelembutan, dijalankan dengan keahlian. Setiap sesi disesuaikan dengan kebutuhan ibu dan buah hati.</p>
+      <span class="section-eyebrow" data-i18n="home.whyus_eyebrow">Mengapa Memilih Kami</span>
+      <h2 data-i18n="home.whyus_h2">Perawatan yang Bisa Dipercaya</h2>
+      <p data-i18n="home.whyus_p">Dirancang dengan kelembutan, dijalankan dengan keahlian. Setiap sesi disesuaikan dengan kebutuhan ibu dan buah hati.</p>
     </div>
     <div class="features">
-      <div class="feature"><div class="icn">🏠</div><h3>Home Service</h3><p>Bidan datang langsung ke rumah, Bunda cukup rebahan dan menikmati perawatan.</p></div>
-      <div class="feature"><div class="icn">🎓</div><h3>Bidan Bersertifikat</h3><p>Ditangani A.Md. Keb., CBME (Certified Baby Massage Educator) yang berpengalaman.</p></div>
-      <div class="feature"><div class="icn">🌿</div><h3>Bahan Alami</h3><p>Menggunakan minyak & produk aman bagi ibu hamil, ibu menyusui, dan bayi.</p></div>
-      <div class="feature"><div class="icn">⏰</div><h3>Fleksibel</h3><p>Jadwal bisa disesuaikan dengan kenyamanan Bunda, termasuk akhir pekan.</p></div>
+      <div class="feature"><div class="icn">🏠</div><h3 data-i18n="home.feat_home_h">Home Service</h3><p data-i18n="home.feat_home_p">Bidan datang langsung ke rumah, Bunda cukup rebahan dan menikmati perawatan.</p></div>
+      <div class="feature"><div class="icn">🎓</div><h3 data-i18n="home.feat_cert_h">Bidan Bersertifikat</h3><p data-i18n="home.feat_cert_p">Ditangani A.Md. Keb., CBME (Certified Baby Massage Educator) yang berpengalaman.</p></div>
+      <div class="feature"><div class="icn">🌿</div><h3 data-i18n="home.feat_alami_h">Bahan Alami</h3><p data-i18n="home.feat_alami_p">Menggunakan minyak &amp; produk aman bagi ibu hamil, ibu menyusui, dan bayi.</p></div>
+      <div class="feature"><div class="icn">⏰</div><h3 data-i18n="home.feat_flex_h">Fleksibel</h3><p data-i18n="home.feat_flex_p">Jadwal bisa disesuaikan dengan kenyamanan Bunda, termasuk akhir pekan.</p></div>
     </div>
   </div>
 </section>
@@ -88,9 +90,9 @@
 <section class="section" id="layanan">
   <div class="container">
     <div class="section-head">
-      <span class="section-eyebrow">Daftar Layanan</span>
-      <h2>Pilih Perawatan Favoritmu</h2>
-      <p>Mulai dari pijat ibu hamil sampai newborn care, semuanya tersedia di sini.</p>
+      <span class="section-eyebrow" data-i18n="home.services_eyebrow">Daftar Layanan</span>
+      <h2 data-i18n="home.services_h2">Pilih Perawatan Favoritmu</h2>
+      <p data-i18n="home.services_p">Mulai dari pijat ibu hamil sampai newborn care, semuanya tersedia di sini.</p>
     </div>
     <div class="cat-tabs" id="catTabs"></div>
     <div class="service-grid" id="serviceGrid"></div>
@@ -105,15 +107,15 @@
         <img src="/api/logo" alt="Adzkiya" onerror="this.parentElement.innerHTML='🌷'" style="width:65%;height:auto;object-fit:contain;">
       </div>
       <div class="about-content">
-        <span class="section-eyebrow">Tentang Adzkiya</span>
-        <h2>Mom & Baby Care Profesional di Nusawungu</h2>
-        <p>Adzkiya Mom Baby Care hadir untuk menemani perjalanan Bunda — sejak kehamilan, masa nifas, menyusui, hingga tumbuh kembang si kecil. Kami percaya setiap ibu berhak mendapat perawatan yang lembut, aman, dan profesional di lingkungan rumahnya sendiri.</p>
-        <p>Dengan layanan home service, kami siap melayani area <strong>Nusawungu, Cilacap</strong> dan sekitarnya.</p>
+        <span class="section-eyebrow" data-i18n="home.about_eyebrow">Tentang Adzkiya</span>
+        <h2 data-i18n="home.about_h2">Mom &amp; Baby Care Profesional di Nusawungu</h2>
+        <p data-i18n="home.about_p1">Adzkiya Mom Baby Care hadir untuk menemani perjalanan Bunda — sejak kehamilan, masa nifas, menyusui, hingga tumbuh kembang si kecil. Kami percaya setiap ibu berhak mendapat perawatan yang lembut, aman, dan profesional di lingkungan rumahnya sendiri.</p>
+        <p data-i18n="home.about_p2">Dengan layanan home service, kami siap melayani area <strong>Nusawungu, Cilacap</strong> dan sekitarnya.</p>
         <div class="bidan-card">
           <div class="bidan-avatar">👩‍⚕️</div>
           <div>
             <h4 id="practitionerName">Tasya Hanifah Pramesti</h4>
-            <div class="role">A.Md. Keb., CBME — Bidan Praktisi</div>
+            <div class="role" data-i18n="home.bidan_role">A.Md. Keb., CBME — Bidan Praktisi</div>
           </div>
         </div>
       </div>
@@ -125,16 +127,16 @@
 <section class="section" id="testimoni" style="background:linear-gradient(180deg, var(--pink-50) 0%, var(--bg) 100%);">
   <div class="container">
     <div class="section-head">
-      <span class="section-eyebrow">Apa Kata Bunda</span>
-      <h2>Testimoni Pelanggan</h2>
-      <p>Cerita nyata dari ibu-ibu yang sudah mempercayakan perawatan kepada kami.</p>
+      <span class="section-eyebrow" data-i18n="home.testi_eyebrow">Apa Kata Bunda</span>
+      <h2 data-i18n="home.testi_h2">Testimoni Pelanggan</h2>
+      <p data-i18n="home.testi_p">Cerita nyata dari ibu-ibu yang sudah mempercayakan perawatan kepada kami.</p>
     </div>
     <div class="testi-grid" id="testiGrid">
-      <div style="text-align:center;color:var(--text-soft);grid-column:1/-1;padding:30px;">Memuat testimoni...</div>
+      <div style="text-align:center;color:var(--text-soft);grid-column:1/-1;padding:30px;"><span data-i18n="home.testi_loading">Memuat testimoni...</span></div>
     </div>
     <div style="text-align:center;margin-top:30px;">
       <a id="gmapsBtn" href="https://maps.app.goo.gl/V5RcUDQbep3T5ryp7" target="_blank" rel="noopener" class="btn btn-primary">
-        ⭐ Lihat Semua Ulasan di Google Maps
+        ⭐ <span data-i18n="home.testi_btn">Lihat Semua Ulasan di Google Maps</span>
       </a>
     </div>
   </div>
@@ -144,30 +146,30 @@
 <section class="section" id="kontak">
   <div class="container">
     <div class="section-head">
-      <span class="section-eyebrow">Hubungi Kami</span>
-      <h2>Siap Melayani Bunda</h2>
-      <p>Hubungi kami untuk konsultasi gratis atau langsung lakukan reservasi.</p>
+      <span class="section-eyebrow" data-i18n="home.contact_eyebrow">Hubungi Kami</span>
+      <h2 data-i18n="home.contact_h2">Siap Melayani Bunda</h2>
+      <p data-i18n="home.contact_p">Hubungi kami untuk konsultasi gratis atau langsung lakukan reservasi.</p>
     </div>
     <div class="contact-grid">
-      <div class="contact-card"><div class="icn">📍</div><strong>Alamat</strong><span id="contactAddress">Dusun Klumprit Kulon No. 217, RT 1 RW 1 Klumprit, Nusawungu, Cilacap 53283</span></div>
-      <div class="contact-card"><div class="icn">📞</div><strong>WhatsApp</strong><span id="contactPhone"><a href="https://wa.me/6285887018194" target="_blank">085887018194</a></span></div>
-      <div class="contact-card"><div class="icn">🗺️</div><strong>Wilayah Layanan</strong><span id="contactArea">Nusawungu, Cilacap & sekitarnya</span></div>
-      <div class="contact-card"><div class="icn">🚗</div><strong>Jenis Layanan</strong><span>Home Service (Bidan ke rumah)</span></div>
+      <div class="contact-card"><div class="icn">📍</div><strong data-i18n="home.contact_addr">Alamat</strong><span id="contactAddress">Dusun Klumprit Kulon No. 217, RT 1 RW 1 Klumprit, Nusawungu, Cilacap 53283</span></div>
+      <div class="contact-card"><div class="icn">📞</div><strong data-i18n="home.contact_wa">WhatsApp</strong><span id="contactPhone"><a href="https://wa.me/6285887018194" target="_blank">085887018194</a></span></div>
+      <div class="contact-card"><div class="icn">🗺️</div><strong data-i18n="home.contact_area">Wilayah Layanan</strong><span id="contactArea">Nusawungu, Cilacap & sekitarnya</span></div>
+      <div class="contact-card"><div class="icn">🚗</div><strong data-i18n="home.contact_type">Jenis Layanan</strong><span data-i18n="home.contact_type_val">Home Service (Bidan ke rumah)</span></div>
       <div class="contact-card" style="grid-column:span 2;">
-        <div class="icn">🕒</div><strong>Jam Operasional</strong>
-        <div id="hoursList" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:6px;margin-top:8px;width:100%;font-size:0.88rem;text-align:left;">Memuat...</div>
+        <div class="icn">🕒</div><strong data-i18n="home.contact_hours">Jam Operasional</strong>
+        <div id="hoursList" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:6px;margin-top:8px;width:100%;font-size:0.88rem;text-align:left;" data-i18n="home.contact_hours_loading">Memuat...</div>
       </div>
       <div class="contact-card" style="grid-column:span 2;" id="socialContactCard" style="display:none;">
-        <div class="icn">🌐</div><strong>Media Sosial</strong>
+        <div class="icn">🌐</div><strong data-i18n="home.contact_social">Media Sosial</strong>
         <div id="socialContactList" style="display:flex;gap:10px;flex-wrap:wrap;margin-top:8px;justify-content:center;"></div>
       </div>
       <div class="contact-card" style="grid-column:span 2;" id="gmapsCard">
-        <div class="icn">📍</div><strong>Lokasi di Google Maps</strong>
+        <div class="icn">📍</div><strong data-i18n="home.contact_gmaps">Lokasi di Google Maps</strong>
         <div id="gmapsWrap" style="width:100%;margin-top:10px;border-radius:14px;overflow:hidden;"></div>
       </div>
     </div>
     <div style="text-align:center; margin-top:40px;">
-      <a href="/reservasi.html" class="btn btn-primary">📅 Reservasi Sekarang</a>
+      <a href="/reservasi.html" class="btn btn-primary" data-i18n="home.hero_cta">📅 Reservasi Sekarang</a>
     </div>
   </div>
 </section>
@@ -178,11 +180,12 @@
       © 2026 <span id="footerBrand">Adzkiya Mom Baby Care</span> · Layanan Kesehatan Ibu & Anak Terpercaya
       <div id="socialLinks" style="display:flex;gap:12px;margin-top:10px;flex-wrap:wrap;"></div>
     </div>
-    <div><a href="/admin">Admin Login</a></div>
+    <div><a href="/admin" data-i18n="nav.admin">Admin Login</a></div>
   </div>
 </footer>
 
-<script src="/js/main.js"></script>
+<script defer src="/js/i18n.js"></script>
+  <script src="/js/main.js"></script>
 <script>
 // Load business settings to update name/contact/hero
 fetch('/api/public-settings').then(r => r.json()).then(s => {
@@ -260,7 +263,7 @@ fetch('/api/public-settings').then(r => r.json()).then(s => {
       gw.innerHTML = s.gmaps_embed;
     }
   } else if (s.gmaps_url && gw) {
-    gw.innerHTML = `<a href="${s.gmaps_url}" target="_blank" rel="noopener" style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:30px;background:linear-gradient(135deg,#ffe2ed,#fff1e1);border-radius:14px;text-decoration:none;color:var(--pink-700);font-weight:700;">🗺️ Buka di Google Maps →</a>`;
+    gw.innerHTML = `<a href="${s.gmaps_url}" target="_blank" rel="noopener" style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:30px;background:linear-gradient(135deg,#ffe2ed,#fff1e1);border-radius:14px;text-decoration:none;color:var(--pink-700);font-weight:700;"><span data-i18n="home.contact_gmaps_btn">🗺️ Buka di Google Maps →</span></a>`;
   } else if (gcard) {
     gcard.style.display = 'none';
   }
@@ -533,17 +536,17 @@ fetch('/api/public-settings').then(r => r.json()).then(s => {
     <div class="ai-chat-header-avatar">🌸</div>
     <div class="ai-chat-header-text">
       <div class="ai-chat-header-name" id="aiChatName">Adzkiya Assistant</div>
-      <div class="ai-chat-header-status">online · balas dalam detik</div>
+      <div class="ai-chat-header-status" data-i18n="ai.status">online · balas dalam detik</div>
     </div>
     <button id="aiChatClose" class="ai-chat-close" aria-label="Tutup chat">×</button>
   </div>
   <div id="aiChatMessages" class="ai-chat-messages"></div>
   <div id="aiChatQuick" class="ai-quick-replies"></div>
   <div class="ai-chat-input">
-    <textarea id="aiChatText" rows="1" placeholder="Ketik pesan... (Enter untuk kirim, Shift+Enter untuk baris baru)" maxlength="500"></textarea>
+    <textarea id="aiChatText" rows="1" data-i18n-attr="placeholder:ai.placeholder" placeholder="Ketik pesan... (Enter untuk kirim, Shift+Enter untuk baris baru)" maxlength="500"></textarea>
     <button id="aiChatSend" class="ai-chat-send" aria-label="Kirim pesan" title="Kirim">➤</button>
   </div>
-  <div class="ai-chat-footer-note">Powered by AI · untuk booking final via WhatsApp admin</div>
+  <div class="ai-chat-footer-note" data-i18n="ai.footer_note">Powered by AI · untuk booking final via WhatsApp admin</div>
 </div>
 
 <script>
@@ -613,8 +616,8 @@ fetch('/api/public-settings').then(r => r.json()).then(s => {
     isOpen = true;
     if (!messagesEl.children.length) {
       // First-time greeting
-      appendMessage('Halo! 🌸 Saya Adzkiya Assistant. Ada yang bisa saya bantu untuk booking layanan kami?', 'bot');
-      setQuickReplies(['💆 Lihat layanan', '💰 Cek harga', '📅 Booking sekarang', '📍 Lokasi']);
+      appendMessage(window.t('ai.greeting'), 'bot');
+      setQuickReplies(window.t('ai.quick_replies').split('|'));
     }
     setTimeout(() => inputEl.focus(), 100);
   }
@@ -671,7 +674,7 @@ fetch('/api/public-settings').then(r => r.json()).then(s => {
     })
     .catch(() => {
       typing.remove();
-      appendMessage('Tidak bisa terhubung. Silakan coba lagi atau chat WhatsApp: wa.me/6285887018194', 'bot');
+      appendMessage(window.t('ai.offline_msg') + ' wa.me/6285887018194', 'bot');
     })
     .finally(() => {
       isSending = false;
