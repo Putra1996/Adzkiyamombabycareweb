@@ -1266,8 +1266,9 @@ async function loadReceipts() {
                 <td>${esc(r.patient_name || '-')}</td>
                 <td><strong>${fmtRp(r.total)}</strong></td>
                 <td style="white-space:nowrap;">
-                  <button class="btn-sm btn-view" onclick="openKwitansiDetailModal(${r.id})" title="Lihat">👁️</button>
-                  <button class="btn-sm btn-view" onclick='shareOrPrintKwitansi(${r.id})' title="Kirim/Cetak" aria-label="Kirim atau cetak kwitansi">📤</button>
+                  <button class="btn-sm btn-view" onclick="openKwitansiDetailModal(${r.id})" title="Lihat detail">👁️</button>
+                  <button class="btn-sm" onclick='quickSavePDF(${r.id})' title="Download PDF langsung (pakai ukuran kertas tersimpan)" style="padding:6px 10px;background:#7c3aed;color:white;border:none;font-weight:700;">💾</button>
+                  <button class="btn-sm btn-view" onclick='shareOrPrintKwitansi(${r.id})' title="Kirim/Cetak/Save PDF (buka menu)" aria-label="Kirim atau cetak kwitansi">📤</button>
                   <button class="btn-sm btn-del" onclick="deleteReceipt(${r.id}, '${esc(r.invoice_no)}')" title="Hapus" style="padding:6px 10px;">🗑️</button>
                 </td>
               </tr>`).join('')}
@@ -1285,8 +1286,9 @@ async function loadReceipts() {
             <label style="display:flex;align-items:center;gap:6px;padding:6px 10px;background:var(--bg);border-radius:8px;font-size:0.78rem;font-weight:700;">
               <input type="checkbox" class="kw-chk" value="${r.id}" onchange="updateKwSelCount()"> Pilih
             </label>
-            <button class="btn-sm btn-view" onclick="openKwitansiDetailModal(${r.id})" title="Lihat">👁️ Lihat</button>
-            <button class="btn-sm btn-view" onclick='shareOrPrintKwitansi(${r.id})' title="Kirim ke WA / Cetak" aria-label="Kirim atau cetak kwitansi">📤 Kirim/Cetak</button>
+            <button class="btn-sm btn-view" onclick="openKwitansiDetailModal(${r.id})" title="Lihat detail">👁️ Lihat</button>
+            <button class="btn-sm" onclick='quickSavePDF(${r.id})' title="Download PDF langsung (pakai ukuran kertas tersimpan)" style="background:#7c3aed;color:white;border:none;font-weight:700;">💾 PDF</button>
+            <button class="btn-sm btn-view" onclick='shareOrPrintKwitansi(${r.id})' title="Kirim/Cetak/Save PDF (buka menu)" aria-label="Kirim atau cetak kwitansi">📤 Menu</button>
             <button class="btn-sm btn-del" onclick="deleteReceipt(${r.id}, '${esc(r.invoice_no)}')" title="Hapus">🗑️ Hapus</button>
           </div>
         </div>`).join('')}
@@ -1302,48 +1304,150 @@ function printReceiptById(id) {
 // "Share to customer" — opens a small prompt to choose: share
 // link (for WA/email) or print. Defaults to share-link since the
 // admin is more often on a phone and wants to send a quick link.
+// Direct Save PDF — used by both the modal's primary Download button
+// and by any future inline "PDF" buttons on the kwitansi list.
+// Wraps the async saveKwitansiAsPDF in a try/catch + alert so any
+// failure shows a clear message instead of silently failing.
+async function directSavePDF(r, paperSize, includeSignature) {
+  try {
+    await saveKwitansiAsPDF(r, paperSize, { includeSignature });
+  } catch (e) {
+    alert('Gagal membuat PDF: ' + (e.message || e));
+    console.error('Save PDF failed:', e);
+  }
+}
+
+
+// Quick save PDF (no modal) — uses the admin's saved paper size from
+// localStorage. Called by inline 💾 buttons on the kwitansi list rows.
+// Skips the share/print modal entirely for fastest one-click download.
+async function quickSavePDF(id) {
+  const r = (window._receiptsCache || RECAP_RECEIPTS || []).find(x => x.id === id);
+  if (!r) return alert('Kwitansi tidak ditemukan.');
+  const paperSize = localStorage.getItem('adm_kw_paper_size') || 'A5';
+  // Read includeSignature preference (same default logic as modal).
+  const hasSignature = !!(SETTINGS && SETTINGS.has_owner_signature);
+  const stored = localStorage.getItem('adm_kw_pdf_include_signature');
+  const includeSig = stored === null ? hasSignature : stored === 'true';
+  try {
+    await saveKwitansiAsPDF(r, paperSize, { includeSignature: includeSig });
+  } catch (e) {
+    alert('Gagal membuat PDF: ' + (e.message || e));
+    console.error('Quick save PDF failed:', e);
+  }
+}
+
+// Modal: "Kirim / Cetak / Save PDF Kwitansi" with Save PDF as the
+// primary action. Restructured so the size selector + Download button
+// are immediately visible at the top — fixes the bug where users had
+// to click through other options to find the download.
 function shareOrPrintKwitansi(id) {
   const r = (window._receiptsCache || RECAP_RECEIPTS || []).find(x => x.id === id);
   if (!r) return alert('Kwitansi tidak ditemukan.');
   // Default paper size = A5. Persisted per-admin in localStorage so
   // the choice survives across sessions.
-  let paperSize = localStorage.getItem('adm_kw_paper_size') || 'A5';
+  const paperSize = localStorage.getItem('adm_kw_paper_size') || 'A5';
+  // Default "include signature" = true if admin has one saved, otherwise false.
+  // Also persisted to localStorage so it survives across sessions.
+  const hasSignature = !!(SETTINGS && SETTINGS.has_owner_signature);
+  const includeSigDefault = localStorage.getItem('adm_kw_pdf_include_signature');
+  const includeSig = includeSigDefault === null ? hasSignature : includeSigDefault === 'true';
+
+  // Build size options for the dropdown
+  const sizeOptions = Object.entries(KW_PAPER_SIZES)
+    .map(([k, v]) => `<option value="${k}" ${paperSize === k ? 'selected' : ''}>${v.icon} ${v.label}</option>`)
+    .join('');
+
   openModal(`
-    <h3>📤 Kirim Kwitansi <span style="color:var(--text-soft);font-size:0.85rem;font-weight:500;">${esc(r.invoice_no || '')}</span></h3>
-    <p style="color:var(--text-soft);font-size:0.9rem;margin:6px 0 14px;">Pilih cara kirim kwitansi atas nama <strong>${esc(r.patient_name || 'pasien')}</strong>:</p>
-    <div style="display:grid;gap:10px;">
-      <button onclick="shareKwitansiById(${r.id});closeModal();" class="btn btn-primary" style="width:100%;justify-content:center;padding:12px;">
-        <span>💬 Share Link via WhatsApp</span>
-        <small style="display:block;font-weight:500;font-size:0.78rem;opacity:0.85;">Buat link privat + buka WA template</small>
-      </button>
-      <button onclick="closeModal();printReceiptById(${r.id});" class="btn btn-wa" style="width:100%;justify-content:center;padding:12px;">
-        <span>🖨️ Cetak + Tanda Tangan Pasien</span>
-        <small style="display:block;font-weight:500;font-size:0.78rem;opacity:0.85;">Print preview dengan signature pad (opsional)</small>
-      </button>
-      <div style="padding:14px;background:var(--bg);border:1px solid var(--border);border-radius:12px;">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
-          <strong style="font-size:0.92rem;">💾 Save PDF — Langsung Download</strong>
-          <select id="kwPdfSize" onchange="localStorage.setItem('adm_kw_paper_size', this.value);" style="padding:6px 10px;border:1.5px solid var(--border);border-radius:8px;background:var(--card);color:var(--text);font-size:0.82rem;font-family:inherit;font-weight:600;">
-            ${Object.entries(KW_PAPER_SIZES).map(([k, v]) => `<option value="${k}" ${paperSize === k ? 'selected' : ''}>${v.icon} ${v.label}</option>`).join('')}
-          </select>
-        </div>
-        <button onclick="saveKwitansiAsPDF(_kwitansiForPdf, document.getElementById('kwPdfSize').value)" class="btn btn-primary" style="width:100%;justify-content:center;padding:12px;background:#7c3aed;">
-          <span>💾 Download ${esc(r.invoice_no || 'kwitansi')}.pdf</span>
-          <small style="display:block;font-weight:500;font-size:0.78rem;opacity:0.85;">Ukuran kertas sudah ter-set, langsung print tanpa atur manual</small>
-        </button>
-        <small style="display:block;margin-top:8px;color:var(--text-soft);line-height:1.5;">📐 Pilih ukuran kertas di atas. PDF yang di-generate sudah tertanam ukuran kertas, jadi saat dibuka di laptop/HP → di-print → langsung sesuai tanpa harus setting ukuran kertas lagi di printer dialog.</small>
+    <h3>📤 Kwitansi <span style="color:var(--text-soft);font-size:0.85rem;font-weight:500;">${esc(r.invoice_no || '')}</span></h3>
+    <p style="color:var(--text-soft);font-size:0.9rem;margin:6px 0 14px;">Pilih aksi untuk kwitansi atas nama <strong>${esc(r.patient_name || 'pasien')}</strong>:</p>
+
+    <!-- SECTION 1: SAVE PDF (primary action, put at top so users find it instantly) -->
+    <div style="padding:16px;background:linear-gradient(135deg,#fdf2f8,#fff5f0);border:2px solid #ee5a8a;border-radius:14px;margin-bottom:14px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;flex-wrap:wrap;gap:8px;">
+        <strong style="font-size:1rem;color:#2a1822;">💾 Save PDF — Langsung Download</strong>
+        <span style="font-size:0.7rem;background:#ee5a8a;color:white;padding:2px 8px;border-radius:999px;font-weight:700;letter-spacing:0.5px;">PRIMARY</span>
       </div>
-      <button onclick="downloadProtected('/api/proof/${r.id}', '${esc(r.invoice_no)}.${r.proof_mime ? r.proof_mime.split('/')[1] : 'bin'}')" class="btn btn-outline" style="width:100%;justify-content:center;">
-        📎 Download Bukti Pembayaran
+
+      <label style="display:block;font-size:0.82rem;color:var(--text-soft);margin-bottom:4px;font-weight:600;">📐 Ukuran Kertas</label>
+      <select id="kwPdfSize" onchange="localStorage.setItem('adm_kw_paper_size', this.value);" style="width:100%;padding:8px 10px;border:1.5px solid var(--border);border-radius:8px;background:var(--card);color:var(--text);font-size:0.88rem;font-family:inherit;font-weight:600;margin-bottom:10px;">
+        ${sizeOptions}
+      </select>
+
+      ${hasSignature ? `<label style="display:flex;align-items:center;gap:8px;padding:10px 12px;background:white;border:1px solid var(--border);border-radius:8px;cursor:pointer;margin-bottom:10px;">
+        <input type="checkbox" id="kwPdfIncludeSig" ${includeSig ? 'checked' : ''} onchange="localStorage.setItem('adm_kw_pdf_include_signature', this.checked);" style="width:18px;height:18px;cursor:pointer;accent-color:#ee5a8a;">
+        <span style="font-size:0.88rem;color:var(--text);font-weight:600;">✍️ Sertakan tanda tangan bidan/pemilik</span>
+      </label>` : ''}
+
+      <button id="kwDownloadBtn" type="button" class="btn btn-primary" style="width:100%;justify-content:center;padding:14px;background:#7c3aed;font-size:1rem;">
+        <span>💾 Download ${esc(r.invoice_no || 'kwitansi')}.pdf</span>
+        <small style="display:block;font-weight:500;font-size:0.78rem;opacity:0.85;margin-top:2px;">File langsung ter-download, ukuran kertas sudah tertanam</small>
       </button>
+      <small style="display:block;margin-top:8px;color:var(--text-soft);line-height:1.5;font-size:0.78rem;">💡 PDF yang di-generate sudah tertanam ukuran kertas (A4/A5/F4/Thermal), jadi saat dibuka di laptop/HP → di-print → langsung sesuai tanpa harus setting ukuran kertas lagi di printer dialog.</small>
+    </div>
+
+    <!-- SECTION 2: Other options -->
+    <div style="border-top:1px dashed var(--border);padding-top:12px;">
+      <div style="font-size:0.74rem;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-soft);font-weight:700;margin-bottom:8px;">Atau pilih opsi lain:</div>
+      <div style="display:grid;gap:8px;">
+        <button type="button" onclick="shareKwitansiById(${r.id});closeModal();" class="btn btn-outline" style="width:100%;justify-content:flex-start;padding:10px 14px;">
+          💬 <span style="margin-left:4px;">Share Link via WhatsApp</span>
+          <small style="margin-left:8px;color:var(--text-soft);font-size:0.76rem;">— buat link privat</small>
+        </button>
+        <button type="button" onclick="closeModal();printReceiptById(${r.id});" class="btn btn-outline" style="width:100%;justify-content:flex-start;padding:10px 14px;">
+          🖨️ <span style="margin-left:4px;">Cetak + Tanda Tangan Pasien</span>
+          <small style="margin-left:8px;color:var(--text-soft);font-size:0.76rem;">— print preview dengan signature pad</small>
+        </button>
+        <button type="button" onclick="downloadProtected('/api/proof/${r.id}', '${esc(r.invoice_no)}.${r.proof_mime ? r.proof_mime.split('/')[1] : 'bin'}')" class="btn btn-outline" style="width:100%;justify-content:flex-start;padding:10px 14px;">
+          📎 <span style="margin-left:4px;">Download Bukti Pembayaran</span>
+        </button>
+      </div>
     </div>
   `);
-  // Stash the receipt on a global so the Save PDF button can read it
-  // without needing to re-fetch from cache. Cleared on modal close.
+
+  // Stash the receipt on a global so the Download button can read it
+  // without needing to re-fetch from cache.
   window._kwitansiForPdf = r;
-  // Also wire closeModal to clear the global.
-  const orig = closeModal;
-  // Use a once-only listener on the backdrop click to clean up.
+
+  // Wire up the Download button. We attach the click handler HERE
+  // (after openModal renders the HTML) instead of using inline
+  // onclick because we need to read the current checkbox state +
+  // select value at click time, and we want to disable the button
+  // while the PDF is being generated so the user can't double-click.
+  const btn = document.getElementById('kwDownloadBtn');
+  if (btn) {
+    btn.addEventListener('click', async function onKwDownloadClick() {
+      const sizeEl = document.getElementById('kwPdfSize');
+      const sigEl = document.getElementById('kwPdfIncludeSig');
+      const size = sizeEl ? sizeEl.value : 'A5';
+      const includeSig = sigEl ? sigEl.checked : true;
+      if (!window._kwitansiForPdf) {
+        alert('Kwitansi tidak ditemukan. Silakan coba lagi.');
+        return;
+      }
+      // Disable button + show progress
+      btn.disabled = true;
+      const origText = btn.innerHTML;
+      btn.innerHTML = '<span style="opacity:0.85;">⏳ Membuat PDF...</span>';
+      try {
+        await saveKwitansiAsPDF(window._kwitansiForPdf, size, { includeSignature: includeSig });
+      } catch (e) {
+        alert('Gagal membuat PDF: ' + (e.message || e));
+        console.error('Save PDF failed:', e);
+      } finally {
+        // Re-enable for the next download attempt
+        btn.disabled = false;
+        btn.innerHTML = origText;
+      }
+    });
+  }
+
+  // Cleanup global on modal close. We use a one-time backdrop click
+  // listener (matching if(event.target===this) check). Note: this is
+  // not what closes the modal — the modal's onclick on the backdrop
+  // already handles that. This just clears the cached receipt so
+  // the next time the modal opens for a different kwitansi, we don't
+  // accidentally save the wrong one.
   setTimeout(() => {
     const backdrop = document.querySelector('.modal-backdrop');
     if (backdrop) backdrop.addEventListener('click', () => { window._kwitansiForPdf = null; }, { once: true });
@@ -1985,8 +2089,9 @@ function renderReceiptTable(rows) {
     <td>${esc(r.patient_name || '-')}<br><small style="color:var(--text-soft)">${esc(r.whatsapp || '')}</small></td>
     <td><strong>${fmtRp(r.total)}</strong></td>
     <td style="white-space:nowrap;">
-      <button class="btn-sm btn-view" onclick="openKwitansiDetailModal(${r.id})" title="Lihat">👁️</button>
-      <button class="btn-sm btn-view" onclick="shareOrPrintKwitansi(${r.id})" title="Kirim ke WA / Cetak" aria-label="Kirim atau cetak kwitansi">📤</button>
+      <button class="btn-sm btn-view" onclick="openKwitansiDetailModal(${r.id})" title="Lihat detail">👁️</button>
+      <button class="btn-sm" onclick='quickSavePDF(${r.id})' title="Download PDF langsung (pakai ukuran kertas tersimpan)" style="padding:6px 10px;background:#7c3aed;color:white;border:none;font-weight:700;">💾</button>
+      <button class="btn-sm btn-view" onclick="shareOrPrintKwitansi(${r.id})" title="Kirim/Cetak/Save PDF (buka menu)" aria-label="Kirim atau cetak kwitansi">📤</button>
       <button class="btn-sm btn-del" onclick="deleteReceipt(${r.id}, '${esc(r.invoice_no)}')" title="Hapus">🗑️</button>
     </td>
   </tr>`).join('')}
@@ -2000,7 +2105,8 @@ function renderReceiptTable(rows) {
       <div class="cli-row"><span class="cli-label">Total</span><span class="cli-value">${fmtRp(r.total)}</span></div>
       <div class="cli-actions">
         <button class="btn-sm btn-view" onclick="openKwitansiDetailModal(${r.id})">👁️ Lihat</button>
-        <button class="btn-sm btn-view" onclick="shareOrPrintKwitansi(${r.id})">📤 Kirim/Cetak</button>
+        <button class="btn-sm" onclick='quickSavePDF(${r.id})' title="Download PDF langsung" style="background:#7c3aed;color:white;border:none;font-weight:700;">💾 PDF</button>
+        <button class="btn-sm btn-view" onclick="shareOrPrintKwitansi(${r.id})" title="Kirim/Cetak/Save PDF (buka menu)">📤 Menu</button>
         <button class="btn-sm btn-del" onclick="deleteReceipt(${r.id}, '${esc(r.invoice_no)}')">🗑️ Hapus</button>
       </div>
     </div>`).join('')}
@@ -4980,9 +5086,14 @@ function buildKwitansiHtmlForExport(r, ps, isThermal) {
 }
 
 // Main entry point. r = receipt object, paperSize = KW_PAPER_SIZES key.
-async function saveKwitansiAsPDF(r, paperSize) {
+async function saveKwitansiAsPDF(r, paperSize, options) {
+  options = options || {};
   const ps = KW_PAPER_SIZES[paperSize] || KW_PAPER_SIZES['A5'];
   const isThermal = !!ps.autoHeight;
+  // includeSignature defaults to true (preserves old behavior). When
+  // false, the owner signature is NOT embedded into the PDF even if
+  // the admin has one saved. This gives admins a per-download choice.
+  const includeSignature = options.includeSignature !== false;
 
   // Step 1: build the visible wrap.
   //
@@ -5041,9 +5152,14 @@ async function saveKwitansiAsPDF(r, paperSize) {
   // the captured canvas. We wait for FileReader explicitly so
   // html2canvas captures the loaded image (otherwise the img.src
   // is set but image data isn't loaded yet when canvas is drawn).
+  //
+  // includeSignature flag lets the admin CHOOSE whether to embed the
+  // signature on a per-download basis. Default: include if admin has
+  // one saved. When unchecked: skip the fetch + display:block so the
+  // PDF has just the practitioner name + underline (no signature image).
   const ownerImg = wrap.querySelector('#ownerSigEmbed');
   const ownerUnderline = wrap.querySelector('#ownerSigUnderline');
-  const wantOwner = !!(SETTINGS && SETTINGS.has_owner_signature);
+  const wantOwner = includeSignature && !!(SETTINGS && SETTINGS.has_owner_signature);
   if (wantOwner && ownerImg) {
     try {
       const r2 = await fetch(apiUrl('/api/owner-signature'), { credentials: 'omit' });
@@ -5197,11 +5313,36 @@ async function saveKwitansiAsPDF(r, paperSize) {
   }
   pdf.addImage(imgData, 'JPEG', 0, 0, drawWidth, drawHeight, undefined, 'FAST');
 
-  // Step 9: trigger browser download. jsPDF's .save() does this
-  // by creating a temporary <a download> and clicking it.
+  // Step 9: trigger the download.
+  //
+  // The previous version used `pdf.save(filename)`, which works in
+  // most cases but has a subtle bug: when the click handler is async
+  // and the PDF generation involves multiple `await`s (loading
+  // jsPDF, html2canvas, owner signature image, etc.), Chrome can
+  // silently block the download because the `.click()` on the
+  // temporary `<a>` element no longer has a direct user-gesture
+  // context. The user would see "nothing happens" and assume the
+  // feature is broken.
+  //
+  // Fix: build the download explicitly using `pdf.output('blob')` +
+  // `URL.createObjectURL()` + a real `<a>` element. Same approach as
+  // pdf.save() but with explicit visibility into what happens.
+  // The Object URL is revoked after 1500ms which is enough time for
+  // Chrome to start the download.
   const filename = (r.invoice_no || 'kwitansi') + '.pdf';
   try {
-    pdf.save(filename);
+    const pdfBlob = pdf.output('blob');
+    const blobUrl = URL.createObjectURL(pdfBlob);
+    const a = document.createElement('a');
+    a.href = blobUrl;
+    a.download = filename;
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => {
+      try { document.body.removeChild(a); } catch (e) {}
+      try { URL.revokeObjectURL(blobUrl); } catch (e) {}
+    }, 1500);
   } finally {
     try { document.body.removeChild(wrap); } catch (e) {}
   }
