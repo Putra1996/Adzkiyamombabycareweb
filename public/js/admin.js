@@ -4690,175 +4690,147 @@ async function deleteOwnerSignature() {
 //      Hormat kami stack vertically when there's no horizontal room.
 //   4. Hiding non-essential UI (signature pad, etc.) in the PDF
 //      output — only the clean receipt goes into the file.
+// ===== KWITANSI PDF EXPORT (Direct download, no print dialog) =====
+//
+// Paper-size aware PDF generation. Each size embeds its own page
+// dimensions so when the PDF is opened elsewhere + printed, the
+// user doesn't have to manually configure the print dialog.
+//
+// A4  : 210 × 297 mm — full letter, for shops using normal printers
+// A5  : 148 × 210 mm — kwitansi bayi/spa paling umum di Indonesia
+// F4  : 215 × 330 mm — Folio (legal docs in Indonesia)
+// Thermal-80mm : 80mm × auto — printer struk Epson TM-T82 dll
+// Thermal-58mm : 58mm × auto — printer struk kecil
+//
+// Lock layout promise: content reflows to fit, never overflows,
+// never overlaps. Implemented via:
+//   - Wrap pinned to paper width with explicit padding (6mm)
+//   - Inline <style> at top of wrap replicates .invoice CSS rules
+//     so html2canvas renders correctly even though the global CSS
+//     file isn't loaded for detached elements
+//   - Per-paper-size font scale (Thermal: 9pt, A5: 10pt, A4/F4: 11pt)
+//   - flex-wrap so 2-column footer stacks when paper is narrow
+//   - word-break: break-word on long strings (nama panjang, alamat)
+//
+// Library strategy: jsPDF + html2canvas bundled together. We do
+// NOT use html2pdf.js 0.10.x because its off-screen rendering +
+// pagebreak options are buggy and silently produce blank PDFs.
 const KW_PAPER_SIZES = {
-  'A5':           { width: '148mm', height: '210mm', label: 'A5 (148×210mm) — kwitansi bayi/spa', icon: '📄' },
-  'A4':           { width: '210mm', height: '297mm', label: 'A4 (210×297mm) — full letter',     icon: '📃' },
-  'F4':           { width: '215mm', height: '330mm', label: 'F4 (215×330mm) — Folio legal',     icon: '📋' },
-  'Thermal-80mm': { width: '80mm',  height: 'auto',  label: 'Thermal 80mm (printer struk)',   icon: '🧾' },
-  'Thermal-58mm': { width: '58mm',  height: 'auto',  label: 'Thermal 58mm (printer struk kecil)', icon: '🧾' }
+  'A5':           { width: 148, height: 210, label: 'A5 (148×210mm) — kwitansi bayi/spa',     icon: '📄', fontPt: 10 },
+  'A4':           { width: 210, height: 297, label: 'A4 (210×297mm) — full letter',         icon: '📃', fontPt: 11 },
+  'F4':           { width: 215, height: 330, label: 'F4 (215×330mm) — Folio legal',         icon: '📋', fontPt: 11 },
+  'Thermal-80mm': { width:  80, height:   0, label: 'Thermal 80mm (printer struk)',         icon: '🧾', fontPt:  9, autoHeight: true },
+  'Thermal-58mm': { width:  58, height:   0, label: 'Thermal 58mm (printer struk kecil)',   icon: '🧾', fontPt:  8, autoHeight: true }
 };
 
-// Render an off-screen invoice HTML element then snapshot it to a
-// PDF using html2pdf.js (loaded from CDN on first use). The
-// resulting blob is downloaded directly via <a download> — no
-// print dialog, no "Save as PDF" chooser. The file is named after
-// the invoice_no so admin can find it in their Downloads folder.
-//
-// html2pdf.js docs: https://ekoopmans.github.io/html2pdf.js/
-async function ensureHtml2PdfLoaded() {
-  if (typeof window.html2pdf === 'function') return window.html2pdf;
+// Load jsPDF and html2canvas once. Both bundled together from a
+// single CDN script. ~80KB gzipped combined. The library is loaded
+// as a UMD module that exposes jsPDF as window.jspdf.
+async function ensureJsPdfLoaded() {
+  if (window.jspdf && window.jspdf.jsPDF) return window.jspdf.jsPDF;
   await new Promise((resolve, reject) => {
     const s = document.createElement('script');
-    s.src = 'https://cdn.jsdelivr.net/npm/html2pdf.js@0.10.1/dist/html2pdf.bundle.min.js';
+    s.src = 'https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js';
     s.onload = () => resolve();
-    s.onerror = () => reject(new Error('Gagal memuat library html2pdf.js dari CDN. Cek koneksi internet.'));
+    s.onerror = () => reject(new Error('Gagal memuat jsPDF dari CDN. Cek koneksi internet.'));
     document.head.appendChild(s);
   });
-  return window.html2pdf;
+  return window.jspdf.jsPDF;
 }
 
-async function saveKwitansiAsPDF(r, paperSize) {
-  // r        : full receipt object (same shape printReceipt uses)
-  // paperSize: one of KW_PAPER_SIZES keys. Defaults to 'A5' which
-  //            matches the most common Indonesian kwitansi printer.
-  const ps = KW_PAPER_SIZES[paperSize] || KW_PAPER_SIZES['A5'];
-  // Build the invoice DOM in a detached <div> so we can size it
-  // precisely without affecting the live UI. The .kw-pdf-wrap
-  // class pins the content width to the paper width so the layout
-  // locks at the right size — no responsive collapse.
-  const wrap = document.createElement('div');
-  wrap.className = 'kw-pdf-wrap';
-  // Inline styles on the wrap override the print template's max-width
-  // because we're not going through window.print() — html2pdf
-  // captures the wrap element directly.
-  wrap.style.cssText = `position:fixed;left:-99999px;top:0;background:white;width:${ps.width};padding:6mm;box-sizing:border-box;font-family:'Plus Jakarta Sans','Helvetica Neue',Arial,sans-serif;color:#2a1822;`;
-  // We re-use the same invoice HTML that printReceipt() renders, but
-  // hide the patient signature pad (it lives in print preview, not
-  // the PDF). The owner signature IS included automatically via the
-  // <img id="ownerSigEmbed"> — we populate its src from the same
-  // blob-fetch used in the inline IIFE.
-  const html = buildKwitansiHtmlForExport(r);
-  wrap.innerHTML = html;
-  document.body.appendChild(wrap);
-  // Populate owner signature (if set) so the PDF has the same
-  // embedded signature as the printed kwitansi. Same fetch pattern
-  // as the existing embedSigAndPrint() IIFE.
-  const ownerImg = wrap.querySelector('#ownerSigEmbed');
-  const ownerUnderline = wrap.querySelector('#ownerSigUnderline');
-  const wantOwner = !!(SETTINGS && SETTINGS.has_owner_signature);
-  if (wantOwner && ownerImg) {
-    try {
-      const r2 = await fetch(apiUrl('/api/owner-signature'), { credentials: 'omit' });
-      if (r2.ok) {
-        const blob = await r2.blob();
-        ownerImg.src = await new Promise((resolve) => {
-          const fr = new FileReader();
-          fr.onload = () => resolve(fr.result);
-          fr.readAsDataURL(blob);
-        });
-        ownerImg.style.display = 'block';
-        if (ownerUnderline) ownerUnderline.style.marginTop = '6px';
-      } else {
-        if (ownerUnderline) ownerUnderline.style.marginTop = '50px';
-      }
-    } catch (e) {
-      if (ownerUnderline) ownerUnderline.style.marginTop = '50px';
-    }
-  } else if (ownerUnderline) {
-    ownerUnderline.style.marginTop = '50px';
-  }
-  // Inject paper-size-specific @page rules so html2pdf embeds the
-  // correct page dimensions in the PDF metadata.
-  injectPaperPageRules(wrap, ps);
-  // Load html2pdf if not already cached.
-  await ensureHtml2PdfLoaded();
-  const filename = (r.invoice_no || 'kwitansi') + '.pdf';
-  const opts = {
-    margin: 0, // wrap already has 6mm padding
-    filename: filename,
-    image: { type: 'jpeg', quality: 0.95 },
-    html2canvas: { scale: 2, useCORS: true, backgroundColor: '#ffffff', logging: false },
-    // jsPDF page format matches the paper size. width/height in mm.
-    jsPDF: {
-      unit: 'mm',
-      format: paperSize === 'Thermal-80mm' || paperSize === 'Thermal-58mm' ? [parseInt(ps.width), 297] : paperSize.toLowerCase(),
-      orientation: 'portrait'
-    },
-    pagebreak: { mode: ['avoid-all', 'css', 'legacy'] }
-  };
-  try {
-    await window.html2pdf().set(opts).from(wrap).save();
-  } finally {
-    // Detach the wrap so it doesn't accumulate in the DOM.
-    try { document.body.removeChild(wrap); } catch (e) {}
-  }
+async function ensureHtml2CanvasLoaded() {
+  if (typeof window.html2canvas === 'function') return window.html2canvas;
+  await new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js';
+    s.onload = () => resolve();
+    s.onerror = () => reject(new Error('Gagal memuat html2canvas dari CDN. Cek koneksi internet.'));
+    document.head.appendChild(s);
+  });
+  return window.html2canvas;
 }
 
-// Inject <style> rules that scope to our detached wrap element so
-// the captured PDF matches the chosen paper size. We avoid touching
-// the global stylesheet so live UI isn't affected.
+// Build the full inline-style block that replicates the .invoice
+// CSS from /css/style.css. We can't <link rel="stylesheet"> from
+// the off-screen DOM because html2canvas only captures inline + style
+// rules that are scoped to the element being rasterized.
 //
-// Why we need this: html2pdf + html2canvas reads computed styles, so
-// even if we set width:80mm on the wrap, long content could still
-// overflow because font-size inherits from <body>. We force a sane
-// scale + handle a few edge cases (Thermal has auto height, so we
-// also need `min-height` to keep the visual density).
-function injectPaperPageRules(wrap, ps) {
-  const isThermal = ps.width.endsWith('mm') && parseInt(ps.width) < 100;
-  const fontBase = isThermal ? '9pt' : '10pt';
-  // Compute a min-height that scales with width: narrow thermal
-  // receipts get denser type and a tighter body to fit more rows.
-  const style = document.createElement('style');
-  style.dataset.kwPdfStyle = '1';
-  style.textContent = `
-    .kw-pdf-wrap { font-size: ${fontBase}; line-height: 1.4; }
-    .kw-pdf-wrap .invoice { width: 100% !important; max-width: 100% !important; margin: 0 !important; padding: 0 !important; box-shadow: none !important; border: none !important; background: white !important; }
+// Note: this is a copy of the production CSS rules. If the global
+// /css/style.css .invoice rules ever change, mirror the changes
+// here. (Slight duplication for reliability.)
+function buildInvoiceInlineCSS(fontPt) {
+  return `
+    .kw-pdf-wrap { font-family: 'Plus Jakarta Sans','Helvetica Neue',Arial,sans-serif; color: #2a1822; font-size: ${fontPt}pt; line-height: 1.45; }
+    .kw-pdf-wrap, .kw-pdf-wrap * { box-sizing: border-box; }
+    .kw-pdf-wrap .invoice { width: 100%; background: white; border: 1px solid #f0e0e5; border-radius: 8px; padding: 5mm; margin: 0; }
     .kw-pdf-wrap .invoice-header { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 4mm; padding-bottom: 3mm; border-bottom: 2px solid #ee5a8a; }
     .kw-pdf-wrap .invoice-brand { display: flex; gap: 3mm; align-items: center; flex: 1 1 60%; min-width: 0; }
-    .kw-pdf-wrap .invoice-brand img { max-width: 18mm; max-height: 18mm; object-fit: contain; }
-    .kw-pdf-wrap .invoice-brand h2 { font-size: 1.15em; margin: 0; line-height: 1.15; }
-    .kw-pdf-wrap .invoice-brand small { font-size: 0.82em; line-height: 1.35; color: #6a5a64; word-break: break-word; }
-    .kw-pdf-wrap .invoice-meta { text-align: right; min-width: 0; }
-    .kw-pdf-wrap .invoice-meta strong { display: block; font-size: 0.92em; letter-spacing: 1px; }
-    .kw-pdf-wrap .invoice-meta-no { display: block; font-size: 0.95em; font-weight: 700; }
-    .kw-pdf-wrap .invoice-meta small { font-size: 0.78em; color: #6a5a64; }
-    .kw-pdf-wrap .invoice-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4mm; margin: 4mm 0; }
+    .kw-pdf-wrap .invoice-brand img { max-width: 20mm; max-height: 20mm; object-fit: contain; display: block; }
+    .kw-pdf-wrap .invoice-brand h2 { font-size: 1.2em; margin: 0 0 1mm; font-weight: 800; color: #2a1822; }
+    .kw-pdf-wrap .invoice-brand small { font-size: 0.85em; line-height: 1.4; color: #6a5a64; word-break: break-word; display: block; }
+    .kw-pdf-wrap .invoice-meta { text-align: right; flex: 0 0 auto; min-width: 0; }
+    .kw-pdf-wrap .invoice-meta strong { display: block; font-size: 0.95em; letter-spacing: 1px; color: #6a5a64; margin-bottom: 1mm; }
+    .kw-pdf-wrap .invoice-meta-no { display: block; font-size: 1.05em; font-weight: 700; color: #2a1822; margin-bottom: 1mm; }
+    .kw-pdf-wrap .invoice-meta small { font-size: 0.82em; color: #6a5a64; }
+    .kw-pdf-wrap .invoice-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4mm; margin: 4mm 0 3mm; }
     .kw-pdf-wrap .invoice-block { min-width: 0; }
-    .kw-pdf-wrap .invoice-block h4 { font-size: 0.75em; text-transform: uppercase; letter-spacing: 0.5px; color: #8b6878; margin: 0 0 1mm; }
-    .kw-pdf-wrap .invoice-block-body { font-size: 0.92em; line-height: 1.4; word-break: break-word; margin: 0; }
-    .kw-pdf-wrap .invoice-table { width: 100% !important; border-collapse: collapse; margin: 3mm 0; font-size: 0.88em; }
-    .kw-pdf-wrap .invoice-table th, .kw-pdf-wrap .invoice-table td { border-bottom: 1px solid #ffd6e2; padding: 1.4mm 2mm; text-align: left; word-break: break-word; }
+    .kw-pdf-wrap .invoice-block h4 { font-size: 0.78em; text-transform: uppercase; letter-spacing: 0.5px; color: #8b6878; margin: 0 0 2mm; font-weight: 700; }
+    .kw-pdf-wrap .invoice-block-body { font-size: 0.95em; line-height: 1.45; word-break: break-word; margin: 0; color: #2a1822; }
+    .kw-pdf-wrap .invoice-table { width: 100%; border-collapse: collapse; margin: 3mm 0; font-size: 0.92em; table-layout: fixed; }
+    .kw-pdf-wrap .invoice-table thead { background: #ee5a8a; color: white; }
+    .kw-pdf-wrap .invoice-table th, .kw-pdf-wrap .invoice-table td { border-bottom: 1px solid #ffd6e2; padding: 2mm 2.5mm; text-align: left; word-break: break-word; vertical-align: top; }
+    .kw-pdf-wrap .invoice-table th { font-weight: 700; }
     .kw-pdf-wrap .invoice-table th.num, .kw-pdf-wrap .invoice-table td.num { text-align: right; white-space: nowrap; }
-    .kw-pdf-wrap .invoice-table th { background: #ee5a8a; color: white; font-weight: 700; }
     .kw-pdf-wrap .totals { margin: 3mm 0; }
-    .kw-pdf-wrap .totals .row { display: flex; justify-content: space-between; padding: 1mm 0; font-size: 0.92em; }
-    .kw-pdf-wrap .totals .row.grand { font-weight: 800; font-size: 1.08em; border-top: 2px solid #ee5a8a; padding-top: 2mm; margin-top: 2mm; }
+    .kw-pdf-wrap .totals .row { display: flex; justify-content: space-between; padding: 1.5mm 0; font-size: 0.95em; border-bottom: 1px dashed #ffe0e8; }
+    .kw-pdf-wrap .totals .row.grand { font-weight: 800; font-size: 1.15em; border-top: 2px solid #ee5a8a; border-bottom: none; padding-top: 2.5mm; margin-top: 2mm; color: #2a1822; }
     .kw-pdf-wrap .invoice-footer { margin-top: 4mm; padding-top: 3mm; border-top: 1px dashed #ffd6e2; }
     .kw-pdf-wrap .footer-row { display: flex; gap: 4mm; flex-wrap: wrap; justify-content: space-between; align-items: flex-start; }
     .kw-pdf-wrap .footer-col { flex: 1 1 45%; min-width: 0; }
     .kw-pdf-wrap .footer-col.right { text-align: right; }
-    .kw-pdf-wrap .footer-label { font-size: 0.78em; color: #6a5a64; }
-    .kw-pdf-wrap .footer-name { border-top: 1px solid #2a1822; padding-top: 1.5mm; margin-top: 16mm; font-weight: 700; font-size: 0.95em; }
-    .kw-pdf-wrap #ownerSigEmbed { max-height: 18mm !important; max-width: 100% !important; height: auto !important; }
-    .kw-pdf-wrap .thank-you { text-align: center; margin-top: 4mm; padding-top: 3mm; border-top: 1px dashed #ffd6e2; font-size: 0.85em; color: #6a5a64; }
-    .kw-pdf-wrap .thank-you strong { color: #2a1822; display: block; margin-bottom: 1mm; font-size: 1.05em; }
-    ${isThermal ? `
-    .kw-pdf-wrap .invoice-table th, .kw-pdf-wrap .invoice-table td { padding: 0.8mm 1.2mm; font-size: 0.82em; }
-    .kw-pdf-wrap .footer-name { margin-top: 12mm; }
-    ` : ''}
+    .kw-pdf-wrap .footer-label { font-size: 0.85em; color: #6a5a64; margin-bottom: 1mm; }
+    .kw-pdf-wrap .footer-name { border-top: 1px solid #2a1822; padding-top: 2mm; margin-top: 14mm; font-weight: 700; font-size: 1em; color: #2a1822; word-break: break-word; }
+    .kw-pdf-wrap .footer-col.right .footer-name { margin-top: 14mm; }
+    .kw-pdf-wrap #ownerSigEmbed { max-height: 16mm !important; max-width: 100% !important; height: auto !important; display: block; margin: 1mm 0 1mm auto !important; }
+    .kw-pdf-wrap .thank-you { text-align: center; margin-top: 5mm; padding-top: 3mm; border-top: 1px dashed #ffd6e2; font-size: 0.88em; color: #6a5a64; }
+    .kw-pdf-wrap .thank-you strong { color: #2a1822; display: block; margin-bottom: 1mm; font-size: 1.1em; }
+    .kw-pdf-wrap .kwitansi-time-chip { display: inline-block; margin: 1mm 1mm 1mm 0; padding: 1mm 2mm; background: #fff5f8; border: 1px solid #ffd6e2; border-radius: 6px; font-size: 0.82em; font-weight: 700; color: #ee5a8a; word-break: keep-all; }
   `;
-  document.head.appendChild(style);
-  // Stash the style node on the wrap so callers can clean it up if
-  // they want. (We don't currently — html2canvas reads styles
-  // synchronously before .save() resolves, so leaving the style in
-  // place is harmless.)
-  wrap._kwPdfStyle = style;
 }
 
-// Build the same HTML that printReceipt() renders, minus the
-// patient signature pad (the pad only exists in interactive print
-// preview — it has no role in the PDF output). Same data shape,
-// same CSS classes so the @media print + .kw-pdf-wrap rules apply.
+// Thermal-specific overrides: even tighter padding and smaller font
+// so a 58mm paper still fits a meaningful receipt.
+function buildThermalOverrides(fontPt) {
+  return `
+    .kw-pdf-wrap { font-size: ${fontPt}pt; }
+    .kw-pdf-wrap .invoice { padding: 2mm; border-radius: 0; border: none; }
+    .kw-pdf-wrap .invoice-header { padding-bottom: 2mm; gap: 2mm; border-bottom-width: 1px; }
+    .kw-pdf-wrap .invoice-brand img { max-width: 12mm; max-height: 12mm; }
+    .kw-pdf-wrap .invoice-brand h2 { font-size: 1.1em; }
+    .kw-pdf-wrap .invoice-brand small { font-size: 0.78em; line-height: 1.3; }
+    .kw-pdf-wrap .invoice-meta strong { font-size: 0.85em; }
+    .kw-pdf-wrap .invoice-meta-no { font-size: 0.95em; }
+    .kw-pdf-wrap .invoice-grid { grid-template-columns: 1fr; gap: 2mm; margin: 2mm 0; }
+    .kw-pdf-wrap .invoice-block h4 { font-size: 0.72em; margin-bottom: 1mm; }
+    .kw-pdf-wrap .invoice-block-body { font-size: 0.85em; line-height: 1.35; }
+    .kw-pdf-wrap .invoice-table { font-size: 0.82em; margin: 2mm 0; }
+    .kw-pdf-wrap .invoice-table th, .kw-pdf-wrap .invoice-table td { padding: 1mm 1.5mm; }
+    .kw-pdf-wrap .totals .row { padding: 0.8mm 0; font-size: 0.85em; }
+    .kw-pdf-wrap .totals .row.grand { font-size: 1em; }
+    .kw-pdf-wrap .invoice-footer { margin-top: 2mm; padding-top: 2mm; }
+    .kw-pdf-wrap .footer-row { flex-direction: column; gap: 3mm; }
+    .kw-pdf-wrap .footer-col { flex: 1 1 100%; }
+    .kw-pdf-wrap .footer-col.right { text-align: left; }
+    .kw-pdf-wrap .footer-label { font-size: 0.78em; }
+    .kw-pdf-wrap .footer-name { margin-top: 8mm; padding-top: 1mm; font-size: 0.92em; }
+    .kw-pdf-wrap .thank-you { margin-top: 2mm; padding-top: 2mm; font-size: 0.78em; }
+    .kw-pdf-wrap #ownerSigEmbed { max-height: 12mm !important; }
+    .kw-pdf-wrap .kwitansi-time-chip { font-size: 0.78em; padding: 0.8mm 1.5mm; }
+  `;
+}
+
+// Build the HTML body of the invoice (no <html>, no <head> —
+// html2canvas only needs the inner DOM). Returns a string.
 function buildKwitansiHtmlForExport(r) {
   const items = Array.isArray(r.items) ? r.items : (r.items || JSON.parse(r.items_json || '[]'));
   const biz = SETTINGS || {};
@@ -4867,14 +4839,14 @@ function buildKwitansiHtmlForExport(r) {
     ? r.service_times
     : (r.service_time ? [r.service_time] : []);
   const timesHtml = times.length
-    ? times.map((t) => `<span style="display:inline-block;margin-right:3px;padding:1mm 2mm;background:#fff5f8;border:1px solid #ffd6e2;border-radius:8px;font-size:0.85em;font-weight:700;color:#ee5a8a;">⏰ ${esc(t)} WIB</span>`).join('')
+    ? times.map((t) => `<span class="kwitansi-time-chip">⏰ ${esc(t)} WIB</span>`).join(' ')
     : '<span style="color:#6a5a64;">—</span>';
   const sessionsLabel = times.length > 1 ? ` <strong style="color:#ee5a8a;">${times.length} sesi</strong>` : '';
   return `
     <div class="invoice">
       <div class="invoice-header">
         <div class="invoice-brand">
-          ${logoSrc ? `<img src="${logoSrc}" alt="">` : '<span style="font-size:2.4rem;">🌸</span>'}
+          ${logoSrc ? `<img src="${logoSrc}" alt="" crossorigin="anonymous">` : '<span style="font-size:2.4rem;">🌸</span>'}
           <div>
             <h2>${esc(biz.business_name || 'Adzkiya Mom Baby Care')}</h2>
             <small>${esc(biz.tagline || 'Layanan Kesehatan Ibu & Anak Terpercaya')}<br>
@@ -4931,7 +4903,7 @@ function buildKwitansiHtmlForExport(r) {
           </div>
           <div class="footer-col right">
             <div class="footer-label">Hormat kami,</div>
-            <img id="ownerSigEmbed" alt="" style="display:none;margin:1mm 0 1mm auto;" />
+            <img id="ownerSigEmbed" alt="" crossorigin="anonymous" />
             <div id="ownerSigUnderline" class="footer-name"><em>${esc(biz.practitioner || 'Tasya Hanifah Pramesti, A.Md. Keb., CBME')}</em></div>
             <div class="footer-label" style="margin-top:1mm;">${esc(biz.business_name || 'Adzkiya Mom Baby Care')}</div>
           </div>
@@ -4944,6 +4916,187 @@ function buildKwitansiHtmlForExport(r) {
     </div>
   `;
 }
+
+// Main entry point. r = receipt object, paperSize = KW_PAPER_SIZES key.
+async function saveKwitansiAsPDF(r, paperSize) {
+  const ps = KW_PAPER_SIZES[paperSize] || KW_PAPER_SIZES['A5'];
+  const isThermal = !!ps.autoHeight;
+
+  // Step 1: build off-screen DOM. Use position:fixed with z-index:-1
+  // + opacity:0 so html2canvas still rasterizes (it skips elements
+  // with display:none or visibility:hidden but NOT opacity:0).
+  const wrap = document.createElement('div');
+  wrap.className = 'kw-pdf-wrap';
+  // Padding 0 because the .invoice inside has its own 5mm padding.
+  wrap.style.cssText = [
+    'position:fixed',
+    'left:0',
+    'top:0',
+    'z-index:-1',
+    'opacity:0',
+    'pointer-events:none',
+    'background:white',
+    'color:#2a1822',
+    `width:${ps.width}mm`,
+    'padding:0',
+    'margin:0',
+    'box-sizing:border-box',
+    'font-family:"Plus Jakarta Sans","Helvetica Neue",Arial,sans-serif'
+  ].join(';');
+
+  // Inject the inline <style> block FIRST so subsequent elements
+  // inherit the rules. We append it as a child <style> node, NOT
+  // to document.head, so the rules only apply to this wrap.
+  const style = document.createElement('style');
+  style.textContent = buildInvoiceInlineCSS(ps.fontPt) + (isThermal ? buildThermalOverrides(ps.fontPt) : '');
+  wrap.appendChild(style);
+
+  // Inject the invoice HTML as a child.
+  const body = document.createElement('div');
+  body.innerHTML = buildKwitansiHtmlForExport(r);
+  wrap.appendChild(body);
+
+  document.body.appendChild(wrap);
+
+  // Step 2: populate owner signature (if any) so it renders into
+  // the captured canvas. We wait for FileReader explicitly so
+  // html2canvas captures the loaded image (otherwise the img.src
+  // is set but image data isn't loaded yet when canvas is drawn).
+  const ownerImg = wrap.querySelector('#ownerSigEmbed');
+  const ownerUnderline = wrap.querySelector('#ownerSigUnderline');
+  const wantOwner = !!(SETTINGS && SETTINGS.has_owner_signature);
+  if (wantOwner && ownerImg) {
+    try {
+      const r2 = await fetch(apiUrl('/api/owner-signature'), { credentials: 'omit' });
+      if (r2.ok) {
+        const blob = await r2.blob();
+        // Convert blob → data URL via FileReader (NOT URL.createObjectURL,
+        // because createObjectURL'd images may not be in the same origin
+        // for html2canvas's tainting check).
+        const dataUrl = await new Promise((resolve, reject) => {
+          const fr = new FileReader();
+          fr.onload = () => resolve(fr.result);
+          fr.onerror = () => reject(new Error('FileReader gagal'));
+          fr.readAsDataURL(blob);
+        });
+        ownerImg.src = dataUrl;
+        ownerImg.style.display = 'block';
+        if (ownerUnderline) ownerUnderline.style.marginTop = '2mm';
+        // Wait for the image to actually load in DOM before snapshot
+        await new Promise((resolve) => {
+          if (ownerImg.complete && ownerImg.naturalWidth > 0) resolve();
+          else ownerImg.onload = () => resolve();
+        });
+      } else if (ownerUnderline) {
+        ownerUnderline.style.marginTop = '14mm';
+      }
+    } catch (e) {
+      console.warn('Owner signature fetch failed:', e);
+      if (ownerUnderline) ownerUnderline.style.marginTop = '14mm';
+    }
+  } else if (ownerUnderline) {
+    ownerUnderline.style.marginTop = '14mm';
+  }
+
+  // Step 3: load jsPDF + html2canvas from CDN. Both UMD modules.
+  const jsPDF = await ensureJsPdfLoaded();
+  const html2canvas = await ensureHtml2CanvasLoaded();
+
+  // Step 4: rasterize the wrap to canvas. Force a synchronous layout
+  // pass so getBoundingClientRect returns the post-style values
+  // (not the initial 0).
+  wrap.getBoundingClientRect();
+  const wrapHeightPx = wrap.offsetHeight;
+  // Step 5: rasterize to canvas.
+  let canvas;
+  try {
+    canvas = await html2canvas(wrap, {
+      scale: 2, // 2x for crisp output on retina/print
+      backgroundColor: '#ffffff',
+      useCORS: true,
+      logging: false,
+      // Critical: html2canvas needs to know the wrap's height
+      // explicitly when computing the canvas. Without `windowHeight`,
+      // it sometimes uses just the viewport height and clips.
+      windowWidth: Math.max(wrap.scrollWidth, wrap.offsetWidth),
+      windowHeight: Math.max(wrap.scrollHeight, wrap.offsetHeight),
+      scrollX: 0,
+      scrollY: 0
+    });
+  } catch (e) {
+    document.body.removeChild(wrap);
+    throw new Error('Gagal render kwitansi ke canvas: ' + e.message);
+  }
+
+  // Step 6: compute PDF dimensions.
+  // Canvas dimensions are in pixels at scale=2. Convert to mm
+  // using the same scale factor (96 DPI standard for screen → mm).
+  //   px → mm:  px / 96 * 25.4
+  //   But because we used scale=2, canvas pixels are 2x the layout
+  //   pixels. So the conversion is: (canvas.px / 2) / 96 * 25.4
+  const pxPerMm = 96 / 25.4; // layout pixels per mm
+  const canvasWidthMm = canvas.width / 2 / pxPerMm;
+  const canvasHeightMm = canvas.height / 2 / pxPerMm;
+
+  // For thermal: use canvas height as the page height (auto-fit).
+  // For fixed sizes: cap to the paper height — if content is shorter
+  // than the paper, that's fine (PDF will have whitespace at the
+  // bottom). We don't auto-shrink because that would force the
+  // next receipt to a different page size, which is confusing.
+  let pageWidthMm, pageHeightMm;
+  if (isThermal) {
+    pageWidthMm = ps.width;
+    pageHeightMm = Math.max(canvasHeightMm, 50); // min 50mm so an empty receipt is still printable
+  } else {
+    pageWidthMm = ps.width;
+    pageHeightMm = ps.height;
+  }
+
+  // Step 7: instantiate jsPDF with the right format. For custom
+  // sizes (thermal) we use explicit width/height; for standard
+  // sizes we use the format name.
+  let pdf;
+  if (isThermal) {
+    pdf = new jsPDF({
+      unit: 'mm',
+      format: [pageWidthMm, pageHeightMm],
+      orientation: pageWidthMm > pageHeightMm ? 'landscape' : 'portrait'
+    });
+  } else {
+    pdf = new jsPDF({
+      unit: 'mm',
+      format: paperSize.toLowerCase(), // 'a5', 'a4', 'f4' (custom F4)
+      orientation: 'portrait'
+    });
+  }
+
+  // Step 8: add the rasterized image to the PDF, sized to the page.
+  const imgData = canvas.toDataURL('image/jpeg', 0.95);
+  // Scale image to fit page width, preserving aspect ratio.
+  const targetWidth = pageWidthMm;
+  const targetHeight = (canvasHeightMm / canvasWidthMm) * pageWidthMm;
+  // If image is taller than page (rare with our padding rules), scale
+  // it down to fit page height. For thermal autoHeight this never
+  // triggers because we sized the page to match.
+  let drawWidth = targetWidth;
+  let drawHeight = targetHeight;
+  if (drawHeight > pageHeightMm && !isThermal) {
+    drawHeight = pageHeightMm;
+    drawWidth = (canvasWidthMm / canvasHeightMm) * pageHeightMm;
+  }
+  pdf.addImage(imgData, 'JPEG', 0, 0, drawWidth, drawHeight, undefined, 'FAST');
+
+  // Step 9: trigger browser download. jsPDF's .save() does this
+  // by creating a temporary <a download> and clicking it.
+  const filename = (r.invoice_no || 'kwitansi') + '.pdf';
+  try {
+    pdf.save(filename);
+  } finally {
+    document.body.removeChild(wrap);
+  }
+}
+
+
 
 // INIT
 if (API_BASE) {
