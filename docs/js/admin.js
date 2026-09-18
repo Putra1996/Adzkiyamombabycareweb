@@ -4832,17 +4832,19 @@ function buildThermalOverrides(fontPt) {
 // Build the HTML body of the invoice (no <html>, no <head> —
 // html2canvas only needs the inner DOM).
 //
-// IMPORTANT: All visual styling is applied via inline `style="..."`
-// attributes, NOT via a separate <style> block with class selectors.
-// html2canvas 1.4.1 has spotty support for <style> elements inside
-// the captured subtree (some selectors don't get applied), which
-// manifested as 9KB blank PDFs. Inline styles are applied directly
-// by the browser to the DOM, so html2canvas reads them via getComputedStyle
-// — no parsing required, no surprises.
+// CRITICAL LAYOUT NOTES — html2canvas 1.4.1 has well-known issues:
+//   • `display: grid` is NOT supported (renders as block, children stack)
+//   • `table-layout: fixed` causes column widths to collapse
+//   • `display: flex` IS supported
+//   • `width: N%` may not work as expected; use explicit pixel values
+//   • Complex nested wrappers can confuse the layout calculator
 //
-// `fontPt` controls the base font size; `isThermal` switches to a
-// tighter one-column layout for receipt printers.
-function buildKwitansiHtmlForExport(r, fontPt, isThermal) {
+// To work around this, the HTML uses ONLY flexbox and explicit pixel
+// widths. We compute widths in pixels from the paper-size mm value at
+// generation time so the layout is deterministic regardless of where
+// the wrap is rendered.
+function buildKwitansiHtmlForExport(r, ps, isThermal) {
+  const fontPt = ps.fontPt;
   const items = Array.isArray(r.items) ? r.items : (r.items || JSON.parse(r.items_json || '[]'));
   const biz = SETTINGS || {};
   const logoSrc = biz.has_logo ? apiUrl('/api/logo') : null;
@@ -4850,136 +4852,126 @@ function buildKwitansiHtmlForExport(r, fontPt, isThermal) {
     ? r.service_times
     : (r.service_time ? [r.service_time] : []);
   const timesHtml = times.length
-    ? times.map((t) => `<span style="display:inline-block;margin:1mm 1mm 1mm 0;padding:1mm 2mm;background:#fff5f8;border:1px solid #ffd6e2;border-radius:6px;font-size:0.82em;font-weight:700;color:#ee5a8a;word-break:keep-all;">⏰ ${esc(t)} WIB</span>`).join(' ')
+    ? times.map((t) => `<span style="display:inline-block;margin:1px 2px 1px 0;padding:1px 4px;background:#fff5f8;border:1px solid #ffd6e2;border-radius:4px;font-size:${Math.round(fontPt * 0.82)}pt;font-weight:700;color:#ee5a8a;">⏰ ${esc(t)} WIB</span>`).join(' ')
     : '<span style="color:#6a5a64;">—</span>';
   const sessionsLabel = times.length > 1 ? ` <strong style="color:#ee5a8a;">${times.length} sesi</strong>` : '';
 
-  // Per-size tuning: thermal receipts use a single-column grid, tighter
-  // padding, smaller font. Standard sizes (A4/A5/F4) keep the
-  // 2-column "Kepada / Tanggal & Waktu" layout.
-  const s = isThermal
-    ? {
-        wrapPadding: '2mm',
-        headerGap: '2mm',
-        headerBorder: '1px solid #ee5a8a',
-        logoSize: '12mm',
-        h2Size: '1.1em',
-        smallSize: '0.78em',
-        gridCols: '1fr',
-        blockTitleSize: '0.72em',
-        blockBodySize: '0.85em',
-        tableSize: '0.82em',
-        cellPad: '1mm 1.5mm',
-        totalsRowSize: '0.85em',
-        totalsGrandSize: '1em',
-        footerGap: '2mm',
-        footerColDir: 'column',
-        footerLabelSize: '0.78em',
-        footerNameMargin: '8mm',
-        ownerSigMaxH: '12mm',
-        thankSize: '0.78em'
-      }
-    : {
-        wrapPadding: '5mm',
-        headerGap: '3mm',
-        headerBorder: '2px solid #ee5a8a',
-        logoSize: '20mm',
-        h2Size: '1.2em',
-        smallSize: '0.85em',
-        gridCols: '1fr 1fr',
-        blockTitleSize: '0.78em',
-        blockBodySize: '0.95em',
-        tableSize: '0.92em',
-        cellPad: '2mm 2.5mm',
-        totalsRowSize: '0.95em',
-        totalsGrandSize: '1.15em',
-        footerGap: '4mm',
-        footerColDir: 'row',
-        footerLabelSize: '0.85em',
-        footerNameMargin: '14mm',
-        ownerSigMaxH: '16mm',
-        thankSize: '0.88em'
-      };
+  // Per-size layout values (all in pixels for html2canvas reliability).
+  // Layout widths assume a 96 DPI baseline: 1mm ≈ 3.78px.
+  // For thermal receipts we use the wrap width; for standard sizes
+  // (A4/A5/F4) we size both columns equally.
+  // The total wrap inner width is ~360px for A5, ~510px for A4, etc.
+  const totalWidthPx = ps ? Math.round(ps.width * 3.78) : 400;
+  const padPx = isThermal ? 8 : 18;
+  const innerWidthPx = totalWidthPx - (padPx * 2);
+  const halfColPx = Math.floor(innerWidthPx / 2) - 4;  // -4 for gap
+
+  // Header: 2 columns (brand left, meta right). Use flex with
+  // explicit widths so html2canvas doesn't have to compute flex-basis.
+  const headerHeightPx = isThermal ? 60 : 88;
+  const brandColWidthPx = Math.floor(innerWidthPx * 0.62);
+  const metaColWidthPx = innerWidthPx - brandColWidthPx;
+
+  // Grid (Kepada + Tanggal & Waktu): 2 columns side by side. We use
+  // flex instead of grid since grid doesn't render in html2canvas 1.4.1.
+  const blockColPx = halfColPx;
+
+  // Table columns (Layanan / Qty / Harga / Subtotal).
+  const tblNamePx = Math.max(innerWidthPx - 60 - 70 - 80, 80);
+  const tblQtyPx = 60;
+  const tblPricePx = 70;
+  const tblSubPx = 80;
+
+  // Padding per cell (uniform, scaled by font size).
+  const cellPadY = Math.round(fontPt * 0.6) + 'px';
+  const cellPadX = Math.round(fontPt * 0.8) + 'px';
 
   return `
-    <div style="width:100%;background:white;border:1px solid #f0e0e5;border-radius:8px;padding:${s.wrapPadding};box-sizing:border-box;color:#2a1822;font-family:'Plus Jakarta Sans','Helvetica Neue',Arial,sans-serif;font-size:${fontPt}pt;line-height:1.45;">
-      <div style="display:flex;flex-wrap:wrap;align-items:flex-start;justify-content:space-between;gap:${s.headerGap};padding-bottom:3mm;border-bottom:${s.headerBorder};">
-        <div style="display:flex;gap:3mm;align-items:center;flex:1 1 60%;min-width:0;">
-          ${logoSrc ? `<img src="${logoSrc}" alt="" crossorigin="anonymous" style="max-width:${s.logoSize};max-height:${s.logoSize};object-fit:contain;display:block;">` : '<span style="font-size:2.4rem;">🌸</span>'}
-          <div style="min-width:0;flex:1;">
-            <h2 style="font-size:${s.h2Size};margin:0 0 1mm;font-weight:800;color:#2a1822;">${esc(biz.business_name || 'Adzkiya Mom Baby Care')}</h2>
-            <small style="font-size:${s.smallSize};line-height:1.4;color:#6a5a64;word-break:break-word;display:block;">${esc(biz.tagline || 'Layanan Kesehatan Ibu & Anak Terpercaya')}<br>
-            ${esc(biz.address || '')}<br>
-            WA: ${esc(biz.phone || '085887018194')}</small>
+    <div style="width:${totalWidthPx}px;background:white;color:#2a1822;font-family:Arial,Helvetica,sans-serif;font-size:${fontPt}pt;line-height:1.4;padding:${padPx}px;box-sizing:border-box;">
+      <!-- HEADER: brand left, KWITANSI+invoice+date right -->
+      <div style="display:flex;flex-direction:row;align-items:flex-start;justify-content:space-between;padding-bottom:6px;border-bottom:2px solid #ee5a8a;">
+        <div style="width:${brandColWidthPx}px;display:flex;flex-direction:row;align-items:center;gap:6px;">
+          ${logoSrc ? `<img src="${logoSrc}" alt="" crossorigin="anonymous" style="width:${isThermal ? 32 : 48}px;height:${isThermal ? 32 : 48}px;object-fit:contain;display:block;flex-shrink:0;">` : '<span style="font-size:${isThermal ? 18 : 24}px;flex-shrink:0;">🌸</span>'}
+          <div style="flex:1;min-width:0;">
+            <div style="font-size:${Math.round(fontPt * 1.15)}pt;font-weight:bold;color:#2a1822;line-height:1.2;margin-bottom:2px;">${esc(biz.business_name || 'Adzkiya Mom Baby Care')}</div>
+            <div style="font-size:${Math.round(fontPt * 0.78)}pt;color:#6a5a64;line-height:1.3;">${esc(biz.tagline || 'Layanan Kesehatan Ibu & Anak Terpercaya')}<br>${esc(biz.address || '')}<br>WA: ${esc(biz.phone || '085887018194')}</div>
           </div>
         </div>
-        <div style="text-align:right;flex:0 0 auto;min-width:0;">
-          <strong style="display:block;font-size:0.95em;letter-spacing:1px;color:#6a5a64;margin-bottom:1mm;">KWITANSI</strong>
-          <span style="display:block;font-size:1.05em;font-weight:700;color:#2a1822;margin-bottom:1mm;">${esc(r.invoice_no || '')}</span>
-          <small style="font-size:0.82em;color:#6a5a64;">${new Date(r.created_at).toLocaleDateString('id-ID', { day:'2-digit', month:'long', year:'numeric' })}</small>
+        <div style="width:${metaColWidthPx}px;text-align:right;">
+          <div style="font-size:${Math.round(fontPt * 0.92)}pt;font-weight:bold;letter-spacing:1px;color:#6a5a64;margin-bottom:3px;">KWITANSI</div>
+          <div style="font-size:${Math.round(fontPt * 1.08)}pt;font-weight:bold;color:#2a1822;margin-bottom:3px;">${esc(r.invoice_no || '')}</div>
+          <div style="font-size:${Math.round(fontPt * 0.8)}pt;color:#6a5a64;">${new Date(r.created_at).toLocaleDateString('id-ID', { day:'2-digit', month:'long', year:'numeric' })}</div>
         </div>
       </div>
-      <div style="display:grid;grid-template-columns:${s.gridCols};gap:4mm;margin:4mm 0 3mm;">
-        <div style="min-width:0;">
-          <h4 style="font-size:${s.blockTitleSize};text-transform:uppercase;letter-spacing:0.5px;color:#8b6878;margin:0 0 2mm;font-weight:700;">Kepada</h4>
-          <p style="font-size:${s.blockBodySize};line-height:1.45;word-break:break-word;margin:0;color:#2a1822;">
+
+      <!-- GRID: Kepada / Tanggal & Waktu (2 columns via flex, NOT grid) -->
+      <div style="display:flex;flex-direction:row;gap:8px;margin:8px 0 6px;">
+        <div style="width:${blockColPx}px;flex-shrink:0;">
+          <div style="font-size:${Math.round(fontPt * 0.74)}pt;font-weight:bold;text-transform:uppercase;letter-spacing:0.5px;color:#8b6878;margin-bottom:3px;">Kepada</div>
+          <div style="font-size:${Math.round(fontPt * 0.9)}pt;line-height:1.4;word-wrap:break-word;overflow-wrap:break-word;">
             <strong>${esc(r.patient_name || '-')}</strong><br>
             ${esc(r.whatsapp || '')}<br>
             ${esc(r.address || '')}
-          </p>
+          </div>
         </div>
-        <div style="min-width:0;">
-          <h4 style="font-size:${s.blockTitleSize};text-transform:uppercase;letter-spacing:0.5px;color:#8b6878;margin:0 0 2mm;font-weight:700;">Tanggal & Waktu Layanan ${sessionsLabel}</h4>
-          <p style="font-size:${s.blockBodySize};line-height:1.45;word-break:break-word;margin:0;color:#2a1822;">
+        <div style="width:${blockColPx}px;flex-shrink:0;">
+          <div style="font-size:${Math.round(fontPt * 0.74)}pt;font-weight:bold;text-transform:uppercase;letter-spacing:0.5px;color:#8b6878;margin-bottom:3px;">Tanggal & Waktu Layanan ${sessionsLabel}</div>
+          <div style="font-size:${Math.round(fontPt * 0.9)}pt;line-height:1.4;word-wrap:break-word;overflow-wrap:break-word;">
             ${r.service_date ? new Date(r.service_date).toLocaleDateString('id-ID', { day:'2-digit', month:'long', year:'numeric' }) : '-'}
-            <div style="margin-top:2mm;">${timesHtml}</div>
-          </p>
+            <div style="margin-top:4px;">${timesHtml}</div>
+          </div>
         </div>
       </div>
-      <table style="width:100%;border-collapse:collapse;margin:3mm 0;font-size:${s.tableSize};table-layout:fixed;">
+
+      <!-- TABLE: items -->
+      <table style="width:100%;border-collapse:collapse;margin:6px 0;font-size:${Math.round(fontPt * 0.9)}pt;">
         <thead>
           <tr style="background:#ee5a8a;color:white;">
-            <th style="border-bottom:1px solid #ffd6e2;padding:${s.cellPad};text-align:left;font-weight:700;word-break:break-word;">Layanan</th>
-            <th style="border-bottom:1px solid #ffd6e2;padding:${s.cellPad};text-align:right;font-weight:700;word-break:break-word;width:14%;">Qty</th>
-            <th style="border-bottom:1px solid #ffd6e2;padding:${s.cellPad};text-align:right;font-weight:700;word-break:break-word;width:22%;">Harga</th>
-            <th style="border-bottom:1px solid #ffd6e2;padding:${s.cellPad};text-align:right;font-weight:700;word-break:break-word;width:25%;">Subtotal</th>
+            <th style="width:${tblNamePx}px;padding:${cellPadY} ${cellPadX};text-align:left;font-weight:bold;color:white;background:#ee5a8a;">Layanan</th>
+            <th style="width:${tblQtyPx}px;padding:${cellPadY} ${cellPadX};text-align:right;font-weight:bold;color:white;background:#ee5a8a;">Qty</th>
+            <th style="width:${tblPricePx}px;padding:${cellPadY} ${cellPadX};text-align:right;font-weight:bold;color:white;background:#ee5a8a;">Harga</th>
+            <th style="width:${tblSubPx}px;padding:${cellPadY} ${cellPadX};text-align:right;font-weight:bold;color:white;background:#ee5a8a;">Subtotal</th>
           </tr>
         </thead>
         <tbody>
           ${items.map(it => `<tr>
-            <td style="border-bottom:1px solid #ffd6e2;padding:${s.cellPad};text-align:left;word-break:break-word;vertical-align:top;">${esc(it.name)}</td>
-            <td style="border-bottom:1px solid #ffd6e2;padding:${s.cellPad};text-align:right;white-space:nowrap;vertical-align:top;">${it.qty}</td>
-            <td style="border-bottom:1px solid #ffd6e2;padding:${s.cellPad};text-align:right;white-space:nowrap;vertical-align:top;">${fmtRp(it.price)}</td>
-            <td style="border-bottom:1px solid #ffd6e2;padding:${s.cellPad};text-align:right;white-space:nowrap;vertical-align:top;">${fmtRp(it.price * it.qty)}</td>
+            <td style="padding:${cellPadY} ${cellPadX};border-bottom:1px solid #ffd6e2;vertical-align:top;word-wrap:break-word;">${esc(it.name)}</td>
+            <td style="padding:${cellPadY} ${cellPadX};border-bottom:1px solid #ffd6e2;text-align:right;vertical-align:top;">${it.qty}</td>
+            <td style="padding:${cellPadY} ${cellPadX};border-bottom:1px solid #ffd6e2;text-align:right;vertical-align:top;">${fmtRp(it.price)}</td>
+            <td style="padding:${cellPadY} ${cellPadX};border-bottom:1px solid #ffd6e2;text-align:right;vertical-align:top;">${fmtRp(it.price * it.qty)}</td>
           </tr>`).join('')}
         </tbody>
       </table>
-      <div style="margin:3mm 0;">
-        <div style="display:flex;justify-content:space-between;padding:1.5mm 0;font-size:${s.totalsRowSize};border-bottom:1px dashed #ffe0e8;">
+
+      <!-- TOTALS -->
+      <div style="margin:6px 0;">
+        <div style="display:flex;justify-content:space-between;padding:3px 0;font-size:${Math.round(fontPt * 0.92)}pt;border-bottom:1px dashed #ffe0e8;">
           <span>Subtotal</span><span>${fmtRp(r.subtotal)}</span>
         </div>
-        ${r.transport_fee ? `<div style="display:flex;justify-content:space-between;padding:1.5mm 0;font-size:${s.totalsRowSize};border-bottom:1px dashed #ffe0e8;"><span>Transportasi</span><span>${fmtRp(r.transport_fee)}</span></div>` : ''}
-        ${r.discount ? `<div style="display:flex;justify-content:space-between;padding:1.5mm 0;font-size:${s.totalsRowSize};border-bottom:1px dashed #ffe0e8;"><span>Diskon</span><span>-${fmtRp(r.discount)}</span></div>` : ''}
-        <div style="display:flex;justify-content:space-between;padding:1.5mm 0;font-size:${s.totalsRowSize};font-weight:800;border-top:2px solid #ee5a8a;padding-top:2.5mm;margin-top:2mm;color:#2a1822;font-size:${s.totalsGrandSize};">
+        ${r.transport_fee ? `<div style="display:flex;justify-content:space-between;padding:3px 0;font-size:${Math.round(fontPt * 0.92)}pt;border-bottom:1px dashed #ffe0e8;"><span>Transportasi</span><span>${fmtRp(r.transport_fee)}</span></div>` : ''}
+        ${r.discount ? `<div style="display:flex;justify-content:space-between;padding:3px 0;font-size:${Math.round(fontPt * 0.92)}pt;border-bottom:1px dashed #ffe0e8;"><span>Diskon</span><span>-${fmtRp(r.discount)}</span></div>` : ''}
+        <div style="display:flex;justify-content:space-between;padding:6px 0 0;margin-top:4px;border-top:2px solid #ee5a8a;font-weight:bold;font-size:${Math.round(fontPt * 1.08)}pt;color:#2a1822;">
           <span>TOTAL</span><span>${fmtRp(r.total)}</span>
         </div>
       </div>
-      <div style="margin-top:${s.footerGap};padding-top:3mm;border-top:1px dashed #ffd6e2;">
-        <div style="display:flex;flex-direction:${s.footerColDir};gap:4mm;flex-wrap:wrap;justify-content:space-between;align-items:flex-start;">
-          <div style="flex:1 1 45%;min-width:0;">
-            <div style="font-size:${s.footerLabelSize};color:#6a5a64;margin-bottom:1mm;">Penerima,</div>
-            <div style="border-top:1px solid #2a1822;padding-top:2mm;margin-top:${s.footerNameMargin};font-weight:700;font-size:1em;color:#2a1822;word-break:break-word;">${esc(r.patient_name || '-')}</div>
-            <div style="font-size:${s.footerLabelSize};color:#6a5a64;margin-top:1mm;">Nama jelas &amp; tanda tangan</div>
+
+      <!-- FOOTER: Penerima / Hormat kami (2 columns via flex) -->
+      <div style="margin-top:14px;padding-top:8px;border-top:1px dashed #ffd6e8;">
+        <div style="display:flex;flex-direction:row;gap:12px;justify-content:space-between;align-items:flex-start;">
+          <div style="width:${blockColPx}px;flex-shrink:0;">
+            <div style="font-size:${Math.round(fontPt * 0.78)}pt;color:#6a5a64;margin-bottom:2px;">Penerima,</div>
+            <div style="margin-top:${isThermal ? 32 : 56}px;padding-top:4px;border-top:1px solid #2a1822;font-weight:bold;font-size:${fontPt}pt;color:#2a1822;word-wrap:break-word;">${esc(r.patient_name || '-')}</div>
+            <div style="font-size:${Math.round(fontPt * 0.74)}pt;color:#6a5a64;margin-top:3px;">Nama jelas &amp; tanda tangan</div>
           </div>
-          <div style="flex:1 1 45%;min-width:0;text-align:${isThermal ? 'left' : 'right'};">
-            <div style="font-size:${s.footerLabelSize};color:#6a5a64;margin-bottom:1mm;">Hormat kami,</div>
-            <img id="ownerSigEmbed" alt="" crossorigin="anonymous" style="display:none;max-height:${s.ownerSigMaxH};max-width:100%;height:auto;margin:1mm 0;${isThermal ? '' : 'margin-left:auto;'};" />
-            <div id="ownerSigUnderline" style="border-top:1px solid #2a1822;padding-top:2mm;margin-top:${s.footerNameMargin};font-weight:700;font-size:1em;color:#2a1822;word-break:break-word;"><em>${esc(biz.practitioner || 'Tasya Hanifah Pramesti, A.Md. Keb., CBME')}</em></div>
-            <div style="font-size:${s.footerLabelSize};color:#6a5a64;margin-top:1mm;">${esc(biz.business_name || 'Adzkiya Mom Baby Care')}</div>
+          <div style="width:${blockColPx}px;flex-shrink:0;text-align:right;">
+            <div style="font-size:${Math.round(fontPt * 0.78)}pt;color:#6a5a64;margin-bottom:2px;">Hormat kami,</div>
+            <img id="ownerSigEmbed" alt="" crossorigin="anonymous" style="display:none;max-height:${isThermal ? 36 : 56}px;max-width:100%;height:auto;margin:4px auto 4px 0;" />
+            <div id="ownerSigUnderline" style="margin-top:${isThermal ? 32 : 56}px;padding-top:4px;border-top:1px solid #2a1822;font-weight:bold;font-size:${fontPt}pt;color:#2a1822;word-wrap:break-word;"><em>${esc(biz.practitioner || 'Tasya Hanifah Pramesti, A.Md. Keb., CBME')}</em></div>
+            <div style="font-size:${Math.round(fontPt * 0.74)}pt;color:#6a5a64;margin-top:3px;">${esc(biz.business_name || 'Adzkiya Mom Baby Care')}</div>
           </div>
         </div>
-        <div style="text-align:center;margin-top:5mm;padding-top:3mm;border-top:1px dashed #ffd6e2;font-size:${s.thankSize};color:#6a5a64;">
-          <strong style="color:#2a1822;display:block;margin-bottom:1mm;font-size:1.1em;">Terima kasih atas kepercayaan Anda 🌸</strong>
+        <div style="text-align:center;margin-top:14px;padding-top:8px;border-top:1px dashed #ffd6e2;font-size:${Math.round(fontPt * 0.82)}pt;color:#6a5a64;">
+          <strong style="color:#2a1822;display:block;margin-bottom:2px;font-size:${Math.round(fontPt * 1.05)}pt;">Terima kasih atas kepercayaan Anda 🌸</strong>
           Kwitansi ini sah dan diproses secara elektronik oleh sistem.
         </div>
       </div>
@@ -5033,11 +5025,11 @@ async function saveKwitansiAsPDF(r, paperSize) {
   // Inject the invoice HTML as a child. All visual styling is now
   // baked into the HTML as inline style="" attributes — no separate
   // <style> block needed (which html2canvas had trouble with).
-  // The body wrapper uses display:inline-block so it shrinks to fit
-  // the invoice content (instead of stretching to 100% of body width).
+  // The body wrapper just holds the invoice; the invoice itself
+  // has explicit pixel widths so layout is deterministic.
   const body = document.createElement('div');
-  body.style.cssText = 'display:inline-block;background:white;color:#2a1822;';
-  body.innerHTML = buildKwitansiHtmlForExport(r, ps.fontPt, isThermal);
+  body.style.cssText = 'background:white;color:#2a1822;line-height:1.4;';
+  body.innerHTML = buildKwitansiHtmlForExport(r, ps, isThermal);
   wrap.appendChild(body);
 
   // Append wrap directly to body. wrap is positioned absolute, so it
