@@ -1370,14 +1370,26 @@ function shareOrPrintKwitansi(id) {
       </div>
 
       <label style="display:block;font-size:0.82rem;color:var(--text-soft);margin-bottom:4px;font-weight:600;">📐 Ukuran Kertas</label>
-      <select id="kwPdfSize" onchange="localStorage.setItem('adm_kw_paper_size', this.value);" style="width:100%;padding:8px 10px;border:1.5px solid var(--border);border-radius:8px;background:var(--card);color:var(--text);font-size:0.88rem;font-family:inherit;font-weight:600;margin-bottom:10px;">
+      <select id="kwPdfSize" onchange="localStorage.setItem('adm_kw_paper_size', this.value);" style="width:100%;padding:8px 10px;border:1.5px solid var(--border);border-radius:8px;background:var(--card);color:var(--text);font-size:0.88rem;font-family:inherit;font-weight:600;margin-bottom:12px;">
         ${sizeOptions}
       </select>
 
-      ${hasSignature ? `<label style="display:flex;align-items:center;gap:8px;padding:10px 12px;background:white;border:1px solid var(--border);border-radius:8px;cursor:pointer;margin-bottom:10px;">
-        <input type="checkbox" id="kwPdfIncludeSig" ${includeSig ? 'checked' : ''} onchange="localStorage.setItem('adm_kw_pdf_include_signature', this.checked);" style="width:18px;height:18px;cursor:pointer;accent-color:#ee5a8a;">
-        <span style="font-size:0.88rem;color:var(--text);font-weight:600;">✍️ Sertakan tanda tangan bidan/pemilik</span>
-      </label>` : ''}
+      <!-- SIGNATURE TOGGLE — always visible (was conditional on hasSignature).
+           Admin can choose to include OR hide the owner signature in the PDF.
+           When admin has no signature saved, the option still shows but is
+           disabled with a "Tambah dulu di pengaturan" hint. -->
+      <div style="background:white;border:2px solid #ee5a8a;border-radius:10px;padding:10px 12px;margin-bottom:12px;">
+        <label style="display:flex;align-items:center;gap:10px;cursor:${hasSignature ? 'pointer' : 'not-allowed'};">
+          <input type="checkbox" id="kwPdfIncludeSig" ${includeSig ? 'checked' : ''} ${hasSignature ? '' : 'disabled'} onchange="localStorage.setItem('adm_kw_pdf_include_signature', this.checked);" style="width:20px;height:20px;cursor:${hasSignature ? 'pointer' : 'not-allowed'};accent-color:#ee5a8a;flex-shrink:0;">
+          <div style="flex:1;min-width:0;">
+            <div style="font-size:0.92rem;color:var(--text);font-weight:700;line-height:1.3;">✍️ Sertakan tanda tangan bidan/pemilik</div>
+            <div style="font-size:0.78rem;color:var(--text-soft);margin-top:2px;line-height:1.4;">${hasSignature ? 'Centang untuk menampilkan gambar tanda tangan di blok "Hormat kami". Hapus centang untuk kwitansi tanpa tanda tangan.' : '<a href="javascript:void(0)" onclick=\"closeModal();navigate(\'settings\');\" style=\"color:#ee5a8a;font-weight:700;text-decoration:underline;\">Tambah tanda tangan dulu di Pengaturan</a> untuk mengaktifkan opsi ini.'}</div>
+          </div>
+        </label>
+        ${hasSignature ? `<div style="margin-top:8px;padding-top:8px;border-top:1px dashed #ffd6e2;font-size:0.76rem;color:var(--text-soft);display:flex;align-items:center;gap:6px;">
+          <span style="background:#fff5f8;padding:2px 6px;border-radius:6px;">📌 Disimpan: ${esc(SETTINGS.owner_signature_method || 'unknown')}${SETTINGS.owner_signature_via ? ' / ' + esc(SETTINGS.owner_signature_via) : ''}</span>
+        </div>` : ''}
+      </div>
 
       <button id="kwDownloadBtn" type="button" class="btn btn-primary" style="width:100%;justify-content:center;padding:14px;background:#7c3aed;font-size:1rem;">
         <span>💾 Download ${esc(r.invoice_no || 'kwitansi')}.pdf</span>
