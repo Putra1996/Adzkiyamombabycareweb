@@ -1425,15 +1425,17 @@ function shareOrPrintKwitansi(id) {
     </div>
   `);
 
-  // Stash the receipt on a global so the Download button can read it
-  // without needing to re-fetch from cache.
-  window._kwitansiForPdf = r;
-
   // Wire up the Download button. We attach the click handler HERE
   // (after openModal renders the HTML) instead of using inline
   // onclick because we need to read the current checkbox state +
   // select value at click time, and we want to disable the button
   // while the PDF is being generated so the user can't double-click.
+  // NOTE: the receipt is read straight from the closure `r` (always in
+  // scope) — we deliberately do NOT stash it on a global, because a
+  // global + a backdrop "cleanup" listener broke before: any click that
+  // bubbled to the backdrop (e.g. changing the paper-size dropdown) ran
+  // the cleanup and nulled the receipt, forcing the user to close &
+  // reopen the modal before Download worked. Using the closure fixes that.
   const btn = document.getElementById('kwDownloadBtn');
   if (btn) {
     btn.addEventListener('click', async function onKwDownloadClick() {
@@ -1441,7 +1443,7 @@ function shareOrPrintKwitansi(id) {
       const sigEl = document.getElementById('kwPdfIncludeSig');
       const size = sizeEl ? sizeEl.value : 'A5';
       const includeSig = sigEl ? sigEl.checked : true;
-      if (!window._kwitansiForPdf) {
+      if (!r) {
         alert('Kwitansi tidak ditemukan. Silakan coba lagi.');
         return;
       }
@@ -1450,7 +1452,7 @@ function shareOrPrintKwitansi(id) {
       const origText = btn.innerHTML;
       btn.innerHTML = '<span style="opacity:0.85;">⏳ Membuat PDF...</span>';
       try {
-        await saveKwitansiAsPDF(window._kwitansiForPdf, size, { includeSignature: includeSig });
+        await saveKwitansiAsPDF(r, size, { includeSignature: includeSig });
       } catch (e) {
         alert('Gagal membuat PDF: ' + (e.message || e));
         console.error('Save PDF failed:', e);
@@ -1461,17 +1463,6 @@ function shareOrPrintKwitansi(id) {
       }
     });
   }
-
-  // Cleanup global on modal close. We use a one-time backdrop click
-  // listener (matching if(event.target===this) check). Note: this is
-  // not what closes the modal — the modal's onclick on the backdrop
-  // already handles that. This just clears the cached receipt so
-  // the next time the modal opens for a different kwitansi, we don't
-  // accidentally save the wrong one.
-  setTimeout(() => {
-    const backdrop = document.querySelector('.modal-backdrop');
-    if (backdrop) backdrop.addEventListener('click', () => { window._kwitansiForPdf = null; }, { once: true });
-  }, 50);
 }
 
 function toggleSelectAllReceipts(checked) {
