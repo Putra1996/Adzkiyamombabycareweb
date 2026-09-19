@@ -149,6 +149,7 @@ async function showApp() {
   await loadCache();
   navigate('dashboard');
   startNotifPolling();
+  checkStorageHealth();
   // Re-layout every Chart.js instance when the viewport changes — without
   // this charts can render at 0×0 inside their .chart-canvas-wrap after
   // the device rotates or Chrome's "Situs desktop" toggle inflates the
@@ -168,6 +169,26 @@ async function loadCache() {
       api('/api/admin/settings')
     ]);
   } catch (e) {}
+}
+
+// Tampilkan banner peringatan kalau server TIDAK sedang memakai database
+// yang dikonfigurasi (DATABASE_URL diisi tapi gagal connect → fallback ke
+// file sementara). Dalam kondisi ini semua data baru (reservasi, kwitansi,
+// pengaturan) bisa HILANG saat deploy berikutnya, jadi admin harus tahu.
+async function checkStorageHealth() {
+  try {
+    const h = await fetch(apiUrl('/health')).then(r => r.json());
+    if (!h || h.configured_storage === 'file' || h.db_connected) return;
+    const banner = document.createElement('div');
+    banner.id = 'storageWarningBanner';
+    banner.style.cssText = 'position:sticky;top:0;z-index:9999;background:#b91c1c;color:white;padding:12px 16px;font-size:0.88rem;line-height:1.5;font-weight:600;';
+    banner.innerHTML = '⚠️ <strong>Mode darurat (file):</strong> server tidak bisa terhubung ke database (' +
+      esc(h.configured_storage || 'db') + '), jadi semua data baru HANYA tersimpan sementara dan bisa hilang saat deploy berikutnya. ' +
+      'Perbaiki <code>DATABASE_URL</code> / status database lalu redeploy.' +
+      (h.db_error ? '<br><small style="font-weight:500;opacity:0.9;">Penyebab: ' + esc(h.db_error) + '</small>' : '') +
+      '<button type="button" onclick="this.parentElement.remove()" style="float:right;background:none;border:none;color:white;font-size:1.1rem;cursor:pointer;font-weight:700;">×</button>';
+    document.body.insertBefore(banner, document.body.firstChild);
+  } catch (e) { /* health check opsional */ }
 }
 
 document.getElementById('loginForm').addEventListener('submit', async (e) => {

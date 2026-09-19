@@ -90,7 +90,9 @@ const PORT = parseInt(process.env.PORT || '3000', 10);
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 if (IS_PRODUCTION) app.set('trust proxy', 1);
 const JWT_SECRET = process.env.JWT_SECRET || 'adzkiya_local_development_secret';
-const DATABASE_URL = process.env.DATABASE_URL || '';
+// .trim(): nilai env yang di-paste dari dashboard sering membawa
+// spasi/newline tak terlihat, yang membuat deteksi jenis DB gagal.
+const DATABASE_URL = String(process.env.DATABASE_URL || '').trim();
 const DATABASE_KIND = DATABASE_URL.startsWith('postgres://') || DATABASE_URL.startsWith('postgresql://')
   ? 'postgres'
   : (DATABASE_URL ? 'mysql' : 'file');
@@ -114,6 +116,16 @@ let DB = {
 };
 
 let pool = null;
+// Pesan error terakhir saat mencoba connect ke DB (disanitasi — tanpa
+// URL/kredensial). Ditampilkan di /health supaya kasus "DATABASE_URL
+// ada tapi gagal connect" bisa didiagnosa tanpa buka log Railway.
+let dbConnectError = null;
+function sanitizeDbError(err) {
+  return String((err && err.message) || err || 'unknown')
+    .replace(/\/\/[^@\s/]+@/g, '//***@')      // user:password@host
+    .replace(/\b[A-Za-z0-9_-]{24,}\b/g, '***') // token panjang
+    .slice(0, 240);
+}
 let saveTimer = null;
 let saveChain = Promise.resolve();
 
@@ -156,7 +168,9 @@ async function initStorage() {
       if (result.rows.length) DB = result.rows[0].data;
       pgOk = true;
     } catch (err) {
-      console.error('[storage] Postgres unreachable, falling back to file mode: ' + err.message);
+      console.error('[storage] Postgres unreachable, falling back to file mode: ' + sanitizeDbError(err));
+      console.error('[storage] ⚠️  Data yang ditulis sekarang HANYA masuk file sementara — perbaiki DATABASE_URL / Neon lalu redeploy.');
+      dbConnectError = sanitizeDbError(err);
       pool = null;
     }
     if (!pgOk) {
@@ -195,6 +209,7 @@ async function initStorage() {
   }
   if (IS_PRODUCTION && DATABASE_KIND !== 'file' && !pool) {
     console.warn(`[storage] ⚠️  DATABASE_URL (${DATABASE_KIND}) tidak bisa dihubungi saat boot — sementara pakai file.`);
+    if (dbConnectError) console.warn(`[storage] ⚠️  Penyebab: ${dbConnectError}`);
   }
 }
 
@@ -876,6 +891,7 @@ app.get('/health', (req, res) => res.json({
   storage: pool ? DATABASE_KIND : 'file',
   configured_storage: DATABASE_KIND,
   db_connected: !!pool,
+  db_error: pool ? null : dbConnectError,
   data_file: DATABASE_KIND === 'file' ? path.basename(DATA_FILE) : null,
   time: new Date().toISOString(),
   today_wib: todayJakarta()
