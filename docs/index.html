@@ -187,6 +187,10 @@
 <script defer src="/js/i18n.js"></script>
   <script src="/js/main.js"></script>
 <script>
+// Escape utk menyisipkan data (di-set admin) ke innerHTML dgn aman.
+function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+// Hanya izinkan URL http/https utk atribut href (blokir javascript:, dsb).
+function safeUrl(u) { u = String(u || '').trim(); return /^https?:\/\//i.test(u) ? u : '#'; }
 // Load business settings to update name/contact/hero
 fetch('/api/public-settings').then(r => r.json()).then(s => {
   if (s.business_name) {
@@ -198,7 +202,7 @@ fetch('/api/public-settings').then(r => r.json()).then(s => {
   if (s.address) document.getElementById('contactAddress').textContent = s.address;
   if (s.phone) {
     const intl = s.phone.replace(/[^\d]/g, '').replace(/^0/, '62');
-    document.getElementById('contactPhone').innerHTML = `<a href="https://wa.me/${intl}" target="_blank">${s.phone}</a>`;
+    document.getElementById('contactPhone').innerHTML = `<a href="https://wa.me/${intl}" target="_blank">${esc(s.phone)}</a>`;
   }
   if (s.area) document.getElementById('contactArea').textContent = s.area;
   if (s.practitioner) document.getElementById('practitionerName').textContent = s.practitioner.split(',')[0];
@@ -236,7 +240,7 @@ fetch('/api/public-settings').then(r => r.json()).then(s => {
   }
   if (s.gmaps_url) {
     const btn = document.getElementById('gmapsBtn');
-    if (btn) btn.href = s.gmaps_url;
+    if (btn) btn.href = safeUrl(s.gmaps_url);
   }
 
   // Jam Operasional
@@ -245,8 +249,8 @@ fetch('/api/public-settings').then(r => r.json()).then(s => {
     const todayIdx = (new Date().getDay() + 6) % 7; // 0=Senin
     hEl.innerHTML = s.hours.map((h, i) => `
       <div style="display:flex;justify-content:space-between;padding:6px 10px;border-radius:8px;${i === todayIdx ? 'background:var(--pink-100);font-weight:700;color:var(--pink-700);' : ''}">
-        <span>${h.day}${i === todayIdx ? ' (Hari ini)' : ''}</span>
-        <span>${h.closed ? '<em style="color:#c43050;">Tutup</em>' : `${h.open} – ${h.close}`}</span>
+        <span>${esc(h.day)}${i === todayIdx ? ' (Hari ini)' : ''}</span>
+        <span>${h.closed ? '<em style="color:#c43050;">Tutup</em>' : `${esc(h.open)} – ${esc(h.close)}`}</span>
       </div>
     `).join('');
   }
@@ -255,15 +259,19 @@ fetch('/api/public-settings').then(r => r.json()).then(s => {
   const gw = document.getElementById('gmapsWrap');
   const gcard = document.getElementById('gmapsCard');
   if (s.gmaps_embed && gw) {
-    // Sanitize: keep only iframe tag
+    // Sanitasi: hanya terima <iframe> dgn src http(s). Jangan pernah
+    // memasukkan HTML embed mentah ke innerHTML (bisa disisipi script).
     const m = s.gmaps_embed.match(/<iframe[^>]*src=["']([^"']+)["'][^>]*><\/iframe>/i);
-    if (m) {
-      gw.innerHTML = `<iframe src="${m[1]}" style="width:100%;height:280px;border:0;" loading="lazy" referrerpolicy="no-referrer-when-downgrade"></iframe>`;
+    const iframeSrc = m ? m[1] : '';
+    if (/^https?:\/\//i.test(iframeSrc)) {
+      gw.innerHTML = `<iframe src="${iframeSrc}" style="width:100%;height:280px;border:0;" loading="lazy" referrerpolicy="no-referrer-when-downgrade"></iframe>`;
+    } else if (s.gmaps_url) {
+      gw.innerHTML = `<a href="${safeUrl(s.gmaps_url)}" target="_blank" rel="noopener" style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:30px;background:linear-gradient(135deg,#ffe2ed,#fff1e1);border-radius:14px;text-decoration:none;color:var(--pink-700);font-weight:700;"><span data-i18n="home.contact_gmaps_btn">🗺️ Buka di Google Maps →</span></a>`;
     } else {
-      gw.innerHTML = s.gmaps_embed;
+      gw.innerHTML = '';
     }
   } else if (s.gmaps_url && gw) {
-    gw.innerHTML = `<a href="${s.gmaps_url}" target="_blank" rel="noopener" style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:30px;background:linear-gradient(135deg,#ffe2ed,#fff1e1);border-radius:14px;text-decoration:none;color:var(--pink-700);font-weight:700;"><span data-i18n="home.contact_gmaps_btn">🗺️ Buka di Google Maps →</span></a>`;
+    gw.innerHTML = `<a href="${safeUrl(s.gmaps_url)}" target="_blank" rel="noopener" style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:30px;background:linear-gradient(135deg,#ffe2ed,#fff1e1);border-radius:14px;text-decoration:none;color:var(--pink-700);font-weight:700;"><span data-i18n="home.contact_gmaps_btn">🗺️ Buka di Google Maps →</span></a>`;
   } else if (gcard) {
     gcard.style.display = 'none';
   }
@@ -281,9 +289,9 @@ fetch('/api/public-settings').then(r => r.json()).then(s => {
   const contactCard = document.getElementById('socialContactCard');
   if (socials.length) {
     const html = socials.map(soc => {
-      const icon = soc.icon || '🌐';
-      const url = soc.url.startsWith('http') ? soc.url : 'https://' + soc.url;
-      return `<a href="${url}" target="_blank" rel="noopener" title="${soc.platform}" style="display:inline-flex;align-items:center;gap:6px;padding:8px 14px;background:var(--pink-100);color:var(--pink-700);border-radius:999px;text-decoration:none;font-weight:700;font-size:0.88rem;transition:all .15s;">${icon} ${soc.platform}</a>`;
+      const icon = esc(soc.icon || '🌐');
+      const url = safeUrl(soc.url.startsWith('http') ? soc.url : 'https://' + soc.url);
+      return `<a href="${url}" target="_blank" rel="noopener" title="${esc(soc.platform)}" style="display:inline-flex;align-items:center;gap:6px;padding:8px 14px;background:var(--pink-100);color:var(--pink-700);border-radius:999px;text-decoration:none;font-weight:700;font-size:0.88rem;transition:all .15s;">${icon} ${esc(soc.platform)}</a>`;
     }).join('');
     if (footerSocial) footerSocial.innerHTML = html;
     if (contactSocial) contactSocial.innerHTML = html;

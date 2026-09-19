@@ -62,7 +62,11 @@ function renderCalendar() {
   const firstDay = new Date(y, m, 1).getDay();
   const daysInMonth = new Date(y, m + 1, 0).getDate();
   const prevDays = new Date(y, m, 0).getDate();
-  const todayStr = new Date().toISOString().slice(0, 10);
+  // Tanggal "hari ini" harus pakai waktu lokal user, BUKAN UTC
+  // (toISOString). Kalau pakai UTC, antara jam 00:00–07:00 WIB highlight
+  // "Hari ini" akan mundur satu hari.
+  const _nowD = new Date();
+  const todayStr = `${_nowD.getFullYear()}-${String(_nowD.getMonth() + 1).padStart(2, '0')}-${String(_nowD.getDate()).padStart(2, '0')}`;
   const todayMidnight = new Date();
   todayMidnight.setHours(0, 0, 0, 0);
 
@@ -111,7 +115,7 @@ function renderCalendar() {
     let html = `<span class="day-num">${d}</span>`;
     if (isBlackout) {
       // Distinct visual marker so the blackout dates pop out at a glance.
-      html += `<span class="count-badge blackout-badge" title="Hari Libur${blackoutNote ? ' — ' + blackoutNote : ''}" aria-label="Hari Libur">🚫</span>`;
+      html += `<span class="count-badge blackout-badge" title="${esc('Hari Libur' + (blackoutNote ? ' — ' + blackoutNote : ''))}" aria-label="Hari Libur">🚫</span>`;
     } else if (count > 0 && !isPast) {
       const badgeText = isFull ? `${count} 🛑` : `${count}`;
       html += `<span class="count-badge" title="${count} sesi${isFull ? ' — Penuh' : ''}">${badgeText}</span>`;

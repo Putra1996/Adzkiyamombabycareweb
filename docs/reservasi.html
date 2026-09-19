@@ -169,6 +169,11 @@ let slots = []; // {date, time}
 const reservationApiBase = String(window.ADZKIYA_API_BASE || '').replace(/\/$/, '');
 const reservationApiUrl = path => reservationApiBase + (path.startsWith('/') ? path : '/' + path);
 
+// Escape untuk menyisipkan data (yg di-set admin) ke innerHTML dgn aman.
+function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+// Hanya izinkan URL http/https utk atribut href (blokir javascript:, dsb).
+function safeUrl(u) { u = String(u || '').trim(); return /^https?:\/\//i.test(u) ? u : '#'; }
+
 // Blackout dates — admin-configured "hari libur". Cached client-side
 // after the bootstrap fetch. We use a Set for O(1) membership checks
 // so the validation on each user keystroke stays cheap even when the
@@ -325,10 +330,10 @@ document.querySelectorAll('.pay-option').forEach(el => {
     document.getElementById('proofGroup').style.display = m === 'COD' ? 'none' : 'block';
     if (m === 'Transfer' && SETTINGS.bank_accounts && SETTINGS.bank_accounts.length) {
       info.style.display = 'block';
-      info.innerHTML = `<div class="summary-card"><strong>🏦 Transfer ke rekening berikut:</strong>${SETTINGS.bank_accounts.map(b => `<div class="row"><span>${b.bank}</span><span><strong>${b.number}</strong> a.n. ${b.name}</span></div>`).join('')}</div>`;
+      info.innerHTML = `<div class="summary-card"><strong>🏦 Transfer ke rekening berikut:</strong>${SETTINGS.bank_accounts.map(b => `<div class="row"><span>${esc(b.bank)}</span><span><strong>${esc(b.number)}</strong> a.n. ${esc(b.name)}</span></div>`).join('')}</div>`;
     } else if (m === 'QRIS' && (SETTINGS.has_qris || SETTINGS.qris_link)) {
       info.style.display = 'block';
-      info.innerHTML = `<div class="summary-card" style="text-align:center;"><strong>📱 Scan QRIS berikut:</strong><br>${SETTINGS.has_qris ? `<img src="${reservationApiUrl('/api/qris')}" style="max-width:240px;margin:10px auto;display:block;border-radius:12px;border:1px solid var(--border);">` : ''}${SETTINGS.qris_link ? `<a href="${SETTINGS.qris_link}" target="_blank" class="btn btn-outline" style="margin-top:8px;">Buka link QRIS</a>` : ''}</div>`;
+      info.innerHTML = `<div class="summary-card" style="text-align:center;"><strong>📱 Scan QRIS berikut:</strong><br>${SETTINGS.has_qris ? `<img src="${reservationApiUrl('/api/qris')}" style="max-width:240px;margin:10px auto;display:block;border-radius:12px;border:1px solid var(--border);">` : ''}${SETTINGS.qris_link ? `<a href="${safeUrl(SETTINGS.qris_link)}" target="_blank" rel="noopener" class="btn btn-outline" style="margin-top:8px;">Buka link QRIS</a>` : ''}</div>`;
     } else {
       info.style.display = 'none';
       info.innerHTML = '';
