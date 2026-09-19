@@ -1695,10 +1695,10 @@ function printReceipt(r) {
     </head><body>
     <div class="print-actions">
       <button id="printBtn" onclick="embedSigAndPrint()" style="background:#ee5a8a;">🖨️ Cetak / Save PDF</button>
-      <button id="clearBtn" onclick="if(window.__sigPad && window.__sigPad._clearSig) window.__sigPad._clearSig()" style="background:#f4a83a;color:white;">✏️ Ulangi TTD</button>
+      ${hideSigPrint ? '' : '<button id="clearBtn" onclick="if(window.__sigPad && window.__sigPad._clearSig) window.__sigPad._clearSig()" style="background:#f4a83a;color:white;">✏️ Ulangi TTD</button>'}
       <button onclick="window.close()" style="background:var(--card);color:var(--text);border:1px solid var(--border);">✕ Tutup</button>
     </div>
-    <div id="sigWrap" style="max-width:760px;margin:0 auto 12px;padding:14px 18px;background:var(--card);border-radius:12px;box-shadow:var(--shadow);border:1px solid var(--border);">
+    <div id="sigWrap" style="${hideSigPrint ? 'display:none;' : ''}max-width:760px;margin:0 auto 12px;padding:14px 18px;background:var(--card);border-radius:12px;box-shadow:var(--shadow);border:1px solid var(--border);">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:8px;">
         <strong style="font-size:0.92rem;color:var(--primary);">✍️ Tanda Tangan Pasien (Opsional)</strong>
         <small style="color:var(--text-soft);">Bisa dilewati untuk hasil cetak cepat</small>
@@ -1800,6 +1800,12 @@ function printReceipt(r) {
       const canvas = document.getElementById('sigPad');
       const wrap = document.getElementById('sigPadWrap');
       if (!canvas || !wrap) return;
+      // Jika blok tanda tangan disembunyikan (fitur hide-signatures), pad
+      // ini display:none → lebarnya 0. Tanpa guard, loop rAF di bawah akan
+      // berjalan selamanya (buang CPU/baterai). Kita deteksi lebih awal.
+      if (wrap.offsetParent === null && getComputedStyle(wrap).display === 'none') return;
+      if (wrap.closest('[style*="display:none"], [style*="display: none"]')) return;
+      let _sizeTries = 0;
       function sizeCanvas() {
         // Wrap's CSS already gives the canvas a fixed pixel height
         // (140px) and 100% width. We measure AFTER layout so the
@@ -1807,7 +1813,9 @@ function printReceipt(r) {
         // before paint would yield 0×0 for the just-opened tab).
         const r = wrap.getBoundingClientRect();
         if (r.width <= 0) {
-          // Tab hasn't laid out yet. Defer to the next frame.
+          // Tab belum lay out (atau elemen disembunyikan). Defer ke frame
+          // berikutnya, tapi BOUNDED — supaya tidak pernah loop selamanya.
+          if (++_sizeTries > 120) return;
           requestAnimationFrame(sizeCanvas);
           return;
         }
