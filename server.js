@@ -720,8 +720,27 @@ const allowedOrigins = process.env.ALLOWED_ORIGINS
         .filter(Boolean)
     )
   : null;
+// Origin frontend tambahan yang selalu boleh (tanpa perlu set env):
+// cermin GitHub Pages repo ini. Tanpa ini, ALLOWED_ORIGINS yang tidak diisi
+// berarti TIDAK ada header CORS sama sekali, sehingga cermin GH Pages
+// (docs/) tidak bisa memanggil API Railway — halaman tampil tanpa layanan,
+// kalender kosong, dsb. Hanya origin milik repo ini + localhost (dev).
+const DEFAULT_ALLOWED_ORIGINS = new Set(['https://putra1996.github.io']);
 app.use((req, res, next) => {
   const origin = req.headers.origin;
+  if (!allowedOrigins && origin) {
+    const normalized = origin.replace(/\/$/, '');
+    const isDefaultAllowed = DEFAULT_ALLOWED_ORIGINS.has(normalized.toLowerCase());
+    const isLocal = !IS_PRODUCTION && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(normalized);
+    if (isDefaultAllowed || isLocal) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+      res.setHeader('Vary', 'Origin');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+      if (req.method === 'OPTIONS') return res.sendStatus(204);
+    }
+    return next();
+  }
   if (allowedOrigins) {
     if (!origin) {
       // Same-origin / no Origin header: allow.
