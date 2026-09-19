@@ -1027,6 +1027,15 @@ app.get('/api/proof/:id', auth, (req, res) => {
 
 // ===== AUTH =====
 const loginAttempts = new Map();
+// Bersihkan entri login-attempts yang sudah lewat window-nya secara
+// berkala supaya Map tidak tumbuh tanpa batas (memory leak) saat banyak
+// IP berbeda gagal login sekali lalu tidak pernah kembali.
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, val] of loginAttempts) {
+    if (!val || val.resetAt < now) loginAttempts.delete(key);
+  }
+}, 30 * 60 * 1000);
 app.post('/api/auth/login', authLimiter, (req, res) => {
   const key = req.ip;
   const now = Date.now();
@@ -1247,7 +1256,7 @@ function buildCustomerList() {
     const rfm = R + F + M;
     const rfm_score = ({AAA:100, AAB:90, AAC:80, AAD:70, ABA:85, ABB:75, ABC:65, ABD:55,
       ACA:70, ACB:60, ACC:55, ACD:45,
-      BAA:80, BAB:70, BABd:60,
+      BAA:80, BAB:70, BAC:60, BAD:50, BBA:75, BBB:65, BBC:60, BBD:50, BCA:70, BCB:60, BCC:55, BCD:45,
       CCC:35, CCD:25, DDD:10})[rfm] || 50;
     const statusBreakdown = c.reservations.reduce((m, r) => { m[r.status] = (m[r.status] || 0) + 1; return m; }, {});
     const hasOutstanding = c.reservations.some((r) => r.payment_status === 'unpaid' && r.status !== 'rejected');
@@ -1360,7 +1369,11 @@ app.get('/api/admin/notifications', auth, (req, res) => {
     if (r.status === 'rejected') return;
     (r.slots || [{ date: r.reservation_date, time: r.reservation_time }]).forEach(s => {
       if (!s.date || !s.time) return;
-      const when = new Date(`${s.date}T${s.time}:00`);
+      // Bisnis ada di Cilacap (WIB = UTC+7). Tanggal/jam reservasi disimpan
+      // sebagai waktu lokal Indonesia, jadi parse dengan offset +07:00 agar
+      // perbandingan dgn 'now' (UTC server) akurat — kalau tidak, reminder
+      // akan meleset 7 jam.
+      const when = new Date(`${s.date}T${s.time}:00+07:00`);
       if (when >= now && when <= windowEnd) {
         const minsLeft = Math.round((when - now) / 60000);
         reminders.push({
@@ -3887,9 +3900,9 @@ const AI_DEFAULT_PERSONA = `Kamu adalah Adzkiya Assistant, customer service AI u
 function buildAISystemPrompt() {
   const s = DB.settings || {};
   const servicesList = SERVICES.map(cat => {
-    const items = cat.items.map(i => `- ${i.name}: Rp${i.price.toLocaleString('id-ID')}`).join('\\n');
-    return `${cat.cat}:\\n${items}`;
-  }).join('\\n\\n');
+    const items = cat.items.map(i => `- ${i.name}: Rp${i.price.toLocaleString('id-ID')}`).join('\n');
+    return `${cat.cat}:\n${items}`;
+  }).join('\n\n');
   const hours = (s.hours || []).map(h => `${h.day}: ${h.closed ? 'Tutup' : `${h.open}-${h.close}`}`).join(', ');
   const userPrompt = (DB.settings.ai_assistant_base_prompt || '').trim();
   return [
