@@ -25,6 +25,22 @@ async function getPdfParse() {
   return _pdfParse;
 }
 
+
+// fetchWithTimeout: like fetch() but aborts after `timeoutMs` so a
+// slow upstream (Gemini / OpenRouter / Meta Graph) can't hang our
+// route forever. Without this, one stuck AI provider would tie up an
+// Express worker indefinitely and degrade into the dreaded
+// "Railway 502" after a few minutes.
+async function fetchWithTimeout(url, options, timeoutMs) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 const app = express();
 const PORT = parseInt(process.env.PORT || '3000', 10);
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
@@ -3874,14 +3890,14 @@ async function callGemini(systemPrompt, messages) {
   contents.unshift({ role: 'user', parts: [{ text: systemPrompt }] });
   contents.unshift({ role: 'model', parts: [{ text: 'Siap membantu customer Adzkiya.' }] });
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
-  const r = await fetch(url, {
+  const r = await fetchWithTimeout(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       contents,
       generationConfig: { temperature: 0.7, maxOutputTokens: 500 }
     })
-  });
+  }, 30000);
   if (!r.ok) {
     const text = await r.text().catch(() => '');
     throw new Error('Gemini ' + r.status + ': ' + text.slice(0, 200));
@@ -3900,7 +3916,7 @@ async function callOpenRouter(systemPrompt, messages) {
     { role: 'system', content: systemPrompt },
     ...messages
   ];
-  const r = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+  const r = await fetchWithTimeout('https://openrouter.ai/api/v1/chat/completions', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -3914,7 +3930,7 @@ async function callOpenRouter(systemPrompt, messages) {
       max_tokens: 500,
       temperature: 0.7
     })
-  });
+  }, 30000);
   if (!r.ok) {
     const text = await r.text().catch(() => '');
     throw new Error('OpenRouter ' + r.status + ': ' + text.slice(0, 200));
@@ -4033,7 +4049,7 @@ async function sendWAReply(toPhone, text) {
   // Format: country code + number, no +, no spaces
   const formattedPhone = toPhone.replace(/[^\\d]/g, '');
   const url = `https://graph.facebook.com/v18.0/${phoneId}/messages`;
-  const r = await fetch(url, {
+  const r = await fetchWithTimeout(url, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -4045,7 +4061,7 @@ async function sendWAReply(toPhone, text) {
       type: 'text',
       text: { body: text }
     })
-  });
+  }, 20000);
   if (!r.ok) {
     const t = await r.text().catch(() => '');
     throw new Error('WA send ' + r.status + ': ' + t.slice(0, 200));
