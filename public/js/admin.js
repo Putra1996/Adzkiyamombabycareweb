@@ -1337,8 +1337,10 @@ async function quickSavePDF(id) {
   const hasSignature = !!(SETTINGS && SETTINGS.has_owner_signature);
   const stored = localStorage.getItem('adm_kw_pdf_include_signature');
   const includeSig = stored === null ? hasSignature : stored === 'true';
+  // Baca preferensi "sembunyikan tanda tangan" (Penerima & Hormat kami).
+  const hideSig = localStorage.getItem('adm_kw_pdf_hide_signatures') === 'true';
   try {
-    await saveKwitansiAsPDF(r, paperSize, { includeSignature: includeSig });
+    await saveKwitansiAsPDF(r, paperSize, { includeSignature: includeSig, hideSignatures: hideSig });
   } catch (e) {
     alert('Gagal membuat PDF: ' + (e.message || e));
     console.error('Quick save PDF failed:', e);
@@ -1360,6 +1362,9 @@ function shareOrPrintKwitansi(id) {
   const hasSignature = !!(SETTINGS && SETTINGS.has_owner_signature);
   const includeSigDefault = localStorage.getItem('adm_kw_pdf_include_signature');
   const includeSig = includeSigDefault === null ? hasSignature : includeSigDefault === 'true';
+  // Preferensi "sembunyikan blok tanda tangan (Penerima & Hormat kami)".
+  // Default = tidak disembunyikan (perilaku lama). Disimpan di localStorage.
+  const hideSig = localStorage.getItem('adm_kw_pdf_hide_signatures') === 'true';
 
   // Build size options for the dropdown
   const sizeOptions = Object.entries(KW_PAPER_SIZES)
@@ -1397,6 +1402,17 @@ function shareOrPrintKwitansi(id) {
         ${hasSignature ? `<div style="margin-top:8px;padding-top:8px;border-top:1px dashed #ffd6e2;font-size:0.76rem;color:var(--text-soft);display:flex;align-items:center;gap:6px;">
           <span style="background:#fff5f8;padding:2px 6px;border-radius:6px;">📌 Disimpan: ${esc(SETTINGS.owner_signature_method || 'unknown')}${SETTINGS.owner_signature_via ? ' / ' + esc(SETTINGS.owner_signature_via) : ''}</span>
         </div>` : ''}
+      </div>
+
+      <!-- Toggle: sembunyikan blok tanda tangan (Penerima & Hormat kami) -->
+      <div style="background:white;border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:12px;">
+        <label style="display:flex;align-items:center;gap:10px;cursor:pointer;">
+          <input type="checkbox" id="kwPdfHideSig" ${hideSig ? 'checked' : ''} onchange="localStorage.setItem('adm_kw_pdf_hide_signatures', this.checked);" style="width:18px;height:18px;cursor:pointer;accent-color:#7c3aed;flex-shrink:0;">
+          <div style="flex:1;min-width:0;">
+            <div style="font-size:0.9rem;color:var(--text);font-weight:700;line-height:1.3;">🙈 Sembunyikan blok tanda tangan (Penerima &amp; Hormat kami)</div>
+            <div style="font-size:0.76rem;color:var(--text-soft);margin-top:2px;line-height:1.4;">Centang untuk menghapus kedua kolom tanda tangan dari PDF — kwitansi jadi lebih ringkas.</div>
+          </div>
+        </label>
       </div>
 
       <button id="kwDownloadBtn" type="button" class="btn btn-primary" style="width:100%;justify-content:center;padding:14px;background:#7c3aed;font-size:1rem;">
@@ -1441,8 +1457,10 @@ function shareOrPrintKwitansi(id) {
     btn.addEventListener('click', async function onKwDownloadClick() {
       const sizeEl = document.getElementById('kwPdfSize');
       const sigEl = document.getElementById('kwPdfIncludeSig');
+      const hideSigEl = document.getElementById('kwPdfHideSig');
       const size = sizeEl ? sizeEl.value : 'A5';
       const includeSig = sigEl ? sigEl.checked : true;
+      const hideSig = hideSigEl ? hideSigEl.checked : false;
       if (!r) {
         alert('Kwitansi tidak ditemukan. Silakan coba lagi.');
         return;
@@ -1452,7 +1470,7 @@ function shareOrPrintKwitansi(id) {
       const origText = btn.innerHTML;
       btn.innerHTML = '<span style="opacity:0.85;">⏳ Membuat PDF...</span>';
       try {
-        await saveKwitansiAsPDF(r, size, { includeSignature: includeSig });
+        await saveKwitansiAsPDF(r, size, { includeSignature: includeSig, hideSignatures: hideSig });
       } catch (e) {
         alert('Gagal membuat PDF: ' + (e.message || e));
         console.error('Save PDF failed:', e);
@@ -1647,6 +1665,9 @@ function printReceipt(r) {
   const items = Array.isArray(r.items) ? r.items : (r.items || JSON.parse(r.items_json || '[]'));
   const biz = SETTINGS || {};
   const logoSrc = biz.has_logo ? apiUrl('/api/logo') : null;
+  // Preferensi "sembunyikan blok tanda tangan (Penerima & Hormat kami)"
+  // juga diterapkan pada tampilan cetak agar konsisten dgn PDF.
+  const hideSigPrint = localStorage.getItem('adm_kw_pdf_hide_signatures') === 'true';
   // Multi-waktu support: prefer service_times[] if available, fall back
   // to service_time. Render each as a chip so several sessions fit
   // gracefully on a single line.
@@ -1744,7 +1765,7 @@ function printReceipt(r) {
         <div class="row grand"><span>TOTAL</span><span>${fmtRp(r.total)}</span></div>
       </div>
       <div class="invoice-footer">
-        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:24px;flex-wrap:wrap;text-align:left;">
+        <div style="${hideSigPrint ? 'display:none;' : 'display:flex;'}justify-content:space-between;align-items:flex-start;gap:24px;flex-wrap:wrap;text-align:left;">
           <div style="flex:1;min-width:200px;">
             <div style="font-size:0.82rem;color:var(--text-soft);">Penerima,</div>
             <img id="sigEmbed" alt="" style="display:none;max-height:80px;max-width:240px;margin-top:6px;margin-bottom:6px;background:transparent;" />
@@ -5141,7 +5162,7 @@ function buildThermalOverrides(fontPt) {
 // widths. We compute widths in pixels from the paper-size mm value at
 // generation time so the layout is deterministic regardless of where
 // the wrap is rendered.
-function buildKwitansiHtmlForExport(r, ps, isThermal) {
+function buildKwitansiHtmlForExport(r, ps, isThermal, opts) {
   const fontPt = ps.fontPt;
   const items = Array.isArray(r.items) ? r.items : (r.items || JSON.parse(r.items_json || '[]'));
   const biz = SETTINGS || {};
@@ -5184,6 +5205,22 @@ function buildKwitansiHtmlForExport(r, ps, isThermal) {
   const cellPadY = Math.round(fontPt * 0.6) + 'px';
   const cellPadX = Math.round(fontPt * 0.8) + 'px';
 
+  // Fitur: sembunyikan blok tanda tangan (Penerima & Hormat kami).
+  const hideSignatures = !!(opts && opts.hideSignatures);
+  const signatureBlock = hideSignatures ? '' : `
+        <div style="display:flex;flex-direction:row;gap:12px;justify-content:space-between;align-items:flex-start;">
+          <div style="width:${blockColPx}px;flex-shrink:0;">
+            <div style="font-size:${Math.round(fontPt * 0.78)}pt;color:#6a5a64;margin-bottom:2px;">Penerima,</div>
+            <div style="margin-top:${isThermal ? 32 : 56}px;padding-top:4px;border-top:1px solid #2a1822;font-weight:bold;font-size:${fontPt}pt;color:#2a1822;word-wrap:break-word;">${esc(r.patient_name || '-')}</div>
+            <div style="font-size:${Math.round(fontPt * 0.74)}pt;color:#6a5a64;margin-top:3px;">Nama jelas &amp; tanda tangan</div>
+          </div>
+          <div style="width:${blockColPx}px;flex-shrink:0;text-align:right;">
+            <div style="font-size:${Math.round(fontPt * 0.78)}pt;color:#6a5a64;margin-bottom:2px;">Hormat kami,</div>
+            <img id="ownerSigEmbed" alt="" crossorigin="anonymous" style="display:none;max-height:${isThermal ? 36 : 56}px;max-width:100%;height:auto;margin:4px auto 4px 0;" />
+            <div id="ownerSigUnderline" style="margin-top:${isThermal ? 32 : 56}px;padding-top:4px;border-top:1px solid #2a1822;font-weight:bold;font-size:${fontPt}pt;color:#2a1822;word-wrap:break-word;"><em>${esc(biz.practitioner || 'Tasya Hanifah Pramesti, A.Md. Keb., CBME')}</em></div>
+            <div style="font-size:${Math.round(fontPt * 0.74)}pt;color:#6a5a64;margin-top:3px;">${esc(biz.business_name || 'Adzkiya Mom Baby Care')}</div>
+          </div>
+        </div>`;
   return `
     <div style="width:${totalWidthPx}px;background:white;color:#2a1822;font-family:Arial,Helvetica,sans-serif;font-size:${fontPt}pt;line-height:1.4;padding:${padPx}px;box-sizing:border-box;">
       <!-- HEADER: brand left, KWITANSI+invoice+date right -->
@@ -5255,19 +5292,7 @@ function buildKwitansiHtmlForExport(r, ps, isThermal) {
 
       <!-- FOOTER: Penerima / Hormat kami (2 columns via flex) -->
       <div style="margin-top:14px;padding-top:8px;border-top:1px dashed #ffd6e8;">
-        <div style="display:flex;flex-direction:row;gap:12px;justify-content:space-between;align-items:flex-start;">
-          <div style="width:${blockColPx}px;flex-shrink:0;">
-            <div style="font-size:${Math.round(fontPt * 0.78)}pt;color:#6a5a64;margin-bottom:2px;">Penerima,</div>
-            <div style="margin-top:${isThermal ? 32 : 56}px;padding-top:4px;border-top:1px solid #2a1822;font-weight:bold;font-size:${fontPt}pt;color:#2a1822;word-wrap:break-word;">${esc(r.patient_name || '-')}</div>
-            <div style="font-size:${Math.round(fontPt * 0.74)}pt;color:#6a5a64;margin-top:3px;">Nama jelas &amp; tanda tangan</div>
-          </div>
-          <div style="width:${blockColPx}px;flex-shrink:0;text-align:right;">
-            <div style="font-size:${Math.round(fontPt * 0.78)}pt;color:#6a5a64;margin-bottom:2px;">Hormat kami,</div>
-            <img id="ownerSigEmbed" alt="" crossorigin="anonymous" style="display:none;max-height:${isThermal ? 36 : 56}px;max-width:100%;height:auto;margin:4px auto 4px 0;" />
-            <div id="ownerSigUnderline" style="margin-top:${isThermal ? 32 : 56}px;padding-top:4px;border-top:1px solid #2a1822;font-weight:bold;font-size:${fontPt}pt;color:#2a1822;word-wrap:break-word;"><em>${esc(biz.practitioner || 'Tasya Hanifah Pramesti, A.Md. Keb., CBME')}</em></div>
-            <div style="font-size:${Math.round(fontPt * 0.74)}pt;color:#6a5a64;margin-top:3px;">${esc(biz.business_name || 'Adzkiya Mom Baby Care')}</div>
-          </div>
-        </div>
+        ${signatureBlock}
         <div style="text-align:center;margin-top:14px;padding-top:8px;border-top:1px dashed #ffd6e2;font-size:${Math.round(fontPt * 0.82)}pt;color:#6a5a64;">
           <strong style="color:#2a1822;display:block;margin-bottom:2px;font-size:${Math.round(fontPt * 1.05)}pt;">Terima kasih atas kepercayaan Anda 🌸</strong>
           Kwitansi ini sah dan diproses secara elektronik oleh sistem.
@@ -5332,7 +5357,7 @@ async function saveKwitansiAsPDF(r, paperSize, options) {
   // has explicit pixel widths so layout is deterministic.
   const body = document.createElement('div');
   body.style.cssText = 'background:white;color:#2a1822;line-height:1.4;';
-  body.innerHTML = buildKwitansiHtmlForExport(r, ps, isThermal);
+  body.innerHTML = buildKwitansiHtmlForExport(r, ps, isThermal, { hideSignatures: options.hideSignatures === true });
   wrap.appendChild(body);
 
   // Append wrap directly to body. wrap is positioned absolute, so it
