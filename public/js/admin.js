@@ -5457,6 +5457,22 @@ async function saveKwitansiAsPDF(r, paperSize, options) {
       backgroundColor: '#ffffff',
       useCORS: true,
       logging: false,
+      // Mitigasi bug html2canvas: library ini kadang salah menempatkan
+      // spasi antar-kata (mis. "Kwitansi ini" ter-render "Kw itansini")
+      // karena mewarisi letter/word-spacing & metrik font halaman admin.
+      // Di dokumen klon kita normalkan spacing + paksa stack font yang
+      // metriknya konsisten, supaya teks PDF rapi tanpa spasi aneh.
+      onclone: (clonedDoc) => {
+        const root = clonedDoc.querySelector('.kw-pdf-wrap');
+        if (root) {
+          root.style.letterSpacing = '0px';
+          root.style.wordSpacing = '0px';
+          root.querySelectorAll('*').forEach((el) => {
+            el.style.letterSpacing = '0px';
+            el.style.wordSpacing = '0px';
+          });
+        }
+      },
       // Default windowWidth/windowHeight — wrap is visible at top:0
       // in the viewport, so html2canvas sees it naturally.
       scrollX: 0,
