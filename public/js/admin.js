@@ -11,6 +11,14 @@ const PAGE_STYLESHEET = new URL('css/style.css', window.location.href).href;
 const apiUrl = (path) => /^https?:\/\//i.test(path) ? path : `${API_BASE}${path.startsWith('/') ? path : `/${path}`}`;
 const fmtDate = (s) => s ? new Date(s).toLocaleDateString('id-ID', { day: '2-digit', month: 'short', year: 'numeric' }) : '-';
 const fmtDateTime = (s) => s ? new Date(s).toLocaleString('id-ID', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '-';
+// 'Hari ini' sebagai string YYYY-MM-DD memakai waktu LOKAL (bukan UTC via
+// toISOString). Penting utk zona WIB (UTC+7): antara 00:00-07:00 WIB,
+// toISOString() masih menghasilkan tanggal kemarin, sehingga default
+// tanggal / highlight 'hari ini' bisa mundur satu hari.
+function localTodayStr() {
+  const d = new Date();
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
 
 // Detect touch-primary devices (phones, tablets). Even when the user
 // has Chrome's "Situs desktop" toggle on, this still returns true —
@@ -181,7 +189,7 @@ function navigate(page) {
   (handlers[page] || renderDashboard)();
 }
 
-function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'})[c]); }
+function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]); }
 
 // ---------- DASHBOARD ----------
 async function renderDashboard() {
@@ -736,7 +744,7 @@ function drawAdmCal() {
   document.getElementById('admCalLabel').textContent = `${mn[m]} ${y}`;
   const grid = document.getElementById('admCalGrid');
   grid.innerHTML = '';
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localTodayStr();
   const todayMidnight = new Date(); todayMidnight.setHours(0,0,0,0);
 
   ['Min','Sen','Sel','Rab','Kam','Jum','Sab'].forEach(d => {
@@ -866,7 +874,7 @@ async function renderReceipts() {
           <div class="form-group"><label>Nama Pasien</label><input type="text" id="kw_name"></div>
           <div class="form-row">
             <div class="form-group"><label>HP</label><input type="tel" id="kw_hp"></div>
-            <div class="form-group"><label>Tanggal Layanan</label><input type="date" id="kw_date" value="${new Date().toISOString().slice(0,10)}"></div>
+            <div class="form-group"><label>Tanggal Layanan</label><input type="date" id="kw_date" value="${localTodayStr()}"></div>
           </div>
           <div class="form-group"><label>⏰ Waktu / Jam Layanan (multi-waktu)</label>
             <div id="kw_times" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;"></div>
@@ -1021,14 +1029,14 @@ let mkwSlots = [];
 function initKwTimes(initial) {
   // Legacy: support old kwTimes init by converting to slots. Prefer
   // initKwSlots when possible (date+time per slot).
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localTodayStr();
   if (Array.isArray(initial) && initial.length && typeof initial[0] === 'string') {
     return initKwSlots([{ date: today, time: initial[0] }]);
   }
   return initKwSlots(initial);
 }
 function initMkwTimes(initial) {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localTodayStr();
   if (Array.isArray(initial) && initial.length && typeof initial[0] === 'string') {
     return initMkwSlots([{ date: today, time: initial[0] }]);
   }
@@ -1046,7 +1054,7 @@ function normalizeSlot(s, fallbackDate) {
 }
 
 function initKwSlots(initial) {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localTodayStr();
   const seed = (Array.isArray(initial) && initial.length)
     ? initial.map((s) => normalizeSlot(s, today)).filter(Boolean)
     : [{ date: today, time: '09:00' }];
@@ -1055,7 +1063,7 @@ function initKwSlots(initial) {
 }
 
 function addKwSlot(value) {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localTodayStr();
   const slot = normalizeSlot(value, today);
   if (!slot) return;
   if (kwSlots.find((x) => x.date === slot.date && x.time === slot.time)) return;
@@ -1070,14 +1078,14 @@ function removeKwSlot(idx) {
 }
 
 function getKwSlots() {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localTodayStr();
   return kwSlots.map((s) => normalizeSlot(s, today)).filter(Boolean);
 }
 
 function renderKwSlots() {
   const wrap = document.getElementById('kw_times');
   if (!wrap) return;
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localTodayStr();
   if (!kwSlots.length) kwSlots = [{ date: today, time: '09:00' }];
   wrap.innerHTML = '';
   // Sort slots by date+time so the user sees them in chronological order
@@ -1095,7 +1103,7 @@ function renderKwSlots() {
 }
 
 function initMkwSlots(initial) {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localTodayStr();
   const seed = (Array.isArray(initial) && initial.length)
     ? initial.map((s) => normalizeSlot(s, today)).filter(Boolean)
     : [{ date: today, time: '09:00' }];
@@ -1104,7 +1112,7 @@ function initMkwSlots(initial) {
 }
 
 function mkwAddSlot(value) {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localTodayStr();
   const slot = normalizeSlot(value, today);
   if (!slot) return;
   if (mkwSlots.find((x) => x.date === slot.date && x.time === slot.time)) return;
@@ -1119,14 +1127,14 @@ function removeMkwSlot(idx) {
 }
 
 function getMkwSlots() {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localTodayStr();
   return mkwSlots.map((s) => normalizeSlot(s, today)).filter(Boolean);
 }
 
 function renderMkwSlots() {
   const wrap = document.getElementById('mkw_times');
   if (!wrap) return;
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localTodayStr();
   if (!mkwSlots.length) mkwSlots = [{ date: today, time: '09:00' }];
   wrap.innerHTML = '';
   const sorted = mkwSlots.map((s, i) => ({ ...s, _origIdx: i }))
@@ -1149,7 +1157,7 @@ function addKwTimePrompt() {
   if (!wrap) return;
   const existing = document.getElementById('kw_time_picker');
   if (existing) { existing.focus(); return; }
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localTodayStr();
   const picker = document.createElement('span');
   picker.id = 'kw_time_picker';
   picker.className = 'kw-time-chip';
@@ -1179,7 +1187,7 @@ function addMkwTimePrompt() {
   if (!wrap) return;
   const existing = document.getElementById('mkw_time_picker');
   if (existing) { existing.focus(); return; }
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localTodayStr();
   const picker = document.createElement('span');
   picker.id = 'mkw_time_picker';
   picker.className = 'kw-time-chip';
@@ -3569,7 +3577,7 @@ async function renderAcctExpenses() {
       <h3>💸 Catat Pengeluaran</h3>
       <p style="color:var(--text-soft);font-size:0.85rem;margin:6px 0 14px;">Catat beban operasional bulanan: bensin, supplies, marketing, dll. Setiap entry langsung masuk ke P&L.</p>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;">
-        <div class="form-group"><label>Tanggal</label><input type="date" id="exDate" value="${new Date().toISOString().slice(0, 10)}" style="width:100%;padding:8px 12px;border:1.5px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-family:inherit;"></div>
+        <div class="form-group"><label>Tanggal</label><input type="date" id="exDate" value="${localTodayStr()}" style="width:100%;padding:8px 12px;border:1.5px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-family:inherit;"></div>
         <div class="form-group"><label>Kategori</label>
           <select id="exCat" style="width:100%;padding:8px 12px;border:1.5px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-family:inherit;">
             ${ACCT_CATEGORIES.map((c) => `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join('')}
@@ -3764,7 +3772,7 @@ async function doBackup() {
   const data = await api('/api/admin/backup');
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
-  a.download = `adzkiya-backup-${new Date().toISOString().slice(0,10)}.json`; a.click();
+  a.download = `adzkiya-backup-${localTodayStr()}.json`; a.click();
 }
 
 async function doRestore() {
@@ -4272,7 +4280,7 @@ function renderBlackouts() {
     el.innerHTML = '<p style="color:var(--text-soft);font-size:0.85rem;text-align:center;padding:14px;background:var(--bg);border-radius:8px;">Belum ada tanggal libur. Semua tanggal aktif untuk reservasi.</p>';
   } else {
     // Sort the dates so the next upcoming holiday is at the top.
-    const today = new Date().toISOString().slice(0, 10);
+    const today = localTodayStr();
     const sorted = SETTINGS.blackout_dates.slice().sort();
     sorted.forEach((date) => {
       const note = SETTINGS.blackout_notes[date] || '';
