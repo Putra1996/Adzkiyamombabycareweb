@@ -1965,11 +1965,18 @@ app.post('/api/admin/receipts', auth, (req, res) => {
 });
 
 app.get('/api/admin/receipts', auth, (req, res) => {
-  // Optional ?month=YYYY-MM filter. When set, include receipts whose
-  // EITHER created_at OR service_date falls in that month. The frontend
-  // Rekap page uses this to show a list of all receipts for the chosen
-  // month, regardless of which date field is more relevant.
+  // Filter ?month=YYYY-MM (created_at ATAU service_date di bulan itu),
+  // pencarian ?q= (nama / invoice / WhatsApp), lalu pagination
+  // ?limit= & ?offset=.
+  //
+  // PENTING: dulu endpoint ini selalu memotong 200 baris terbaru tanpa
+  // cara mengambil sisanya, sehingga kwitansi lama tidak bisa dilihat
+  // maupun dicari lagi dari halaman Kwitansi (kwitansi = dokumen bukti
+  // bayar, jadi ini masalah nyata begitu jumlahnya lewat 200).
   const month = req.query.month;
+  const q = String(req.query.q || '').trim().toLowerCase();
+  const limit = Math.max(1, Math.min(1000, parseInt(req.query.limit, 10) || 200));
+  const offset = Math.max(0, parseInt(req.query.offset, 10) || 0);
   let rows = DB.receipts.slice();
   if (month && /^\d{4}-\d{2}$/.test(month)) {
     rows = rows.filter(r =>
@@ -1977,7 +1984,17 @@ app.get('/api/admin/receipts', auth, (req, res) => {
       (r.service_date && r.service_date.slice(0, 7) === month)
     );
   }
-  res.json(rows.sort((a, b) => b.created_at.localeCompare(a.created_at)).slice(0, 200));
+  if (q) {
+    rows = rows.filter(r =>
+      String(r.patient_name || '').toLowerCase().includes(q) ||
+      String(r.invoice_no || '').toLowerCase().includes(q) ||
+      String(r.whatsapp || '').toLowerCase().includes(q)
+    );
+  }
+  rows.sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')));
+  res.setHeader('X-Total-Count', String(rows.length));
+  res.setHeader('Access-Control-Expose-Headers', 'X-Total-Count');
+  res.json(rows.slice(offset, offset + limit));
 });
 
 app.get('/api/admin/receipts/:id', auth, (req, res) => {

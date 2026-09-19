@@ -959,20 +959,38 @@ async function renderReceipts() {
   receiptItems = [];
   addReceiptItem();
   initKwTimes();
+  // Reset state pencarian tiap kali halaman dibuka, supaya hasil yang
+  // tampil selalu sinkron dengan isi kotak pencarian (yang baru dibuat
+  // dalam keadaan kosong).
+  KW_QUERY = '';
+  clearTimeout(KW_SEARCH_TIMER);
   loadReceipts();
 }
 
-// Filter kwitansi list by search text (client-side)
+// Pencarian kwitansi. Kalau seluruh kwitansi sudah termuat di cache,
+// filter lokal (instan) sudah cukup. Kalau masih ada halaman berikutnya
+// di server, tanyakan ke server (debounce 300 ms) supaya kwitansi lama
+// tetap bisa ditemukan.
 function filterKwList() {
-  const q = (document.getElementById('kwSearch')?.value || '').toLowerCase().trim();
+  const q = (document.getElementById('kwSearch')?.value || '').trim();
+  KW_QUERY = q;
+  clearTimeout(KW_SEARCH_TIMER);
+  if (!q) { loadReceipts(); return; }
+  if ((window._receiptsCache || []).length < KW_PAGE_SIZE) {
+    kwFilterLoadedRows(q);
+    return;
+  }
+  KW_SEARCH_TIMER = setTimeout(() => loadReceipts(), 300);
+}
+
+function kwFilterLoadedRows(q) {
+  const needle = String(q).toLowerCase();
   const tbody = document.querySelector('#kwList tbody');
   if (!tbody) return;
-  let visible = 0;
   tbody.querySelectorAll('tr').forEach((tr) => {
     const text = tr.textContent.toLowerCase();
-    const show = !q || text.includes(q);
+    const show = !needle || text.includes(needle);
     tr.style.display = show ? '' : 'none';
-    if (show) visible++;
   });
 }
 
@@ -1266,10 +1284,25 @@ async function saveReceipt() {
   loadReceipts();
 }
 
-async function loadReceipts() {
+// Ukuran halaman daftar kwitansi. Server mengembalikan maksimum 200
+// baris per request, jadi kalau hasilnya penuh kita tampilkan tombol
+// "Muat lagi" — tanpa itu, kwitansi ke-201 dan seterusnya tidak akan
+// pernah muncul (dan tidak bisa dicari) di halaman ini.
+const KW_PAGE_SIZE = 200;
+let KW_QUERY = '';        // kata kunci pencarian aktif (server-side)
+let KW_SEARCH_TIMER = null;
+async function loadReceipts(append) {
   try {
-    const rows = await api('/api/admin/receipts');
+    const cache = append ? (window._receiptsCache || []) : [];
+    // Pencarian diteruskan ke server (?q=) supaya kwitansi lama yang
+    // belum ada di cache tetap ketemu — filter lokal saja akan meleset
+    // begitu jumlah kwitansi lebih dari satu halaman.
+    const url = '/api/admin/receipts?limit=' + KW_PAGE_SIZE + '&offset=' + cache.length +
+      (KW_QUERY ? '&q=' + encodeURIComponent(KW_QUERY) : '');
+    const batch = await api(url);
+    const rows = append ? cache.concat(batch) : batch;
     window._receiptsCache = rows;
+    const hasMore = batch.length >= KW_PAGE_SIZE;
     const el = document.getElementById('kwList');
     // Enable the responsive card-list view for phones (<720px). The
     // CSS rule body[data-table-mode="cards"] hides the table on
@@ -1277,7 +1310,9 @@ async function loadReceipts() {
     // let CSS pick which one is visible.
     document.body.setAttribute('data-table-mode', 'cards');
     if (!rows.length) {
-      el.innerHTML = '<p style="color:var(--text-soft);padding:20px;text-align:center;">Belum ada kwitansi.</p>';
+      el.innerHTML = KW_QUERY
+        ? '<p style="color:var(--text-soft);padding:20px;text-align:center;">Tidak ada kwitansi yang cocok dengan pencarian.</p>'
+        : '<p style="color:var(--text-soft);padding:20px;text-align:center;">Belum ada kwitansi.</p>';
       return;
     }
     el.innerHTML = `
@@ -1330,7 +1365,11 @@ async function loadReceipts() {
             <button class="btn-sm btn-del" onclick="deleteReceipt(${r.id}, '${escJs(r.invoice_no)}')" title="Hapus">🗑️ Hapus</button>
           </div>
         </div>`).join('')}
-      </div>`;
+      </div>
+      ${hasMore ? `<div style="text-align:center;margin-top:14px;">
+        <button type="button" class="btn-sm btn-view" onclick="loadReceipts(true)" style="padding:10px 20px;">⬇️ Muat ${KW_PAGE_SIZE} kwitansi lagi</button>
+        <div style="font-size:0.78rem;color:var(--text-soft);margin-top:6px;">Menampilkan ${rows.length} kwitansi terbaru.</div>
+      </div>` : `<div style="text-align:center;font-size:0.78rem;color:var(--text-soft);margin-top:12px;">Total ${rows.length} kwitansi.</div>`}`;
     updateKwSelCount();
   } catch (e) { document.getElementById('kwList').innerHTML = `<div class="alert alert-error">${e.message}</div>`; }
 }
