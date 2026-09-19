@@ -2207,7 +2207,11 @@ body { opacity: 1 !important; }
 // the legacy client bundle. These are tiny, self-contained, and never
 // need a network round-trip — the receipt data is already in the DOM.
 (function() {
-  const receiptData = ${JSON.stringify({ invoice_no: r.invoice_no, patient_name: r.patient_name, whatsapp: r.whatsapp, total: r.total, service_date: r.service_date })};
+  // SECURITY: escape '<' menjadi \u003c agar nilai (mis. patient_name)
+  // yang memuat tag penutup script tidak bisa mengakhiri blok script ini
+  // lebih awal lalu menyuntikkan HTML/script baru (XSS). JSON.stringify
+  // tidak meng-escape '<', jadi kita tambahkan manual di sini.
+  const receiptData = ${JSON.stringify({ invoice_no: r.invoice_no, patient_name: r.patient_name, whatsapp: r.whatsapp, total: r.total, service_date: r.service_date }).replace(/</g, '\\u003c')};
   window.kwReceiptData = receiptData;
   window.kwShareWA = function() {
     const r = receiptData;
@@ -3439,18 +3443,38 @@ app.get('/api/admin/settings', auth, (req, res) => {
   // owner_signature_b64 is a base64 PNG that can also be huge for
   // high-DPI scans, so strip it the same way we do for logo/hero/qris.
   // The frontend fetches it via /api/owner-signature when needed.
-  const { logo_b64, hero_b64, qris_b64, owner_signature_b64, ...rest } = s;
+  //
+  // SECURITY: also strip the AI secret keys (Gemini / OpenRouter API
+  // keys and the WhatsApp Business access token). These must never be
+  // echoed back to the client — the frontend only needs to know
+  // WHETHER a key is set (has_* flags), not the value itself. The
+  // admin re-enters a key only when rotating it.
+  const {
+    logo_b64, hero_b64, qris_b64, owner_signature_b64,
+    ai_gemini_api_key, ai_openrouter_api_key, ai_assistant_access_token,
+    ...rest
+  } = s;
   res.json({
     ...rest,
     has_logo: !!logo_b64,
     has_hero: !!hero_b64,
     has_qris: !!qris_b64,
-    has_owner_signature: !!owner_signature_b64
+    has_owner_signature: !!owner_signature_b64,
+    has_ai_gemini: !!ai_gemini_api_key,
+    has_ai_openrouter: !!ai_openrouter_api_key,
+    has_ai_wa_token: !!ai_assistant_access_token
   });
 });
 
 app.put('/api/admin/settings', auth, (req, res) => {
   const body = req.body || {};
+  // SECURITY/DATA-LOSS guard: jangan pernah menimpa AI secret keys
+  // dengan string kosong. Saat admin mengedit setting lain, field key
+  // dibiarkan kosong — itu TIDAK boleh menghapus key yang sudah
+  // tersimpan. Hanya timpa jika nilai baru benar-benar terisi.
+  ['ai_gemini_api_key', 'ai_openrouter_api_key', 'ai_assistant_access_token'].forEach((k) => {
+    if (k in body && (body[k] === '' || body[k] === null || body[k] === undefined)) delete body[k];
+  });
   // Validate owner_signature base64 if present. We accept either a
   // raw base64 string (no header) or a full data URL
   // (data:image/png;base64,...). Both are stripped down to the raw
@@ -3696,7 +3720,12 @@ app.get('/api/admin/backup', auth, (req, res) => {
     expenses: DB.expenses,
     expense_categories: DB.expense_categories,
     broadcasts: DB.broadcasts.map(b => ({ id: b.id, name: b.name, body: b.body, recipient_count: b.recipient_count, filter: b.filter, created_at: b.created_at })),
-    settings: DB.settings
+    // SECURITY: buang AI secret keys dari backup. File backup sering
+    // dibagikan/diunduh, jadi API key tidak boleh ikut terbawa.
+    settings: (() => {
+      const { ai_gemini_api_key, ai_openrouter_api_key, ai_assistant_access_token, ...s } = (DB.settings || {});
+      return s;
+    })()
   });
 });
 
@@ -3874,7 +3903,7 @@ function buildAISystemPrompt() {
     `\n=== KATALOG LAYANAN ===`,
     servicesList,
     `\n=== INSTRUKSI TEKNIS ===`,
-    `- Customer sudah memilih untuk chat dengan AI, jadi layani dengan ramah\n- Jika customer minta booking, kumpulkan: nama layanan, tanggal (YYYY-MM-DD), jam (HH:MM), nama customer, WhatsApp, alamat.\n- Setelah dapat semua info, balas dengan ringkasan + link WhatsApp: https://wa.me/${(s.phone || '6285887018194').replace(/[^\\d]/g, '')}?text=<encoded message>\n- JANGAN mengarang harga custom. Pakai harga dari katalog di atas.\n- JANGAN menerima pembayaran. Booking selalu difinalkan via WhatsApp admin.`,
+    `- Customer sudah memilih untuk chat dengan AI, jadi layani dengan ramah\n- Jika customer minta booking, kumpulkan: nama layanan, tanggal (YYYY-MM-DD), jam (HH:MM), nama customer, WhatsApp, alamat.\n- Setelah dapat semua info, balas dengan ringkasan + link WhatsApp: https://wa.me/${(s.phone || '6285887018194').replace(/\D/g, '')}?text=<encoded message>\n- JANGAN mengarang harga custom. Pakai harga dari katalog di atas.\n- JANGAN menerima pembayaran. Booking selalu difinalkan via WhatsApp admin.`,
   ].join('\n');
 }
 
@@ -3971,13 +4000,13 @@ app.post('/api/ai/chat', async (req, res) => {
     if (!DB.settings.ai_assistant_enabled) {
       return res.status(503).json({
         error: 'AI assistant belum diaktifkan. Hubungi admin via WhatsApp untuk booking.',
-        fallback_wa: 'https://wa.me/' + (DB.settings.phone || '6285887018194').replace(/[^\\d]/g, '')
+        fallback_wa: 'https://wa.me/' + (DB.settings.phone || '6285887018194').replace(/\D/g, '')
       });
     }
     if (!DB.settings.ai_gemini_api_key && !DB.settings.ai_openrouter_api_key) {
       return res.status(503).json({
         error: 'AI provider belum dikonfigurasi. Hubungi admin via WhatsApp.',
-        fallback_wa: 'https://wa.me/' + (DB.settings.phone || '6285887018194').replace(/[^\\d]/g, '')
+        fallback_wa: 'https://wa.me/' + (DB.settings.phone || '6285887018194').replace(/\D/g, '')
       });
     }
 
@@ -4012,7 +4041,7 @@ app.post('/api/ai/chat', async (req, res) => {
     console.error('[ai/chat]', e);
     res.status(500).json({
       error: 'AI chat gagal: ' + (e.message || 'unknown error'),
-      fallback_wa: 'https://wa.me/' + (DB.settings.phone || '6285887018194').replace(/[^\\d]/g, '')
+      fallback_wa: 'https://wa.me/' + (DB.settings.phone || '6285887018194').replace(/\D/g, '')
     });
   }
 });
@@ -4047,7 +4076,7 @@ async function sendWAReply(toPhone, text) {
   const token = DB.settings.ai_assistant_access_token;
   if (!phoneId || !token) throw new Error('WA Business API not configured');
   // Format: country code + number, no +, no spaces
-  const formattedPhone = toPhone.replace(/[^\\d]/g, '');
+  const formattedPhone = toPhone.replace(/\D/g, '');
   const url = `https://graph.facebook.com/v18.0/${phoneId}/messages`;
   const r = await fetchWithTimeout(url, {
     method: 'POST',
@@ -4162,6 +4191,22 @@ app.delete('/api/admin/ai/conversations', auth, (req, res) => {
   DB.settings.ai_assistant_conversations = [];
   save();
   res.json({ ok: true });
+});
+
+// Catch-all 404 — ditempatkan SETELAH semua route & static, SEBELUM
+// error handler. Hanya jalan untuk request yang tidak cocok dengan
+// route manapun. Untuk path /api/* kembalikan JSON 404; untuk halaman
+// HTML sajikan public/404.html agar pengguna melihat halaman ramah
+// (bukan "Cannot GET /..." default Express).
+app.use((req, res, next) => {
+  if (req.path.startsWith('/api/')) {
+    return res.status(404).json({ error: 'Endpoint tidak ditemukan' });
+  }
+  if (req.method === 'GET' || req.method === 'HEAD') {
+    const nf = path.join(__dirname, 'public', '404.html');
+    if (fs.existsSync(nf)) return res.status(404).sendFile(nf);
+  }
+  res.status(404).send('404 Not Found');
 });
 
 app.use((error, req, res, next) => {
