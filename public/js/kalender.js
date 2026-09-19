@@ -9,6 +9,13 @@
 // Default 4 sesi/hari. Bisa diubah via ?max=<n> di URL.
 const MAX_SESSIONS_PER_DAY = parseInt(new URLSearchParams(location.search).get('max') || '4', 10);
 
+// Base URL API (kosong di Railway = same-origin, terisi di GitHub Pages
+// lewat js/api-config.js). Lihat catatan di js/main.js.
+// Pakai var + nama unik (lihat catatan di js/main.js) agar tidak bentrok
+// dengan deklarasi script lain di halaman yang sama.
+var ADZKIYA_API_BASE = String((typeof window !== 'undefined' && window.ADZKIYA_API_BASE) || '').replace(/\/$/, '');
+var adzkiyaApiUrl = function (path) { return ADZKIYA_API_BASE + (String(path).startsWith('/') ? path : '/' + path); };
+
 let viewDate = new Date();
 let events = [];
 let blackoutSet = new Set(); // YYYY-MM-DD strings — tanggal libur dari admin
@@ -23,8 +30,8 @@ let blackoutNotes = {};      // { 'YYYY-MM-DD': 'Libur Natal', ... }
 async function loadEvents() {
   try {
     const [calRes, settingsRes] = await Promise.all([
-      fetch('/api/calendar'),
-      fetch('/api/public-settings'),
+      fetch(adzkiyaApiUrl('/api/calendar')),
+      fetch(adzkiyaApiUrl('/api/public-settings')),
     ]);
     events = calRes.ok ? await calRes.json() : [];
     if (settingsRes.ok) {

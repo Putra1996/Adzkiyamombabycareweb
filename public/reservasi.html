@@ -308,9 +308,22 @@ function addSlot() {
   renderSlots(); updateSummary();
 }
 
+// Buang jadwal duplikat (tanggal + jam identik). Total = harga item ×
+// jumlah slot, jadi slot kembar membuat pasien tertagih dua kali untuk
+// satu sesi. Server juga sudah mem-dedupe (validasi akhir tetap di sana).
+function dedupeSlots(list) {
+  const seen = new Set();
+  return list.filter((s) => {
+    const key = s.date + '|' + s.time;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 function updateSummary() {
   const validItems = cart.filter(it => it.name && it.price > 0);
-  const validSlots = slots.filter(s => s.date && s.time);
+  const validSlots = dedupeSlots(slots.filter(s => s.date && s.time));
   const itemSum = validItems.reduce((s, it) => s + it.price * it.qty, 0);
   const total = itemSum * validSlots.length;
   document.getElementById('sumItemCount').textContent = validItems.length;
@@ -346,7 +359,12 @@ document.getElementById('reservasiForm').addEventListener('submit', async (e) =>
   const alertBox = document.getElementById('alertBox');
   alertBox.innerHTML = '';
   const validItems = cart.filter(it => it.name && it.price > 0);
-  const validSlots = slots.filter(s => s.date && s.time);
+  const rawSlots = slots.filter(s => s.date && s.time);
+  const validSlots = dedupeSlots(rawSlots);
+  if (rawSlots.length > validSlots.length) {
+    slots = validSlots.slice();
+    renderSlots(); updateSummary();
+  }
   if (!validItems.length) { alertBox.innerHTML = '<div class="alert alert-error">' + window.t('form.error_items') + '</div>'; return; }
   if (!validSlots.length) { alertBox.innerHTML = '<div class="alert alert-error">' + window.t('form.error_slots') + '</div>'; return; }
   if (!document.getElementById('payMethod').value) { alertBox.innerHTML = '<div class="alert alert-error">' + window.t('form.payment_required') + '</div>'; return; }

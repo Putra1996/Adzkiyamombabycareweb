@@ -64,7 +64,13 @@ test('API menyimpan reservasi, menghitung harga server, dan melindungi admin', {
 
   try {
     const health = await waitForHealth(baseUrl, child);
-    assert.deepEqual(health, { ok: true, storage: 'file' });
+    // /health sekarang juga melaporkan storage yang dikonfigurasi +
+    // status koneksi DB (dipakai untuk membedakan "memang file" vs
+    // "DATABASE_URL diisi tapi gagal connect").
+    assert.equal(health.ok, true);
+    assert.equal(health.storage, 'file');
+    assert.equal(health.configured_storage, 'file');
+    assert.equal(health.db_connected, false);
 
     const blockedCors = await fetch(`${baseUrl}/api/services`, {
       headers: { Origin: 'https://example.invalid' }

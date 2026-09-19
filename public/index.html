@@ -184,15 +184,21 @@
   </div>
 </footer>
 
-<script defer src="/js/i18n.js"></script>
-  <script src="/js/main.js"></script>
+<script defer src="js/api-config.js"></script>
+<script defer src="js/i18n.js"></script>
+  <script src="js/main.js"></script>
 <script>
 // Escape utk menyisipkan data (di-set admin) ke innerHTML dgn aman.
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 // Hanya izinkan URL http/https utk atribut href (blokir javascript:, dsb).
 function safeUrl(u) { u = String(u || '').trim(); return /^https?:\/\//i.test(u) ? u : '#'; }
+// Base URL API: kosong di Railway (same-origin), terisi di GitHub Pages
+// lewat js/api-config.js. Path absolut '/api/...' akan gagal di GitHub Pages.
+// Dipakai bersama js/main.js (var, bukan const, agar tidak bentrok).
+var ADZKIYA_API_BASE = String((typeof window !== 'undefined' && window.ADZKIYA_API_BASE) || '').replace(/\/$/, '');
+var adzkiyaApiUrl = function (path) { return ADZKIYA_API_BASE + (String(path).charAt(0) === '/' ? path : '/' + path); };
 // Load business settings to update name/contact/hero
-fetch('/api/public-settings').then(r => r.json()).then(s => {
+fetch(adzkiyaApiUrl('/api/public-settings')).then(r => r.json()).then(s => {
   if (s.business_name) {
     document.getElementById('brandName').textContent = s.business_name;
     document.getElementById('footerBrand').textContent = s.business_name;
@@ -576,10 +582,19 @@ fetch('/api/public-settings').then(r => r.json()).then(s => {
   }
 
   function linkifyAndEscape(text) {
-    // Escape HTML, then convert markdown links and bare URLs into anchors
+    // Escape HTML, then convert markdown links and bare URLs into anchors.
+    //
+    // SECURITY: href wajib difilter skemanya. Respons AI bisa memuat
+    // markdown seperti [klik](javascript:alert(1)) — tanpa filter ini,
+    // teks dari model (yang bisa dipengaruhi prompt pengguna) berubah
+    // menjadi link berbahaya yang bisa dieksekusi saat diklik.
+    const safeHref = (u) => {
+      const raw = String(u || '').trim().replace(/&amp;/g, '&');
+      return /^(https?:\/\/|mailto:|tel:)/i.test(raw) ? raw : '#';
+    };
     const escaped = escapeHtml(text);
     return escaped
-      .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
+      .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (m, label, href) => '<a href="' + safeHref(href) + '" target="_blank" rel="noopener">' + label + '</a>')
       .replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" rel="noopener">$1</a>')
       .replace(/(wa\.me\/\d+[^\s<]*)/g, '<a href="https://$1" target="_blank" rel="noopener">$1</a>');
   }
@@ -650,7 +665,7 @@ fetch('/api/public-settings').then(r => r.json()).then(s => {
     setQuickReplies([]);
     const typing = appendTypingIndicator();
 
-    fetch('/api/ai/chat', {
+    fetch(adzkiyaApiUrl('/api/ai/chat'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

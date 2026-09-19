@@ -20,6 +20,36 @@ function localTodayStr() {
   return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
 }
 
+// Bulan berjalan (YYYY-MM) versi waktu LOKAL. Jangan pakai
+// toISOString().slice(0,7): itu UTC, sehingga pada tanggal 1 pukul
+// 00:00-06:59 WIB nilainya masih bulan lalu.
+function localMonthStr() {
+  return localTodayStr().slice(0, 7);
+}
+
+// Hitung 'YYYY-MM' mundur sebanyak count-1 bulan dari sebuah bulan
+// 'YYYY-MM' (dipakai untuk dropdown filter bulan). Aritmetika memakai
+// UTC supaya bebas DST.
+function shiftMonthStr(monthStr, deltaMonths) {
+  const [y, m] = String(monthStr || '').split('-').map(Number);
+  const d = new Date(Date.UTC(y || 1970, (m || 1) - 1 + deltaMonths, 1));
+  return d.toISOString().slice(0, 7);
+}
+
+// Escape nilai string supaya aman dipakai di dalam literal JS pada
+// atribut HTML inline, mis. onclick="hapus('NILAI')".
+//
+// CATATAN PENTING: esc() saja TIDAK cukup di konteks ini. HTML akan
+// men-decode entity lebih dulu (&#39; -> '), jadi nilai seperti
+//  ');alert(1);//  tetap bisa keluar dari string JS. Karena itu kita
+// backslash-escape tanda kutip & backslash DULU, baru HTML-escape.
+function escJs(s) {
+  return esc(String(s == null ? '' : s)
+    .replace(/\\/g, '\\\\')
+    .replace(/'/g, "\\'")
+    .replace(/[\r\n]+/g, ' '));
+}
+
 // Detect touch-primary devices (phones, tablets). Even when the user
 // has Chrome's "Situs desktop" toggle on, this still returns true —
 // `pointer:coarse` + `hover:none` is independent of the reported
@@ -1270,14 +1300,14 @@ async function loadReceipts() {
             <tbody>
               ${rows.map(r => `<tr data-rid="${r.id}">
                 <td><input type="checkbox" class="kw-chk" value="${r.id}" onchange="updateKwSelCount()"></td>
-                <td><strong>${r.invoice_no}</strong><br><small>${fmtDateTime(r.created_at)}</small></td>
+                <td><strong>${esc(r.invoice_no || '')}</strong><br><small>${fmtDateTime(r.created_at)}</small></td>
                 <td>${esc(r.patient_name || '-')}</td>
                 <td><strong>${fmtRp(r.total)}</strong></td>
                 <td style="white-space:nowrap;">
                   <button class="btn-sm btn-view" onclick="openKwitansiDetailModal(${r.id})" title="Lihat detail">👁️</button>
                   <button class="btn-sm" onclick='quickSavePDF(${r.id})' title="Download PDF langsung (pakai ukuran kertas tersimpan)" style="padding:6px 10px;background:#7c3aed;color:white;border:none;font-weight:700;">💾</button>
                   <button class="btn-sm btn-view" onclick='shareOrPrintKwitansi(${r.id})' title="Kirim/Cetak/Save PDF (buka menu)" aria-label="Kirim atau cetak kwitansi">📤</button>
-                  <button class="btn-sm btn-del" onclick="deleteReceipt(${r.id}, '${esc(r.invoice_no)}')" title="Hapus" style="padding:6px 10px;">🗑️</button>
+                  <button class="btn-sm btn-del" onclick="deleteReceipt(${r.id}, '${escJs(r.invoice_no)}')" title="Hapus" style="padding:6px 10px;">🗑️</button>
                 </td>
               </tr>`).join('')}
             </tbody>
@@ -1297,7 +1327,7 @@ async function loadReceipts() {
             <button class="btn-sm btn-view" onclick="openKwitansiDetailModal(${r.id})" title="Lihat detail">👁️ Lihat</button>
             <button class="btn-sm" onclick='quickSavePDF(${r.id})' title="Download PDF langsung (pakai ukuran kertas tersimpan)" style="background:#7c3aed;color:white;border:none;font-weight:700;">💾 PDF</button>
             <button class="btn-sm btn-view" onclick='shareOrPrintKwitansi(${r.id})' title="Kirim/Cetak/Save PDF (buka menu)" aria-label="Kirim atau cetak kwitansi">📤 Menu</button>
-            <button class="btn-sm btn-del" onclick="deleteReceipt(${r.id}, '${esc(r.invoice_no)}')" title="Hapus">🗑️ Hapus</button>
+            <button class="btn-sm btn-del" onclick="deleteReceipt(${r.id}, '${escJs(r.invoice_no)}')" title="Hapus">🗑️ Hapus</button>
           </div>
         </div>`).join('')}
       </div>`;
@@ -1434,7 +1464,7 @@ function shareOrPrintKwitansi(id) {
           🖨️ <span style="margin-left:4px;">Cetak + Tanda Tangan Pasien</span>
           <small style="margin-left:8px;color:var(--text-soft);font-size:0.76rem;">— print preview dengan signature pad</small>
         </button>
-        <button type="button" onclick="downloadProtected('/api/proof/${r.id}', '${esc(r.invoice_no)}.${r.proof_mime ? r.proof_mime.split('/')[1] : 'bin'}')" class="btn btn-outline" style="width:100%;justify-content:flex-start;padding:10px 14px;">
+        <button type="button" onclick="downloadProtected('/api/proof/${r.id}', '${escJs(r.invoice_no)}.${escJs(r.proof_mime ? r.proof_mime.split('/')[1] : 'bin')}')" class="btn btn-outline" style="width:100%;justify-content:flex-start;padding:10px 14px;">
           📎 <span style="margin-left:4px;">Download Bukti Pembayaran</span>
         </button>
       </div>
@@ -1681,7 +1711,7 @@ function printReceipt(r) {
   // Kwitansi rendered into a standalone tab. Uses the same .invoice
   // CSS classes as the in-app receipt preview, so the print result
   // matches exactly what's shown on-screen.
-  const html = `<!doctype html><html><head><title>Kwitansi ${r.invoice_no}</title>
+  const html = `<!doctype html><html><head><title>Kwitansi ${esc(r.invoice_no || '')}</title>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&display=swap" rel="stylesheet">
@@ -1726,7 +1756,7 @@ function printReceipt(r) {
         </div>
         <div class="invoice-meta">
           <strong>KWITANSI</strong>
-          <span class="invoice-meta-no">${r.invoice_no}</span>
+          <span class="invoice-meta-no">${esc(r.invoice_no || '')}</span>
           <small>${new Date(r.created_at).toLocaleDateString('id-ID', { day:'2-digit', month:'long', year:'numeric' })}</small>
         </div>
       </div>
@@ -1986,7 +2016,7 @@ function printReceipt(r) {
 // ---------- RECAP ----------
 async function renderRecap() {
   const c = document.getElementById('pageContent');
-  const m = new Date().toISOString().slice(0, 7);
+  const m = localMonthStr();
   c.innerHTML = `
     <div class="admin-header">
       <h1>📈 Rekap Bulanan</h1>
@@ -2132,7 +2162,7 @@ function renderReceiptTable(rows) {
       <button class="btn-sm btn-view" onclick="openKwitansiDetailModal(${r.id})" title="Lihat detail">👁️</button>
       <button class="btn-sm" onclick='quickSavePDF(${r.id})' title="Download PDF langsung (pakai ukuran kertas tersimpan)" style="padding:6px 10px;background:#7c3aed;color:white;border:none;font-weight:700;">💾</button>
       <button class="btn-sm btn-view" onclick="shareOrPrintKwitansi(${r.id})" title="Kirim/Cetak/Save PDF (buka menu)" aria-label="Kirim atau cetak kwitansi">📤</button>
-      <button class="btn-sm btn-del" onclick="deleteReceipt(${r.id}, '${esc(r.invoice_no)}')" title="Hapus">🗑️</button>
+      <button class="btn-sm btn-del" onclick="deleteReceipt(${r.id}, '${escJs(r.invoice_no)}')" title="Hapus">🗑️</button>
     </td>
   </tr>`).join('')}
   </tbody></table></div></div>`;
@@ -2147,7 +2177,7 @@ function renderReceiptTable(rows) {
         <button class="btn-sm btn-view" onclick="openKwitansiDetailModal(${r.id})">👁️ Lihat</button>
         <button class="btn-sm" onclick='quickSavePDF(${r.id})' title="Download PDF langsung" style="background:#7c3aed;color:white;border:none;font-weight:700;">💾 PDF</button>
         <button class="btn-sm btn-view" onclick="shareOrPrintKwitansi(${r.id})" title="Kirim/Cetak/Save PDF (buka menu)">📤 Menu</button>
-        <button class="btn-sm btn-del" onclick="deleteReceipt(${r.id}, '${esc(r.invoice_no)}')">🗑️ Hapus</button>
+        <button class="btn-sm btn-del" onclick="deleteReceipt(${r.id}, '${escJs(r.invoice_no)}')">🗑️ Hapus</button>
       </div>
     </div>`).join('')}
   </div>`;
@@ -2323,7 +2353,7 @@ async function openKwitansiDetailModal(id) {
     </div>
     <div style="margin-top:18px;display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;">
       <button class="btn-sm btn-view" onclick="printReceiptById(${r.id})">🖨️ Cetak PDF</button>
-      <button class="btn-sm btn-del" onclick="if(confirm('Hapus kwitansi ${esc(r.invoice_no)}?')){closeModal();deleteReceipt(${r.id},'${esc(r.invoice_no)}').then(()=>loadRecap());}">🗑️ Hapus</button>
+      <button class="btn-sm btn-del" onclick="if(confirm('Hapus kwitansi ${escJs(r.invoice_no)}?')){closeModal();deleteReceipt(${r.id},'${escJs(r.invoice_no)}').then(()=>loadRecap());}">🗑️ Hapus</button>
       <button class="btn-sm btn-view" onclick="closeModal()">Tutup</button>
     </div>
   `);
@@ -2649,7 +2679,7 @@ async function loadKwitansiStats() {
 }
 
 function getRecapMonthAndMonths() {
-  const month = document.getElementById('recapMonth')?.value || new Date().toISOString().slice(0, 7);
+  const month = document.getElementById('recapMonth')?.value || localMonthStr();
   const months = document.getElementById('recapMonths')?.value || '1';
   return { month, months };
 }
@@ -3591,7 +3621,7 @@ async function renderAcctExpenses() {
   // Re-fetch to make sure we have the latest categories (CRUD from
   // the Categories tab reflects on this dropdown immediately).
   try { ACCT_CATEGORIES = await api('/api/admin/expense-categories'); } catch {}
-  const month = new Date().toISOString().slice(0, 7);
+  const month = localMonthStr();
   body.innerHTML = `
     <div class="setting-card" style="margin-bottom:14px;">
       <h3>💸 Catat Pengeluaran</h3>
@@ -3624,12 +3654,15 @@ async function renderAcctExpenses() {
 }
 
 function buildMonthOptions(selectedMonth, count) {
-  const today = new Date();
+  // PENTING: value memakai string bulan lokal (bukan toISOString yang
+  // bergeser ke bulan sebelumnya pada 00:00-06:59 WIB tanggal 1),
+  // supaya value & label di dropdown selalu konsisten.
   let out = '';
   for (let i = 0; i < count; i++) {
-    const d = new Date(today.getFullYear(), today.getMonth() - i, 1);
-    const m = d.toISOString().slice(0, 7);
-    out += `<option value="${m}" ${m === selectedMonth ? 'selected' : ''}>${d.toLocaleDateString('id-ID', { month: 'long', year: 'numeric' })}</option>`;
+    const m = shiftMonthStr(localMonthStr(), -i);
+    const [yy, mm] = m.split('-').map(Number);
+    const label = new Date(Date.UTC(yy, mm - 1, 1)).toLocaleDateString('id-ID', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+    out += `<option value="${m}" ${m === selectedMonth ? 'selected' : ''}>${label}</option>`;
   }
   return out;
 }
@@ -4115,6 +4148,11 @@ async function renderSettings() {
             <input type="text" id="aiWaVerifyToken" placeholder="adzkiya-verify-2026" style="font-family:monospace;font-size:0.85rem;">
           </div>
           <div class="form-group" style="margin-top:10px;">
+            <label>🔐 App Secret <span style="color:var(--text-soft);font-weight:500;">(opsional tapi disarankan — untuk verifikasi signature webhook)</span></label>
+            <input type="password" id="aiWaAppSecret" placeholder="kunci dari Meta → Settings → Basic → App Secret" style="font-family:monospace;font-size:0.85rem;">
+            <small style="color:var(--text-soft);display:block;margin-top:4px;">Kalau diisi, semua request webhook wajib membawa header <code>X-Hub-Signature-256</code> yang valid — mencegah orang lain memalsukan pesan masuk.</small>
+          </div>
+          <div class="form-group" style="margin-top:10px;">
             <label>📍 Webhook URL <span style="color:var(--text-soft);font-weight:500;">(paste di Meta Dashboard)</span></label>
             <div style="display:flex;gap:6px;">
               <input type="text" id="aiWebhookUrl" readonly style="font-family:monospace;font-size:0.82rem;background:#f9fafb;flex:1;">
@@ -4170,6 +4208,7 @@ async function wireAIAssistantSettings() {
   const phoneIdEl = document.getElementById('aiWaPhoneId');
   const accessTokenEl = document.getElementById('aiWaAccessToken');
   const verifyTokenEl = document.getElementById('aiWaVerifyToken');
+  const appSecretEl = document.getElementById('aiWaAppSecret');
   const basePromptEl = document.getElementById('aiBasePrompt');
   const webhookUrlInput = document.getElementById('aiWebhookUrl');
   const saveBtn = document.getElementById('aiAssistantSaveBtn');
@@ -4198,6 +4237,7 @@ async function wireAIAssistantSettings() {
     openrouterEl.placeholder = cfg.has_openrouter ? '•••••••• (set, kosongkan untuk tetap)' : 'sk-or-v1-...';
     phoneIdEl.placeholder = cfg.has_wa_phone_id ? '•••••••• (set)' : '123456789012345';
     accessTokenEl.placeholder = cfg.has_wa_token ? '•••••••• (set)' : 'EAAxxxxxxx...';
+    if (appSecretEl) appSecretEl.placeholder = cfg.has_app_secret ? '•••••••• (set, kosongkan untuk tetap)' : 'App Secret dari Meta';
     // Webhook URL = the API base + /api/webhook/whatsapp
     const base = (window.API_BASE || (window.location.origin + (window.location.pathname.indexOf('/Adzkiyamombabycareweb') >= 0 ? '/Adzkiyamombabycareweb' : '')));
     webhookUrlInput.value = (base || '') + '/api/webhook/whatsapp';
@@ -4205,7 +4245,12 @@ async function wireAIAssistantSettings() {
     console.error('AI config fetch failed:', e);
   }
 
-  saveBtn.addEventListener('click', async () => {
+  // PENTING: pakai .onclick (bukan addEventListener) karena fungsi ini
+  // dipanggil ulang setelah setiap penyimpanan (untuk refresh badge &
+  // placeholder). Dengan addEventListener, listener menumpuk — sekali
+  // klik tombol Simpan berikutnya akan mengirim 2x/3x/… PUT request,
+  // dan tombol Log membuka modal berkali-kali.
+  saveBtn.onclick = async () => {
     feedback.textContent = '⏳ Menyimpan...';
     feedback.style.color = 'var(--text-soft)';
     try {
@@ -4219,12 +4264,14 @@ async function wireAIAssistantSettings() {
       if (openrouterEl.value.trim()) body.ai_openrouter_api_key = openrouterEl.value.trim();
       if (phoneIdEl.value.trim()) body.ai_assistant_phone_id = phoneIdEl.value.trim();
       if (accessTokenEl.value.trim()) body.ai_assistant_access_token = accessTokenEl.value.trim();
+      if (appSecretEl && appSecretEl.value.trim()) body.ai_assistant_app_secret = appSecretEl.value.trim();
       await api('/api/admin/settings', { method: 'PUT', body: JSON.stringify(body) });
       // Clear key fields after save so admin sees placeholder-only next time
       geminiEl.value = '';
       openrouterEl.value = '';
       phoneIdEl.value = '';
       accessTokenEl.value = '';
+      if (appSecretEl) appSecretEl.value = '';
       feedback.textContent = '✅ Tersimpan! AI Assistant ' + (enabledEl.checked ? 'aktif' : 'nonaktif') + '.';
       feedback.style.color = 'var(--success, #1e8957)';
       // Re-fetch to update badge + placeholders
@@ -4233,9 +4280,9 @@ async function wireAIAssistantSettings() {
       feedback.textContent = '❌ Gagal menyimpan: ' + e.message;
       feedback.style.color = '#c43050';
     }
-  });
+  };
 
-  logsBtn.addEventListener('click', async () => {
+  logsBtn.onclick = async () => {
     try {
       const logs = await api('/api/admin/ai/conversations?limit=50');
       if (!logs.length) {
@@ -4262,7 +4309,7 @@ async function wireAIAssistantSettings() {
     } catch (e) {
       alert('Gagal load log: ' + e.message);
     }
-  });
+  };
 }
 
 function renderHours() {
@@ -5234,7 +5281,7 @@ function buildKwitansiHtmlForExport(r, ps, isThermal, opts) {
       <!-- HEADER: brand left, KWITANSI+invoice+date right -->
       <div style="display:flex;flex-direction:row;align-items:flex-start;justify-content:space-between;padding-bottom:6px;border-bottom:2px solid #ee5a8a;">
         <div style="width:${brandColWidthPx}px;display:flex;flex-direction:row;align-items:center;gap:6px;">
-          ${logoSrc ? `<img src="${logoSrc}" alt="" crossorigin="anonymous" style="width:${isThermal ? 32 : 48}px;height:${isThermal ? 32 : 48}px;object-fit:contain;display:block;flex-shrink:0;">` : '<span style="font-size:${isThermal ? 18 : 24}px;flex-shrink:0;">🌸</span>'}
+          ${logoSrc ? `<img src="${logoSrc}" alt="" crossorigin="anonymous" style="width:${isThermal ? 32 : 48}px;height:${isThermal ? 32 : 48}px;object-fit:contain;display:block;flex-shrink:0;">` : `<span style="font-size:${isThermal ? 18 : 24}px;flex-shrink:0;">🌸</span>`}
           <div style="flex:1;min-width:0;">
             <div style="font-size:${Math.round(fontPt * 1.15)}pt;font-weight:bold;color:#2a1822;line-height:1.2;margin-bottom:2px;">${esc(biz.business_name || 'Adzkiya Mom Baby Care')}</div>
             <div style="font-size:${Math.round(fontPt * 0.78)}pt;color:#6a5a64;line-height:1.3;">${esc(biz.tagline || 'Layanan Kesehatan Ibu & Anak Terpercaya')}<br>${esc(biz.address || '')}<br>WA: ${esc(biz.phone || '085887018194')}</div>

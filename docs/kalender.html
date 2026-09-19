@@ -4,9 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Kalender Treatment — Adzkiya Mom Baby Care</title>
-<link rel="alternate" hreflang="id" href="/kalender.html?lang=id">
-<link rel="alternate" hreflang="en" href="/kalender.html?lang=en">
-<link rel="alternate" hreflang="x-default" href="/kalender.html">
+<link rel="alternate" hreflang="id" href="kalender.html?lang=id">
+<link rel="alternate" hreflang="en" href="kalender.html?lang=en">
+<link rel="alternate" hreflang="x-default" href="kalender.html">
 <meta name="description" content="Lihat jadwal ketersediaan treatment home service Adzkiya Mom Baby Care sebelum melakukan reservasi.">
 <meta name="theme-color" content="#ee5a8a" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#1c1118" media="(prefers-color-scheme: dark)">
@@ -15,30 +15,30 @@
 <meta name="apple-mobile-web-app-title" content="Kalender Adzkiya">
 <meta property="og:title" content="Kalender Reservasi Adzkiya Mom Baby Care">
 <meta property="og:description" content="Cek jadwal treatment home service yang masih tersedia.">
-<meta property="og:image" content="/api/logo">
+<meta property="og:image" content="img/logo.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
-<link rel="stylesheet" href="/css/style.css">
+<link rel="stylesheet" href="css/style.css">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='80' font-size='90'%3E🌸%3C/text%3E%3C/svg%3E">
 </head>
 <body>
 
 <nav class="nav">
   <div class="nav-inner">
-    <a href="/" class="brand">
+    <a href="index.html" class="brand">
       <div class="brand-logo" aria-hidden="true">🌸</div>
       <div class="brand-text">Adzkiya Mom Baby Care<small>Mom & Baby Care</small></div>
     </a>
     <button class="mobile-toggle" onclick="document.getElementById('navLinks').classList.toggle('open')" aria-label="Buka menu">☰</button>
     <div class="nav-links" id="navLinks">
-      <a href="/" data-i18n="nav.beranda">Beranda</a>
-      <a href="/#layanan" data-i18n="nav.layanan">Layanan</a>
-      <a href="/kalender.html" class="active" aria-current="page" data-i18n="nav.kalender">Kalender</a>
-      <a href="/#kontak" data-i18n="nav.kontak">Kontak</a>
+      <a href="index.html" data-i18n="nav.beranda">Beranda</a>
+      <a href="index.html#layanan" data-i18n="nav.layanan">Layanan</a>
+      <a href="kalender.html" class="active" aria-current="page" data-i18n="nav.kalender">Kalender</a>
+      <a href="index.html#kontak" data-i18n="nav.kontak">Kontak</a>
       <button class="theme-toggle" id="themeToggle" aria-label="Toggle tema">🌙</button>
       <button class="lang-toggle" id="langToggle" type="button" data-i18n-attr="aria-label:nav.language_toggle">🌐 EN</button>
-      <a href="/reservasi.html" class="btn-nav" data-i18n="nav.reservasi">Reservasi</a>
+      <a href="reservasi.html" class="btn-nav" data-i18n="nav.reservasi">Reservasi</a>
     </div>
   </div>
 </nav>
@@ -80,7 +80,7 @@
     </div>
 
     <div style="text-align: center; margin-top: 24px;">
-      <a href="/reservasi.html" class="btn btn-primary" data-i18n="kalender.detail_cta">📅 Buat Reservasi Baru</a>
+      <a href="reservasi.html" class="btn btn-primary" data-i18n="kalender.detail_cta">📅 Buat Reservasi Baru</a>
     </div>
   </div>
 </section>
@@ -88,13 +88,14 @@
 <footer>
   <div class="footer-inner">
     <div>© 2026 Adzkiya Mom Baby Care</div>
-    <div><a href="/admin" data-i18n="nav.admin">Admin Login</a></div>
+    <div><a href="admin.html" data-i18n="nav.admin">Admin Login</a></div>
   </div>
 </footer>
 
-<script defer src="/js/i18n.js"></script>
-<script defer src="/js/main.js"></script>
-<script defer src="/js/kalender.js"></script>
+<script defer src="js/api-config.js"></script>
+<script defer src="js/i18n.js"></script>
+<script defer src="js/main.js"></script>
+<script defer src="js/kalender.js"></script>
 <script defer>
 // Bind the language toggle button (kalender.js builds the calendar;
 // main.js binds i18n:applied to re-render services if any). Re-render

@@ -41,6 +41,50 @@ async function fetchWithTimeout(url, options, timeoutMs) {
   }
 }
 
+// ---- TANGGAL ZONA WIB (Asia/Jakarta) ----
+// Railway (dan hampir semua container) berjalan dengan TZ=UTC, sedangkan
+// bisnis ini ada di Cilacap (WIB, UTC+7). Semua tanggal/bulan yang
+// bersifat bisnis (nomor invoice, default bulan Rekap, bucket grafik,
+// lastmod sitemap) HARUS memakai kalender WIB. Tanpa helper ini:
+//   • invoice yang dibuat pukul 00:00–06:59 WIB memakai tanggal kemarin
+//     (mis. INV-20260919-001 padahal sudah 20 September)
+//   • grafik 14 hari kehilangan bucket "hari ini"
+//   • pada tanggal 1 pukul 00:00–06:59 WIB, Rekap & P&L default ke bulan lalu
+const JAKARTA_TZ = 'Asia/Jakarta';
+let _jakartaDateFmt = null;
+function jakartaDateStr(date) {
+  const d = date || new Date();
+  try {
+    if (!_jakartaDateFmt) {
+      _jakartaDateFmt = new Intl.DateTimeFormat('en-CA', {
+        timeZone: JAKARTA_TZ, year: 'numeric', month: '2-digit', day: '2-digit'
+      });
+    }
+    // en-CA → YYYY-MM-DD
+    return _jakartaDateFmt.format(d);
+  } catch (e) {
+    // Fallback: kalau ICU/runtime tidak mendukung timeZone, pakai offset
+    // tetap +7 jam dari UTC (Indonesia tidak memakai DST).
+    return new Date(d.getTime() + 7 * 3600 * 1000).toISOString().slice(0, 10);
+  }
+}
+function todayJakarta() { return jakartaDateStr(new Date()); }
+function monthJakarta(date) { return jakartaDateStr(date).slice(0, 7); }
+// Geser string tanggal 'YYYY-MM-DD' sebanyak delta hari. Aritmetika
+// memakai UTC supaya bebas DST/perubahan zona.
+function shiftDateStr(dateStr, deltaDays) {
+  const [y, m, d] = String(dateStr || '').split('-').map(Number);
+  const base = new Date(Date.UTC(y || 1970, (m || 1) - 1, d || 1));
+  base.setUTCDate(base.getUTCDate() + deltaDays);
+  return base.toISOString().slice(0, 10);
+}
+// Geser string bulan 'YYYY-MM' sebanyak deltaMonths.
+function shiftMonthStr(monthStr, deltaMonths) {
+  const [y, m] = String(monthStr || '').split('-').map(Number);
+  const base = new Date(Date.UTC(y || 1970, (m || 1) - 1 + deltaMonths, 1));
+  return base.toISOString().slice(0, 7);
+}
+
 const app = express();
 const PORT = parseInt(process.env.PORT || '3000', 10);
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
@@ -141,6 +185,17 @@ async function initStorage() {
 
   normalizeState();
   console.log(`[storage] ${DATABASE_KIND}: ${DB.reservations.length} reservasi, ${DB.receipts.length} kwitansi`);
+  // Peringatan keras: di production, storage 'file' berarti seluruh data
+  // (reservasi, kwitansi, pengaturan, TTD pemilik) HANYA tersimpan di
+  // filesystem container — hilang setiap redeploy/rebuild di Railway.
+  // Set DATABASE_URL (Postgres/MySQL) atau mount volume agar data aman.
+  if (IS_PRODUCTION && DATABASE_KIND === 'file') {
+    console.warn('[storage] ⚠️  PERINGATAN: DATABASE_URL belum diset — data disimpan di file');
+    console.warn('[storage] ⚠️  File ini ikut ter-reset setiap deploy. Set DATABASE_URL agar data permanen.');
+  }
+  if (IS_PRODUCTION && DATABASE_KIND !== 'file' && !pool) {
+    console.warn(`[storage] ⚠️  DATABASE_URL (${DATABASE_KIND}) tidak bisa dihubungi saat boot — sementara pakai file.`);
+  }
 }
 
 async function persistSnapshot(json) {
@@ -598,6 +653,33 @@ const apiLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false
 });
+// Rate limit khusus endpoint AI & webhook. Endpoint ini memanggil API
+// berbayar (Gemini/OpenRouter/Meta Graph), jadi jangan sampai bisa
+// di-spam. Limiter global /api/ (240 req/menit) terlalu longgar untuk
+// endpoint yang memicu biaya per request.
+const aiLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 20, // 20 pesan/menit/IP — cukup untuk percakapan normal
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Terlalu banyak pesan. Tunggu sebentar ya.' }
+});
+const webhookLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 120,
+  standardHeaders: true,
+  legacyHeaders: false
+});
+
+// Bandingkan dua string dengan waktu konstan (hindari timing attack saat
+// memverifikasi token/signature webhook).
+function safeCompare(a, b) {
+  const ba = Buffer.from(String(a == null ? '' : a));
+  const bb = Buffer.from(String(b == null ? '' : b));
+  if (ba.length !== bb.length) return false;
+  try { return require('crypto').timingSafeEqual(ba, bb); } catch { return false; }
+}
+
 app.use((req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
@@ -644,7 +726,18 @@ app.use((req, res, next) => {
   next();
 });
 
-const standardJsonParser = express.json({ limit: '2mb' });
+// Simpan raw body untuk endpoint webhook WhatsApp saja — dipakai untuk
+// memverifikasi header X-Hub-Signature-256 dari Meta (HMAC-SHA256 atas
+// body mentah). Route lain tidak menyimpan body mentah supaya memori
+// tetap hemat.
+const standardJsonParser = express.json({
+  limit: '2mb',
+  verify: (req, res, buf) => {
+    if (req.originalUrl && req.originalUrl.startsWith('/api/webhook/whatsapp')) {
+      req.rawBody = buf && buf.length ? Buffer.from(buf) : Buffer.alloc(0);
+    }
+  }
+});
 const restoreJsonParser = express.json({ limit: '24mb' });
 app.use((req, res, next) => {
   if (req.path === '/api/admin/restore') return next();
@@ -665,13 +758,18 @@ app.use(express.urlencoded({ extended: true, limit: '2mb' }));
 // of `?t=` (or `?token=`) and 308s to /kwitansi/<token>.
 // 308 = permanent redirect that preserves the method, so browsers
 // treat it like a URL rewrite rather than a navigation event.
-app.get('/kwitansi-share.html', (req, res) => {
+app.get('/kwitansi-share.html', (req, res, next) => {
   const params = new URLSearchParams(req.query || {});
   const token = params.get('t') || params.get('token') || '';
   if (!token) {
-    // No token — let the static handler render the page (it has its
-    // own "Token kosong" error message in JS).
-    return res.redirect(308, '/kwitansi-share.html' + (req.url.includes('?') ? req.url.slice(req.url.indexOf('?')) : ''));
+    // Tanpa token: serahkan ke express.static supaya file aslinya
+    // dilayani (halaman itu punya pesan sendiri "Token kosong").
+    //
+    // BUG LAMA: di sini route mem-redirect ke dirinya sendiri
+    // ('/kwitansi-share.html'), sehingga membuka URL tanpa token
+    // menghasilkan infinite redirect loop (ERR_TOO_MANY_REDIRECTS)
+    // dan halaman tidak pernah tampil.
+    return next();
   }
   res.redirect(308, '/kwitansi/' + encodeURIComponent(token));
 });
@@ -768,7 +866,20 @@ function calcReservationTotal(r) {
 app.use('/api/', apiLimiter);
 
 // ===== PUBLIC =====
-app.get('/health', (req, res) => res.json({ ok: true, storage: pool ? DATABASE_KIND : 'file' }));
+// Health check. `storage` = storage yang SEDANG dipakai (file /
+// postgres / mysql). Tambahan `configured_storage` + `db_connected`
+// supaya bisa dibedakan antara "memang pakai file" dan "DATABASE_URL
+// diisi tapi DB gagal connect saat boot" — dulu keduanya tampil
+// sebagai "file", yang bikin data hilang tanpa jejak sulit ditelusuri.
+app.get('/health', (req, res) => res.json({
+  ok: true,
+  storage: pool ? DATABASE_KIND : 'file',
+  configured_storage: DATABASE_KIND,
+  db_connected: !!pool,
+  data_file: DATABASE_KIND === 'file' ? path.basename(DATA_FILE) : null,
+  time: new Date().toISOString(),
+  today_wib: todayJakarta()
+}));
 
 // SEO: sitemap.xml. We emit a static-ish URL list — public pages
 // only (admin & kwitansi-share excluded). service pages are dynamic
@@ -794,13 +905,33 @@ app.get('/sitemap.xml', (req, res) => {
     { loc: '/?lang=id', priority: '0.9', changefreq: 'weekly' },
     { loc: '/?lang=en', priority: '0.6', changefreq: 'monthly' },
   ];
-  const services = (DB.settings && Array.isArray(DB.settings.public_services_slugs))
-    ? DB.settings.public_services_slugs
-    : Object.values(SERVICE_PRICE_BY_NAME).length ? Object.keys(SERVICE_PRICE_BY_NAME).map((n) => '/reservasi.html?service=' + encodeURIComponent(n)) : [];
-  const today = new Date().toISOString().slice(0, 10);
-  const urls = staticUrls.concat(services.map((s) => ({ loc: s, priority: '0.7', changefreq: 'monthly' })));
+  // Daftar URL layanan. Admin bisa mengisi settings.public_services_slugs
+  // (array path/slug). Kalau kosong, generate satu URL per layanan dari
+  // katalog server.
+  //
+  // BUG LAMA: baris ini memakai Object.values(SERVICE_PRICE_BY_NAME) —
+  // itu SELALU [] karena SERVICE_PRICE_BY_NAME adalah Map (bukan objek
+  // biasa). Akibatnya sitemap tidak pernah memuat halaman layanan.
+  const slugs = DB.settings && DB.settings.public_services_slugs;
+  let serviceUrls = [];
+  if (Array.isArray(slugs) && slugs.length) {
+    serviceUrls = slugs
+      .map((s) => String(s == null ? '' : s).trim())
+      .filter(Boolean)
+      .map((s) => (/^\//.test(s) || /^https?:\/\//i.test(s) ? s : '/reservasi.html?service=' + encodeURIComponent(s)));
+  } else if (SERVICE_PRICE_BY_NAME.size) {
+    serviceUrls = Array.from(SERVICE_PRICE_BY_NAME.keys())
+      .map((n) => '/reservasi.html?service=' + encodeURIComponent(n));
+  }
+  const today = todayJakarta();
+  // Escape XML: base URL berasal dari header Host / X-Forwarded-Host
+  // yang bisa dikendalikan client, jadi jangan pernah disisipkan mentah.
+  const xmlEsc = (s) => String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&apos;');
+  const urls = staticUrls.concat(serviceUrls.map((s) => ({ loc: s, priority: '0.7', changefreq: 'monthly' })));
   const body = urls.map((u) => `  <url>
-    <loc>${base}${u.loc}</loc>
+    <loc>${xmlEsc(base + u.loc)}</loc>
     <lastmod>${today}</lastmod>
     <changefreq>${u.changefreq}</changefreq>
     <priority>${u.priority}</priority>
@@ -948,6 +1079,15 @@ app.post('/api/reservations', upload.single('proof'), (req, res) => {
     if (!slots.every((slot) => datePattern.test(slot.date) && timePattern.test(slot.time))) {
       return res.status(400).json({ error: 'Jadwal tidak valid' });
     }
+    // Buang jadwal duplikat (tanggal + jam sama). Total reservasi dihitung
+    // sebagai itemSum × jumlah slot, jadi kalau form mengirim slot yang
+    // sama dua kali (mis. user menambah baris lalu mengisi tanggal/jam
+    // yang identik) pasien akan tertagih dua kali untuk satu sesi.
+    const beforeDedupe = slots.length;
+    slots = slots.filter((s, i) => slots.findIndex((x) => x.date === s.date && x.time === s.time) === i);
+    if (slots.length !== beforeDedupe && !slots.length) {
+      return res.status(400).json({ error: 'Jadwal tidak valid' });
+    }
 
     // Reject reservations that fall on a blackout date. Defense-in-depth:
     // the form already disables these dates, but if a request bypasses
@@ -1086,11 +1226,29 @@ app.get('/api/admin/reservations', auth, (req, res) => {
   res.json(rows.map(publicReservation));
 });
 
+// Nilai status yang dikenal seluruh aplikasi (badge, filter, statistik,
+// kalender publik). Tanpa validasi ini, nilai sembarang dari client
+// (mis. hasil typo atau payload jahat) tersimpan apa adanya sehingga
+// badge tampil rusak, filter status tidak menemukan data, dan hitungan
+// dashboard jadi salah.
+const RESERVATION_STATUSES = ['pending', 'approved', 'rejected'];
+const PAYMENT_STATUSES = ['unpaid', 'lunas'];
+
 app.patch('/api/admin/reservations/:id', auth, (req, res) => {
   const r = DB.reservations.find(x => x.id === parseInt(req.params.id));
   if (!r) return res.status(404).json({ error: 'Not found' });
-  if (req.body.status) r.status = req.body.status;
-  if (req.body.payment_status) r.payment_status = req.body.payment_status;
+  if (req.body.status !== undefined && req.body.status !== null && req.body.status !== '') {
+    if (!RESERVATION_STATUSES.includes(req.body.status)) {
+      return res.status(400).json({ error: `Status harus salah satu dari: ${RESERVATION_STATUSES.join(', ')}` });
+    }
+    r.status = req.body.status;
+  }
+  if (req.body.payment_status !== undefined && req.body.payment_status !== null && req.body.payment_status !== '') {
+    if (!PAYMENT_STATUSES.includes(req.body.payment_status)) {
+      return res.status(400).json({ error: `Status pembayaran harus salah satu dari: ${PAYMENT_STATUSES.join(', ')}` });
+    }
+    r.payment_status = req.body.payment_status;
+  }
   // Allow editing the time slots (multi-waktu + multi-tanggal).
   //
   // When slots change:
@@ -1405,12 +1563,13 @@ app.get('/api/admin/notifications', auth, (req, res) => {
 
 // ===== ADMIN — CHARTS =====
 app.get('/api/admin/charts', auth, (req, res) => {
-  // Last 14 days omzet trend
-  const today = new Date();
+  // Omzet trend 14 hari terakhir. Bucket harian dihitung dari tanggal
+  // WIB "hari ini" — bukan UTC — supaya data hari ini tidak hilang /
+  // bergeser ke kolom kemarin antara pukul 00:00–06:59 WIB.
+  const todayStr = todayJakarta();
   const days = [];
   for (let i = 13; i >= 0; i--) {
-    const d = new Date(today); d.setDate(today.getDate() - i);
-    days.push(d.toISOString().slice(0, 10));
+    days.push(shiftDateStr(todayStr, -i));
   }
   const omzetByDay = days.map(d => {
     const sum = DB.reservations
@@ -1436,11 +1595,11 @@ app.get('/api/admin/charts', auth, (req, res) => {
   const statusCount = { pending: 0, approved: 0, rejected: 0 };
   DB.reservations.forEach(r => { statusCount[r.status] = (statusCount[r.status] || 0) + 1; });
 
-  // Monthly omzet (last 6 months)
+  // Monthly omzet (last 6 months) — basis bulan WIB.
+  const curMonth = monthJakarta();
   const months = [];
   for (let i = 5; i >= 0; i--) {
-    const d = new Date(today.getFullYear(), today.getMonth() - i, 1);
-    months.push(d.toISOString().slice(0, 7));
+    months.push(shiftMonthStr(curMonth, -i));
   }
   const omzetByMonth = months.map(m => {
     const sum = DB.reservations
@@ -1468,7 +1627,8 @@ function computeMonthRange(month, months) {
 }
 
 app.get('/api/admin/recap', auth, (req, res) => {
-  const month = req.query.month || new Date().toISOString().slice(0, 7);
+  // Default bulan = bulan berjalan menurut WIB (bukan UTC).
+  const month = req.query.month || monthJakarta();
   const months = Math.max(1, Math.min(24, parseInt(req.query.months || '1', 10) || 1));
   const monthList = computeMonthRange(month, months);
   const monthSet = new Set(monthList);
@@ -1514,7 +1674,7 @@ app.get('/api/admin/recap', auth, (req, res) => {
 // a summary "Ringkasan" sheet at the front).
 app.get('/api/admin/recap.xlsx', auth, async (req, res) => {
   try {
-    const month = req.query.month || new Date().toISOString().slice(0, 7);
+    const month = req.query.month || monthJakarta();
     const months = Math.max(1, Math.min(24, parseInt(req.query.months || '1', 10) || 1));
     const monthList = computeMonthRange(month, months);
     const monthSet = new Set(monthList);
@@ -1776,7 +1936,10 @@ app.post('/api/admin/receipts', auth, (req, res) => {
   // calculation so Rekap Bulanan stays accurate.
   const slotCount = slots.length;
   const total = subtotal * slotCount + (parseInt(transport_fee) || 0) - (parseInt(discount) || 0);
-  const today = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+  // Nomor invoice memakai tanggal WIB — bukan UTC. Kalau pakai UTC,
+  // kwitansi yang dibuat pagi hari (00:00–06:59 WIB) akan bernomor
+  // tanggal kemarin.
+  const today = todayJakarta().replace(/-/g, '');
   const count = DB.receipts.filter((k) => (k.invoice_no || '').slice(4, 12) === today).length;
   const invoice_no = `INV-${today}-${String(count + 1).padStart(3, '0')}`;
   const id = nextId('receipts');
@@ -2652,12 +2815,11 @@ app.delete('/api/admin/expenses/:id', auth, (req, res) => {
 // surface both series for the last 6 months.
 app.get('/api/admin/accounting/summary', auth, (req, res) => {
   const months = Math.max(1, Math.min(24, parseInt(req.query.months || '6', 10) || 6));
-  // Build list of last N months including current.
-  const today = new Date();
+  // Build list of last N months including current — basis bulan WIB,
+  // supaya pada tanggal 1 pukul 00:00–06:59 WIB tidak mundur ke bulan lalu.
   const monthList = [];
   for (let i = months - 1; i >= 0; i--) {
-    const d = new Date(today.getFullYear(), today.getMonth() - i, 1);
-    monthList.push(d.toISOString().slice(0, 7));
+    monthList.push(shiftMonthStr(monthJakarta(), -i));
   }
   const monthSet = new Set(monthList);
 
@@ -2668,25 +2830,15 @@ app.get('/api/admin/accounting/summary', auth, (req, res) => {
   const expenseByMonth = Object.fromEntries(monthList.map((m) => [m, 0]));
   const expensesByCategory = {};
   DB.reservations.forEach((r) => {
-    if ((r.reservation_date || '').slice(0, 7) !== monthSet.has((r.reservation_date || '').slice(0, 7)) ? '' : '') return;
-    if (!(r.reservation_date || '').slice(0, 7) || !monthSet.has((r.reservation_date || '').slice(0, 7))) return;
+    const m = (r.reservation_date || '').slice(0, 7);
+    if (!m || !monthSet.has(m)) return;
     if (r.payment_status === 'lunas') {
-      const m = (r.reservation_date || '').slice(0, 7);
       incomeByMonth[m] = (incomeByMonth[m] || 0) + (r.total || calcReservationTotal(r));
     }
   });
-  // Backup signal: receipts created in the month (e.g. imported
-  // via PDF/JSON).
-  DB.receipts.forEach((k) => {
-    if (!k.created_at) return;
-    const m = k.created_at.slice(0, 7);
-    if (!monthSet.has(m)) return;
-    if (!incomeByMonth[m]) return; // skip if already counted via reservation
-    // Only count if the reservation that mirrors this receipt
-    // doesn't already cover it (heuristic). To keep it simple
-    // we add it; admin can verify in the Reservations list.
-    incomeByMonth[m] = (incomeByMonth[m] || 0) + 0; // disabled — already covered
-  });
+  // Kwitansi TIDAK ditambahkan terpisah di sini: syncReceiptToReservation()
+  // sudah memirror setiap kwitansi ke DB.reservations (payment_status
+  // 'lunas'), jadi menambahkannya lagi akan menghitung omzet dua kali.
   // Expenses per month
   DB.expenses.forEach((e) => {
     if (!e.date) return;
@@ -2781,7 +2933,7 @@ app.post('/api/admin/receipts/import', auth, restoreJsonParser, (req, res) => {
         service_date = `${y}-${m.padStart(2,'0')}-${d.padStart(2,'0')}`;
       }
       if (!service_date || !/^\d{4}-\d{2}-\d{2}$/.test(service_date)) {
-        service_date = new Date().toISOString().slice(0, 10);
+        service_date = todayJakarta();
       }
 
       // Items: accept items[] or a single "layanan" string + price+qty
@@ -3464,7 +3616,7 @@ app.get('/api/admin/settings', auth, (req, res) => {
   // admin re-enters a key only when rotating it.
   const {
     logo_b64, hero_b64, qris_b64, owner_signature_b64,
-    ai_gemini_api_key, ai_openrouter_api_key, ai_assistant_access_token,
+    ai_gemini_api_key, ai_openrouter_api_key, ai_assistant_access_token, ai_assistant_app_secret,
     ...rest
   } = s;
   res.json({
@@ -3485,7 +3637,7 @@ app.put('/api/admin/settings', auth, (req, res) => {
   // dengan string kosong. Saat admin mengedit setting lain, field key
   // dibiarkan kosong — itu TIDAK boleh menghapus key yang sudah
   // tersimpan. Hanya timpa jika nilai baru benar-benar terisi.
-  ['ai_gemini_api_key', 'ai_openrouter_api_key', 'ai_assistant_access_token'].forEach((k) => {
+  ['ai_gemini_api_key', 'ai_openrouter_api_key', 'ai_assistant_access_token', 'ai_assistant_app_secret'].forEach((k) => {
     if (k in body && (body[k] === '' || body[k] === null || body[k] === undefined)) delete body[k];
   });
   // Validate owner_signature base64 if present. We accept either a
@@ -3736,7 +3888,7 @@ app.get('/api/admin/backup', auth, (req, res) => {
     // SECURITY: buang AI secret keys dari backup. File backup sering
     // dibagikan/diunduh, jadi API key tidak boleh ikut terbawa.
     settings: (() => {
-      const { ai_gemini_api_key, ai_openrouter_api_key, ai_assistant_access_token, ...s } = (DB.settings || {});
+      const { ai_gemini_api_key, ai_openrouter_api_key, ai_assistant_access_token, ai_assistant_app_secret, ...s } = (DB.settings || {});
       return s;
     })()
   });
@@ -4003,7 +4155,7 @@ async function callAIChat(systemPrompt, messages) {
 
 // PUBLIC chat endpoint — used by the chat widget on the landing page
 // and (optionally) by the WA webhook handler.
-app.post('/api/ai/chat', async (req, res) => {
+app.post('/api/ai/chat', aiLimiter, async (req, res) => {
   try {
     const { message, history = [], session_id = 'web-' + Date.now() } = req.body || {};
     if (!message || typeof message !== 'string') {
@@ -4070,12 +4222,12 @@ app.post('/api/ai/chat', async (req, res) => {
 // Incoming messages: POST with { entry: [{ changes: [{ value: { messages: [...] } }] }] }
 
 // Verify webhook (GET) - Meta requires echoing back the challenge
-app.get('/api/webhook/whatsapp', (req, res) => {
+app.get('/api/webhook/whatsapp', webhookLimiter, (req, res) => {
   const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
   const challenge = req.query['hub.challenge'];
   const expectedToken = DB.settings.ai_assistant_verify_token || '';
-  if (mode === 'subscribe' && token && expectedToken && token === expectedToken) {
+  if (mode === 'subscribe' && token && expectedToken && safeCompare(token, expectedToken)) {
     console.log('[wa-webhook] Verified successfully');
     return res.status(200).send(challenge);
   }
@@ -4112,7 +4264,21 @@ async function sendWAReply(toPhone, text) {
 }
 
 // Incoming messages (POST) - auto-reply via AI
-app.post('/api/webhook/whatsapp', async (req, res) => {
+app.post('/api/webhook/whatsapp', webhookLimiter, async (req, res) => {
+  // SECURITY: kalau admin mengisi App Secret (Meta Dashboard → Settings →
+  // Basic → App Secret), verifikasi header X-Hub-Signature-256. Tanpa ini
+  // siapa pun yang tahu URL webhook bisa memalsukan pesan masuk,
+  // menghabiskan kuota AI, dan memicu kiriman WA keluar ke nomor lain.
+  const appSecret = DB.settings.ai_assistant_app_secret;
+  if (appSecret) {
+    const signature = req.headers['x-hub-signature-256'] || '';
+    const raw = req.rawBody || Buffer.from(JSON.stringify(req.body || {}));
+    const expected = 'sha256=' + require('crypto').createHmac('sha256', appSecret).update(raw).digest('hex');
+    if (!safeCompare(signature, expected)) {
+      console.warn('[wa-webhook] Signature tidak valid — request ditolak');
+      return res.status(403).send('Invalid signature');
+    }
+  }
   // Meta requires 200 OK within 5s or it retries
   res.status(200).send('OK');
   try {
@@ -4192,6 +4358,7 @@ app.get('/api/admin/ai/config', auth, (req, res) => {
     has_openrouter: !!s.ai_openrouter_api_key,
     has_wa_phone_id: !!s.ai_assistant_phone_id,
     has_wa_token: !!s.ai_assistant_access_token,
+    has_app_secret: !!s.ai_assistant_app_secret,
     wa_verify_token: s.ai_assistant_verify_token || '',
     base_prompt: s.ai_assistant_base_prompt || '',
     conversation_count: (s.ai_assistant_conversations || []).length,

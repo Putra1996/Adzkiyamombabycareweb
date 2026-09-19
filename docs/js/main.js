@@ -1,6 +1,18 @@
 // Public site shared JS
 const fmtRp = (n) => 'Rp ' + (n || 0).toLocaleString('id-ID');
 
+// Base URL API. Di Railway (satu host) nilainya kosong sehingga request
+// tetap same-origin; di GitHub Pages, api-config.js mengisinya dengan URL
+// Railway sehingga fetch tetap jalan lintas origin.
+// CATATAN: jangan pakai path absolut '/api/...' langsung — di GitHub Pages
+// (repo di sub-folder) request akan menuju host GitHub dan gagal 404.
+// PENTING: pakai var (bukan const) + nama unik. File ini dimuat bersama
+// js/kalender.js, js/admin.js, dan script inline di halaman — semua
+// berbagi satu scope global. Dua 'const' dengan nama sama di dua file
+// berbeda akan memicu SyntaxError dan mematikan SELURUH script halaman.
+var ADZKIYA_API_BASE = String((typeof window !== 'undefined' && window.ADZKIYA_API_BASE) || '').replace(/\/$/, '');
+var adzkiyaApiUrl = function (path) { return ADZKIYA_API_BASE + (String(path).startsWith('/') ? path : '/' + path); };
+
 // Theme toggle
 function initTheme() {
   const saved = localStorage.getItem('theme') || 'light';
@@ -33,7 +45,13 @@ async function loadServices() {
   const tabs = document.getElementById('catTabs');
   if (!grid) return;
   try {
-    const res = await fetch('/api/services');
+    let res;
+    try {
+      res = await fetch(adzkiyaApiUrl('/api/services'));
+    } catch (err) {
+      // Fallback: kalau host lain diblokir (offline/CORS), coba same-origin.
+      res = await fetch('/api/services');
+    }
     SERVICES_CATS = await res.json();
     renderServices('all');
     tabs.querySelectorAll('.cat-tab').forEach(t => {

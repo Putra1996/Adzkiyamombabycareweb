@@ -176,5 +176,75 @@ if (settingsMatch) {
 fs.writeFileSync(path.join(DOCS, 'js', 'main.js'), mainJs);
 console.log('[build] main.js updated with embedded data');
 
+// ===== MIRROR public/ -> docs/ DENGAN PATH RELATIF =====
+//
+// GitHub Pages menyajikan repo ini dari SUB-FOLDER
+// (https://putra1996.github.io/Adzkiyamombabycareweb/), jadi referensi
+// root-absolut seperti /css/style.css, /js/main.js, /api/logo, atau
+// /reservasi.html akan menuju root domain github.io dan berakhir 404 —
+// halaman tampil tanpa CSS/JS. Di langkah ini file dari public/ disalin
+// ke docs/ dan referensi tsb diubah menjadi relatif.
+//
+// public/ SENDIRI TIDAK DIUBAH sedikit pun, karena Railway menyajikan
+// folder itu dari root domain (path absolut di sana justru yang benar).
+//
+// Jalankan `npm run build:pages` setiap kali file di public/ berubah,
+// lalu commit folder docs/.
+const PAGES_COPY = [
+  'index.html', 'kalender.html', 'reservasi.html', 'admin.html', '404.html', 'robots.txt',
+  'css/style.css',
+  'js/api-config.js', 'js/i18n.js', 'js/main.js', 'js/kalender.js', 'js/admin.js',
+];
+
+// Aset statis dari data.json (agar <img src="/api/logo"> tetap tampil di
+// GitHub Pages yang tidak punya endpoint /api/*).
+function writeStaticAsset(settingKey, fileName) {
+  const b64 = settings[settingKey];
+  if (!b64) return false;
+  try {
+    fs.writeFileSync(path.join(DOCS, 'img', fileName), Buffer.from(b64, 'base64'));
+    return true;
+  } catch (e) {
+    console.warn('[build] Gagal menulis docs/img/' + fileName + ': ' + e.message);
+    return false;
+  }
+}
+const hasLogoAsset = writeStaticAsset('logo_b64', 'logo.png') || fs.existsSync(path.join(DOCS, 'img', 'logo.png'));
+const hasQrisAsset = writeStaticAsset('qris_b64', 'qris.png');
+const hasHeroAsset = writeStaticAsset('hero_b64', 'hero.png');
+
+function rewriteForPages(content) {
+  let out = content;
+  // 1) Endpoint gambar -> file statis lokal (kalau asetnya ada).
+  if (hasLogoAsset) out = out.replace(/(href|src|content)="\/api\/logo"/g, '$1="img/logo.png"');
+  if (hasQrisAsset) out = out.replace(/(href|src|content)="\/api\/qris"/g, '$1="img/qris.png"');
+  if (hasHeroAsset) out = out.replace(/(href|src|content)="\/api\/hero"/g, '$1="img/hero.png"');
+  // 2) Path absolut halaman/aset -> relatif.
+  //    "/" dan "/#anchor" menunjuk beranda; "/admin" halaman login admin.
+  out = out.replace(/(href|src|action|content)="\/([^"]*)"/g, (match, attr, rest) => {
+    if (/^api\//.test(rest)) return match; // endpoint API: dibiarkan (ditangani js/api-config.js)
+    let target;
+    if (rest === '' || rest.startsWith('#') || rest.startsWith('?')) target = 'index.html' + rest;
+    else if (rest === 'admin' || rest === 'admin/') target = 'admin.html';
+    else target = rest;
+    return attr + '="' + target + '"';
+  });
+  // 3) Referensi absolut di dalam script/style inline: '/js/...', '/css/...'.
+  out = out.replace(/(["'(])\/(js|css|img|data)\//g, '$1$2/');
+  return out;
+}
+
+let mirrorCount = 0;
+for (const rel of PAGES_COPY) {
+  const src = path.join(ROOT, 'public', rel);
+  if (!fs.existsSync(src)) { console.warn('[build] Lewati (tidak ada): public/' + rel); continue; }
+  const dest = path.join(DOCS, rel);
+  let content = fs.readFileSync(src, 'utf8');
+  if (/\.(html)$/.test(rel)) content = rewriteForPages(content);
+  fs.writeFileSync(dest, content);
+  mirrorCount++;
+}
+console.log('[build] Mirror public/ -> docs/ selesai (' + mirrorCount + ' file, path relatif)');
+
 console.log('\n[build] ✅ Done! docs/ folder is ready for GitHub Pages.');
 console.log('[build] Push to GitHub and publish GitHub Pages from the main branch /docs folder.');

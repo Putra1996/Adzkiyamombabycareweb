@@ -176,11 +176,20 @@ async function init() {
     if (waBtnTop) { waBtnTop.disabled = true; waBtnTop.style.opacity = 0.35; }
     return;
   }
-  // Prefer the token (HMAC-signed) — fall back to ?id (legacy from
-  // earlier deploys) by calling the auth-free endpoint with id.
-  let url;
-  if (token) url = '/api/public/receipt/' + encodeURIComponent(token);
-  else { url = '/api/public/receipt/by-id/' + encodeURIComponent(id); }
+  // Hanya token HMAC yang didukung. Link lama berformat ?id=<angka>
+  // TIDAK dipakai lagi: endpoint by-id sudah tidak ada di server (dan
+  // memang tidak boleh ada — ID berurutan bisa dienumerasi orang lain
+  // untuk membaca kwitansi bukan miliknya). Jadi tampilkan pesan yang
+  // jelas + tombol minta link baru, bukan error 404 yang membingungkan.
+  if (!token) {
+    panel.querySelector('#statusIcon').textContent = '🔗';
+    document.getElementById('statusText').textContent = window.t('share.error_invalid') || 'Link kwitansi tidak valid';
+    detail.textContent = 'Link lama (format ?id=) sudah tidak didukung. Silakan minta admin mengirim ulang link kwitansi yang baru.';
+    if (printBtnTop) { printBtnTop.disabled = true; printBtnTop.style.opacity = 0.35; }
+    if (waBtnTop) { waBtnTop.disabled = true; waBtnTop.style.opacity = 0.35; }
+    return;
+  }
+  const url = '/api/public/receipt/' + encodeURIComponent(token);
   try {
     const res = await fetch(url);
     const data = await res.json().catch(() => ({}));
