@@ -43,6 +43,14 @@ Yang boleh publik hanya: katalog layanan, profil usaha, jam buka, tesimoni, reke
 - Tanda tangan pemilik tidak lagi punya endpoint publik (mencegah pemalsuan kwitansi);
   hanya bisa diambil dengan token admin, atau tampil inline di kwitansi milik pasien.
 
+**Backup & pemulihan data**
+- Backup bisa diunduh terenkripsi (AES-256-GCM, kunci dari scrypt + passphrase admin) sehingga file
+  yang tersimpan di cloud/USB tidak bisa dibaca orang lain. Restore menolak passphrase salah
+  (tag GCM) dan menolak file yang diubah.
+- Server mendeteksi sendiri kalau database tidak bisa dihubungi, menampilkan banner + kartu status,
+  mengecek ulang koneksi tiap menit, dan menyediakan tombol sinkronisasi yang **menggabungkan**
+  data darurat ke database (tanpa menimpa data lama, tanpa menyentuh pengaturan aplikasi).
+
 **Privasi di log & header**
 - Log webhook WhatsApp hanya menulis nomor bertopeng (`6281****6789`) + panjang pesan — tanpa isi pesan.
 - `/health` menyamarkan kredensial/nama user/host database.
@@ -72,17 +80,35 @@ Yang boleh publik hanya: katalog layanan, profil usaha, jam buka, tesimoni, reke
 1. **Ganti password admin sekarang.** Riwayat commit repo pernah memuat hash password bawaan
    (`admin123`). Hash itu masih tersimpan di riwayat Git publik, jadi password lama harus dianggap bocor.
    → Panel admin → **Pengaturan → Profil → Password Baru** (min. 10 karakter). Semua sesi lama otomatis logout.
-2. **Pastikan database tersambung.** Buka `/health`:
-   - `"storage":"postgres","db_connected":true` = aman.
-   - `"db_connected":false` = data HANYA tersimpan sementara di container dan **hilang saat deploy**.
-     Perbaiki `DATABASE_URL` (Neon) lalu redeploy.
+2. **Pastikan database tersambung.** Buka panel admin → **Pengaturan → 🗄️ Status Penyimpanan**
+   (atau `/health`):
+   - `db_connected: true` → aman, data tersimpan di database.
+   - `db_connected: false` → **MODE DARURAT**: data baru HANYA ada di file container dan hilang saat deploy.
+
+   **Prosedur pemulihan bila muncul mode darurat (URUTANNYA PENTING):**
+   1. Buka **Backup & Restore** → isi passphrase → **🔐 Download Backup Terenkripsi**.
+      (Wajib lebih dulu: memperbaiki env var di Railway memicu redeploy yang menghapus file darurat.)
+   2. Perbaiki `DATABASE_URL` di Railway (atau status Neon) lalu redeploy.
+   3. Buka **Backup & Restore** → pilih file tadi → **Restore** (mode *Append*) → masukkan passphrase.
+   4. Cek **Status Penyimpanan** sampai hijau (`db_connected: true`).
+
+   Kalau database kembali normal **tanpa redeploy**, cukup klik
+   **⬆️ Sinkronkan Data Darurat ke Database** di kartu Status Penyimpanan — proses ini
+   *menggabungkan* (bukan menimpa) data darurat ke isi database, dan pengaturan aplikasi
+   sengaja tidak ikut disalin agar konfigurasi yang sudah benar di database tidak tertimpa.
 3. **Isi `ALLOWED_ORIGINS`** di Railway (mis. `https://adzkiyamombabycareweb-production.up.railway.app,https://putra1996.github.io`)
    atau biarkan kosong — default hanya origin GitHub Pages repo ini yang diizinkan.
 4. **Aktifkan App Secret WhatsApp** (Meta → Settings → Basic → App Secret) lalu isikan di
    Pengaturan → AI Assistant → App Secret, supaya webhook tidak bisa dipalsukan orang lain.
-5. **Jangan bagikan** file backup JSON (`Pengaturan → Backup`) — isinya seluruh data pasien (nama, alamat,
-   nomor WhatsApp, riwayat layanan) tanpa enkripsi. Simpan di tempat aman, dan hapus file lama setelah
-   tidak diperlukan. Yang **tidak** ikut di file backup (harus diisi ulang setelah restore):
+   Setelah itu klik **🔍 Tes Koneksi WhatsApp** di panel yang sama: muncul checklist berisi
+   status tiap kredensial, hasil tes langsung ke Meta (nomor WhatsApp mana yang terhubung),
+   dan URL webhook yang benar untuk di-paste ke Meta.
+5. **Pakai backup TERENKRIPSI** (menu **Backup & Restore** → isi passphrase →
+   **🔐 Download Backup Terenkripsi**). Isi file tidak bisa dibaca tanpa passphrase (AES-256-GCM + scrypt),
+   jadi aman disimpan di cloud/USB. Simpan passphrase di tempat terpisah — **file tidak bisa dipulihkan
+   bila passphrase hilang**. Tombol "JSON polos" hanya untuk keperluan teknis (isinya teks biasa berisi
+   seluruh data pasien) — pakai sesedikit mungkin dan jangan pernah dikirim lewat WhatsApp/email.
+   Yang **tidak** ikut di file backup mana pun (harus diisi ulang setelah restore):
    kunci AI, token WhatsApp, App Secret, token verifikasi webhook, gambar tanda tangan pemilik,
    log percakapan AI, dan foto bukti transfer.
 6. **Rotasi kunci AI** (`Gemini`/`OpenRouter`) bila pernah dikirim lewat chat/screenshot.

@@ -199,8 +199,9 @@ async function checkStorageHealth() {
     banner.id = 'storageWarningBanner';
     banner.style.cssText = 'position:sticky;top:0;z-index:9999;background:#b91c1c;color:white;padding:12px 16px;font-size:0.88rem;line-height:1.5;font-weight:600;';
     banner.innerHTML = '⚠️ <strong>Mode darurat (file):</strong> server tidak bisa terhubung ke database (' +
-      esc(h.configured_storage || 'db') + '), jadi semua data baru HANYA tersimpan sementara dan bisa hilang saat deploy berikutnya. ' +
-      'Perbaiki <code>DATABASE_URL</code> / status database lalu redeploy.' +
+      esc(h.configured_storage || 'db') + '), jadi semua data baru HANYA tersimpan sementara dan akan hilang pada deploy berikutnya. ' +
+      '<strong>Sebelum memperbaiki DATABASE_URL: unduh dulu backup terenkripsi di menu Backup &amp; Restore.</strong> ' +
+      'Detail langkah ada di Pengaturan → 🗄️ Status Penyimpanan.' +
       (h.db_error ? '<br><small style="font-weight:500;opacity:0.9;">Penyebab: ' + esc(h.db_error) + '</small>' : '') +
       '<button type="button" onclick="this.parentElement.remove()" style="float:right;background:none;border:none;color:white;font-size:1.1rem;cursor:pointer;font-weight:700;">×</button>';
     document.body.insertBefore(banner, document.body.firstChild);
@@ -3868,16 +3869,35 @@ async function renderBackup() {
   const c = document.getElementById('pageContent');
   c.innerHTML = `
     <div class="admin-header"><h1>💾 Backup & Restore</h1></div>
+    <div style="padding:14px 16px;background:#fff5f5;border:1.5px solid #f0b4b4;border-radius:12px;margin-bottom:16px;font-size:0.88rem;line-height:1.6;">
+      🔒 <strong>Backup berisi data pribadi pasien</strong> (nama, alamat, nomor WhatsApp, riwayat layanan).
+      Unduh versi <strong>terenkripsi</strong> (butuh passphrase), simpan di tempat aman, dan
+      <strong>jangan pernah mengirimkannya lewat WhatsApp/email tanpa enkripsi</strong>.
+    </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;" id="bkGrid">
-      <div class="feature">
-        <div class="icn">📤</div><h3>Backup Offline (JSON)</h3>
-        <p>Download seluruh data reservasi, kwitansi, & pengaturan.</p>
-        <button onclick="doBackup()" class="btn btn-primary" style="margin-top:16px;">📥 Download Backup</button>
+      <div class="feature" style="border:2px solid #7c3aed;">
+        <div class="icn">🔐</div><h3>Backup Terenkripsi (disarankan)</h3>
+        <p>Isi file tidak bisa dibaca tanpa passphrase. Simpan passphrase di tempat terpisah —
+           file ini <strong>tidak bisa</strong> dipulihkan kalau passphrase hilang.</p>
+        <div class="form-group" style="margin-top:12px;">
+          <label style="font-size:0.85rem;font-weight:600;">Passphrase (min. 8 karakter)</label>
+          <input type="password" id="bkPassphrase" placeholder="cth: kwitansi-adzkiya-2026-rahasia" style="font-family:monospace;font-size:0.88rem;" autocomplete="new-password">
+          <div style="display:flex;gap:6px;margin-top:6px;">
+            <button type="button" class="btn-sm btn-outline" onclick="generateBackupPassphrase()" style="font-size:0.78rem;">🎲 Buat passphrase kuat</button>
+            <button type="button" class="btn-sm btn-outline" onclick="toggleBackupPassphrase()" style="font-size:0.78rem;">👁️ Lihat</button>
+          </div>
+        </div>
+        <button onclick="doBackupEncrypted()" class="btn btn-primary" style="margin-top:12px;">🔐 Download Backup Terenkripsi</button>
+        <details style="margin-top:12px;">
+          <summary style="cursor:pointer;font-size:0.82rem;color:var(--text-soft);">JSON polos (untuk dibaca manual — tidak disarankan)</summary>
+          <button onclick="doBackupPlain()" class="btn btn-outline" style="margin-top:8px;">📥 Download JSON Polos</button>
+        </details>
       </div>
       <div class="feature">
-        <div class="icn">📥</div><h3>Restore dari JSON</h3>
-        <p>Upload file backup untuk memulihkan data.</p>
-        <input type="file" id="restoreFile" accept="application/json" style="margin-top:14px;">
+        <div class="icn">📥</div><h3>Restore dari backup</h3>
+        <p>Mendukung file backup terenkripsi (🔐) maupun JSON polos. Untuk file terenkripsi,
+           passphrase akan diminta setelah file dipilih.</p>
+        <input type="file" id="restoreFile" accept="application/json,.json" style="margin-top:14px;">
         <div style="margin-top:10px;">
           <label><input type="radio" name="restoreMode" value="append" checked> Append (tambah)</label><br>
           <label><input type="radio" name="restoreMode" value="replace"> Replace (ganti semua)</label>
@@ -3889,11 +3909,62 @@ async function renderBackup() {
   `;
 }
 
-async function doBackup() {
-  const data = await api('/api/admin/backup');
-  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-  const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
-  a.download = `adzkiya-backup-${localTodayStr()}.json`; a.click();
+// Passphrase kuat yang mudah diketik ulang (4 kata + angka).
+function generateBackupPassphrase() {
+  const words = ['mawar', 'melati', 'anggrek', 'kenanga', 'bunda', 'bayi', 'sehat', 'ceria', 'adzkiya', 'cilacap', 'senja', 'pagi'];
+  const pick = () => words[Math.floor(Math.random() * words.length)];
+  const value = `${pick()}-${pick()}-${pick()}-${Math.floor(1000 + Math.random() * 9000)}`;
+  const el = document.getElementById('bkPassphrase');
+  el.type = 'text';
+  el.value = value;
+  el.select();
+  try { navigator.clipboard.writeText(value); } catch {}
+  alert('Passphrase dibuat & sudah disalin ke clipboard:\n\n' + value +
+    '\n\nSIMPAN di tempat aman (catatan/password manager). Tanpa passphrase ini, file backup tidak bisa dibuka.');
+}
+
+function toggleBackupPassphrase() {
+  const el = document.getElementById('bkPassphrase');
+  el.type = el.type === 'password' ? 'text' : 'password';
+}
+
+function downloadJson(obj, filename) {
+  const blob = new Blob([JSON.stringify(obj, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+}
+
+async function doBackupEncrypted() {
+  const el = document.getElementById('bkPassphrase');
+  const passphrase = (el && el.value || '').trim();
+  if (passphrase.length < 8) {
+    alert('Passphrase minimal 8 karakter. Klik "🎲 Buat passphrase kuat" kalau bingung.');
+    el && el.focus();
+    return;
+  }
+  try {
+    const envelope = await api('/api/admin/backup/encrypted', {
+      method: 'POST',
+      body: JSON.stringify({ passphrase })
+    });
+    downloadJson(envelope, `adzkiya-backup-enc-${localTodayStr()}.json`);
+    alert('✅ Backup terenkripsi terunduh.\n\nJangan lupa: file ini hanya bisa dipulihkan dengan passphrase yang tadi diisi.');
+  } catch (e) {
+    alert('Gagal membuat backup terenkripsi: ' + e.message);
+  }
+}
+
+async function doBackupPlain() {
+  if (!confirm('File JSON polos berisi SELURUH data pasien dalam bentuk teks biasa.\n\nSiapa pun yang mendapatkan file ini bisa membaca semuanya. Tetap unduh?')) return;
+  try {
+    const data = await api('/api/admin/backup');
+    downloadJson(data, `adzkiya-backup-plain-${localTodayStr()}.json`);
+  } catch (e) {
+    alert('Gagal membuat backup: ' + e.message);
+  }
 }
 
 async function doRestore() {
@@ -3904,8 +3975,18 @@ async function doRestore() {
   const text = await f.text();
   let data;
   try { data = JSON.parse(text); } catch { return alert('File tidak valid'); }
+
+  // Backup terenkripsi: minta passphrase sebelum dikirim ke server.
+  let passphrase;
+  if (data && data.format === 'adzkiya-backup-enc-v1') {
+    const info = data.meta && data.meta.counts ? `\n\nIsi: ${data.meta.counts.reservations || 0} reservasi, ${data.meta.counts.receipts || 0} kwitansi.` : '';
+    passphrase = prompt('File backup TERENKRIPSI. Masukkan passphrase:' + info);
+    if (passphrase === null) return;
+    if (!passphrase) return alert('Passphrase wajib diisi untuk membuka backup terenkripsi.');
+  }
+
   try {
-    const res = await api('/api/admin/restore', { method: 'POST', body: JSON.stringify({ ...data, mode, sync_reservations: true }) });
+    const res = await api('/api/admin/restore', { method: 'POST', body: JSON.stringify({ ...data, passphrase, mode, sync_reservations: true }) });
     const i = res.imported || {};
     let msg = `✅ Restore selesai (mode: ${res.mode})\n\n` +
               `Reservasi: ${i.reservations} masuk, ${i.reservations_skipped || 0} dilewati\n` +
@@ -4164,6 +4245,15 @@ async function renderSettings() {
         </div>
       </div>
 
+      <div class="setting-card" id="storageStatusCard">
+        <h3 style="display:flex;align-items:center;gap:8px;">🗄️ Status Penyimpanan Data</h3>
+        <div id="storageStatusBody" style="font-size:0.88rem;color:var(--text-soft);line-height:1.6;">Memuat status…</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;">
+          <button type="button" class="btn-sm btn-outline" onclick="loadStorageStatus(true)">🔄 Cek Ulang</button>
+          <button type="button" class="btn-sm" id="storageSyncBtn" onclick="syncStorageToDb()" style="display:none;background:#b45309;color:white;border:none;font-weight:700;">⬆️ Sinkronkan Data Darurat ke Database</button>
+        </div>
+      </div>
+
       ${USER && !USER.password_changed_at ? `
       <div class="setting-card" style="border:2px solid #b91c1c;background:#fff5f5;">
         <h3 style="color:#b91c1c;">🔐 Ganti Password &mdash; Belum Pernah Diganti</h3>
@@ -4246,10 +4336,12 @@ async function renderSettings() {
         </div>
 
         <!-- Save button -->
-        <div style="display:flex;gap:8px;align-items:center;margin-top:12px;">
+        <div style="display:flex;gap:8px;align-items:center;margin-top:12px;flex-wrap:wrap;">
           <button type="button" id="aiAssistantSaveBtn" class="btn btn-primary" style="flex:1;justify-content:center;padding:10px 16px;background:#7c3aed;">💾 Simpan Konfigurasi AI</button>
+          <button type="button" id="aiAssistantDiagBtn" class="btn btn-outline" style="padding:10px 14px;">🔍 Tes Koneksi WhatsApp</button>
           <button type="button" id="aiAssistantLogsBtn" class="btn btn-outline" style="padding:10px 14px;">📋 Log Percakapan</button>
         </div>
+        <div id="aiAssistantDiagnostics" style="margin-top:12px;"></div>
         <div id="aiAssistantFeedback" style="margin-top:10px;font-size:0.84rem;"></div>
       </div>
 
@@ -4272,6 +4364,9 @@ async function renderSettings() {
   renderSocials();
   renderTestimonials();
   renderBlackouts();
+  // Status penyimpanan (file vs database) — penting supaya admin tahu
+  // kalau data sedang hanya tersimpan sementara.
+  loadStorageStatus();
   // Tanda tangan pemilik: preview diisi belakangan lewat endpoint ber-token
   // (gambar tidak lagi bisa diambil publik tanpa izin).
   (async () => {
@@ -4282,6 +4377,97 @@ async function renderSettings() {
   })();
   // Phase 3: AI Assistant settings
   wireAIAssistantSettings();
+}
+
+// ---------- STATUS PENYIMPANAN ----------
+// Menjawab satu pertanyaan penting: "data saya sedang disimpan di mana?"
+// Kalau server tidak bisa menghubungi database, semua tulisan hanya masuk
+// file container dan akan hilang pada deploy berikutnya — admin harus
+// melihat itu di depan mata, bukan menemukannya setelah data lenyap.
+async function loadStorageStatus(showAlert) {
+  const body = document.getElementById('storageStatusBody');
+  const syncBtn = document.getElementById('storageSyncBtn');
+  if (!body) return;
+  try {
+    const st = await api('/api/admin/storage/status');
+    const live = st.live_counts || {};
+    const db = st.db_counts;
+    let html = '';
+    if (st.active_storage === 'file' && st.configured_storage === 'file') {
+      html += '<div style="padding:10px 12px;background:#fff7ed;border:1.5px solid #fdba74;border-radius:10px;color:#7c2d12;font-weight:600;">'
+        + '📁 Mode file (DATABASE_URL belum diset)<br><span style="font-weight:500;">Data ikut ter-reset saat deploy. Set DATABASE_URL di Railway agar permanen.</span></div>';
+    } else if (st.db_connected) {
+      html += '<div style="padding:10px 12px;background:#ecfdf5;border:1.5px solid #6ee7b7;border-radius:10px;color:#065f46;font-weight:600;">'
+        + '✅ Tersimpan di <strong>' + esc(st.configured_storage) + '</strong> — database terhubung.<br>'
+        + '<span style="font-weight:500;">Reservasi ' + (live.reservations || 0) + ' · Kwitansi ' + (live.receipts || 0) + ' · Pengeluaran ' + (live.expenses || 0) + '</span></div>';
+    } else {
+      html += '<div style="padding:10px 12px;background:#fef2f2;border:1.5px solid #fca5a5;border-radius:10px;color:#7f1d1d;">'
+        + '<strong>⚠️ MODE DARURAT — data hanya di file sementara</strong><br>'
+        + '<span>Database <strong>' + esc(st.configured_storage) + '</strong> tidak bisa dihubungi'
+        + (st.db_error ? ': <code>' + esc(st.db_error) + '</code>' : '') + '</span><br>'
+        + '<span>Data darurat sekarang: ' + (live.reservations || 0) + ' reservasi · ' + (live.receipts || 0) + ' kwitansi · ' + (live.expenses || 0) + ' pengeluaran.</span></div>';
+      // Langkah pemulihan berbeda tergantung apakah database sudah bisa
+      // dihubungi lagi ATAU admin harus memperbaiki DATABASE_URL.
+      if (st.db_reachable) {
+        html += '<div style="padding:10px 12px;background:#fffbeb;border:1.5px solid #fcd34d;border-radius:10px;color:#78350f;margin-top:8px;">'
+          + '✅ Database sekarang <strong>sudah bisa dihubungi</strong> — klik <strong>⬆️ Sinkronkan Data Darurat ke Database</strong> di bawah '
+          + 'untuk memindahkan data di atas TANPA redeploy. (Jangan redeploy dulu: redeploy akan menghapus file darurat ini.)</div>';
+      } else {
+        html += '<div style="padding:10px 12px;background:#fef2f2;border:1.5px solid #b91c1c;border-radius:10px;color:#7f1d1d;margin-top:8px;">'
+          + '<strong>🔴 LANGKAH WAJIB SEBELUM MEMPERBAIKI DATABASE_URL:</strong>'
+          + '<ol style="margin:8px 0 0 18px;padding:0;line-height:1.7;">'
+          + '<li>Buka menu <strong>Backup &amp; Restore</strong> → isi passphrase → <strong>🔐 Download Backup Terenkripsi</strong>.</li>'
+          + '<li>Baru perbaiki <code>DATABASE_URL</code> di Railway lalu redeploy.</li>'
+          + '<li>Setelah server hidup dengan database, buka <strong>Backup &amp; Restore</strong> → pilih file tadi → <strong>Restore</strong> (mode <em>Append</em>) → masukkan passphrase.</li>'
+          + '</ol>'
+          + '<div style="margin-top:6px;">Memperbaiki env var di Railway memicu redeploy, dan redeploy <strong>menghapus</strong> file darurat ini — data akan hilang permanen kalau belum dibackup.</div></div>';
+      }
+    }
+    if (typeof db !== 'undefined' && db) {
+      html += '<div style="margin-top:8px;font-size:0.84rem;">Isi database saat ini: '
+        + (db.reservations || 0) + ' reservasi · ' + (db.receipts || 0) + ' kwitansi · ' + (db.expenses || 0) + ' pengeluaran. '
+        + 'Sinkronisasi akan <strong>menggabungkan</strong> (bukan menimpa) data darurat ke atas data ini.</div>';
+    }
+    if (st.can_sync) {
+      html += '<div style="margin-top:8px;font-size:0.84rem;">Pengaturan aplikasi (nama usaha, rekening, TTD, kunci AI) <strong>tidak</strong> ikut disalin — supaya konfigurasi yang sudah benar di database tidak tertimpa. Isi ulang lewat panel ini setelah pindah.</div>';
+    }
+    body.innerHTML = html;
+    if (syncBtn) syncBtn.style.display = st.can_sync ? 'inline-block' : 'none';
+    if (showAlert) alert('Status penyimpanan diperbarui.');
+  } catch (e) {
+    body.innerHTML = '<div class="alert alert-error">Gagal memuat status: ' + esc(e.message) + '</div>';
+  }
+}
+
+async function syncStorageToDb() {
+  const typed = prompt(
+    'Pindahkan data darurat (yang sekarang hanya ada di file sementara) ke database.\n\n' +
+    'Data akan DIGABUNG dengan isi database (tidak menimpa). Pengaturan aplikasi tidak ikut disalin.\n\n' +
+    'Ketik SINKRON untuk melanjutkan:'
+  );
+  if (typed === null) return;
+  if (typed.trim().toUpperCase() !== 'SINKRON') return alert('Dibatalkan — kata konfirmasi tidak cocok.');
+  const btn = document.getElementById('storageSyncBtn');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Menyinkronkan…'; }
+  try {
+    const res = await api('/api/admin/storage/sync-to-db', {
+      method: 'POST',
+      body: JSON.stringify({ confirm: 'SINKRON' })
+    });
+    const r = res.report || {};
+    alert('✅ ' + (res.message || 'Sinkronisasi selesai.') + '\n\n' +
+      'Ditambahkan: ' + (r.reservations_added || 0) + ' reservasi, ' + (r.receipts_added || 0) + ' kwitansi, ' +
+      (r.expenses_added || 0) + ' pengeluaran, ' + (r.broadcasts_added || 0) + ' broadcast.\n' +
+      'Total di database: ' + ((r.db_after && r.db_after.reservations) || 0) + ' reservasi · ' +
+      ((r.db_after && r.db_after.receipts) || 0) + ' kwitansi.');
+    // Muat ulang tampilan supaya angka yang tampil sesuai isi database.
+    await loadCache();
+    renderSettings();
+  } catch (e) {
+    alert('Gagal sinkron: ' + e.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '⬆️ Sinkronkan Data Darurat ke Database'; }
+  }
 }
 
 // Wire up AI Assistant settings panel — called after renderSettings.
@@ -4295,6 +4481,8 @@ async function wireAIAssistantSettings() {
   const accessTokenEl = document.getElementById('aiWaAccessToken');
   const verifyTokenEl = document.getElementById('aiWaVerifyToken');
   const appSecretEl = document.getElementById('aiWaAppSecret');
+  const diagBtn = document.getElementById('aiAssistantDiagBtn');
+  const diagBox = document.getElementById('aiAssistantDiagnostics');
   const basePromptEl = document.getElementById('aiBasePrompt');
   const webhookUrlInput = document.getElementById('aiWebhookUrl');
   const saveBtn = document.getElementById('aiAssistantSaveBtn');
@@ -4324,9 +4512,11 @@ async function wireAIAssistantSettings() {
     phoneIdEl.placeholder = cfg.has_wa_phone_id ? '•••••••• (set)' : '123456789012345';
     accessTokenEl.placeholder = cfg.has_wa_token ? '•••••••• (set)' : 'EAAxxxxxxx...';
     if (appSecretEl) appSecretEl.placeholder = cfg.has_app_secret ? '•••••••• (set, kosongkan untuk tetap)' : 'App Secret dari Meta';
-    // Webhook URL = the API base + /api/webhook/whatsapp
-    const base = (window.API_BASE || (window.location.origin + (window.location.pathname.indexOf('/Adzkiyamombabycareweb') >= 0 ? '/Adzkiyamombabycareweb' : '')));
-    webhookUrlInput.value = (base || '') + '/api/webhook/whatsapp';
+    // URL webhook diambil dari SERVER (absolut, berdasarkan host yang
+    // melayani request). Menebak dari window.location berbahaya: kalau
+    // panel dibuka dari cermin GitHub Pages, admin akan menyalin URL
+    // GitHub ke Meta dan auto-reply tidak pernah jalan.
+    webhookUrlInput.value = cfg.webhook_url || (apiUrl('/api/webhook/whatsapp'));
   } catch (e) {
     console.error('AI config fetch failed:', e);
   }
@@ -4365,6 +4555,45 @@ async function wireAIAssistantSettings() {
     } catch (e) {
       feedback.textContent = '❌ Gagal menyimpan: ' + e.message;
       feedback.style.color = '#c43050';
+    }
+  };
+
+  if (diagBtn) diagBtn.onclick = async () => {
+    diagBtn.disabled = true;
+    const original = diagBtn.textContent;
+    diagBtn.textContent = '⏳ Menguji…';
+    diagBox.innerHTML = '';
+    try {
+      const d = await api('/api/admin/ai/diagnostics');
+      const rows = (d.checklist || []).map((c) => `
+        <div style="display:flex;gap:8px;align-items:flex-start;padding:8px 10px;border-radius:8px;background:${c.ok ? '#ecfdf5' : '#fff7ed'};margin-bottom:6px;">
+          <span style="flex-shrink:0;">${c.ok ? '✅' : '⚠️'}</span>
+          <span style="font-size:0.84rem;line-height:1.5;${c.ok ? 'color:#065f46;' : 'color:#7c2d12;'}">
+            <strong>${esc(c.label)}</strong><br><span style="opacity:0.85;">${esc(c.hint || '')}</span>
+          </span>
+        </div>`).join('');
+      const graphLine = d.graph && d.graph.checked
+        ? `<div style="font-size:0.82rem;margin-top:6px;color:${d.graph.ok ? '#065f46' : '#b91c1c'};">
+             ${d.graph.ok
+               ? '📱 Terhubung ke nomor <strong>' + esc(d.graph.display_phone_number || '?') + '</strong>' + (d.graph.verified_name ? ' (' + esc(d.graph.verified_name) + ')' : '')
+               : '❌ Meta menolak kredensial: <code>' + esc(d.graph.error || 'tidak diketahui') + '</code>'}
+           </div>`
+        : '';
+      diagBox.innerHTML = `
+        <div style="padding:12px;border:1.5px solid var(--border);border-radius:12px;background:var(--card);">
+          <div style="font-weight:700;margin-bottom:8px;">🔍 Hasil Tes Koneksi WhatsApp</div>
+          ${rows}
+          ${graphLine}
+          <div style="font-size:0.8rem;color:var(--text-soft);margin-top:8px;line-height:1.5;">
+            📍 URL webhook untuk Meta: <code style="word-break:break-all;">${esc(d.webhook_url || '')}</code><br>
+            🔐 Signature webhook: ${d.signature_enforced ? 'aktif (App Secret terisi)' : 'belum aktif — isi App Secret supaya pesan palsu ditolak'}
+          </div>
+        </div>`;
+    } catch (e) {
+      diagBox.innerHTML = '<div class="alert alert-error">Gagal menguji koneksi: ' + esc(e.message) + '</div>';
+    } finally {
+      diagBtn.disabled = false;
+      diagBtn.textContent = original;
     }
   };
 

@@ -143,6 +143,8 @@ test('API menyimpan reservasi, menghitung harga server, dan melindungi admin', {
       '/api/admin/expenses',
       '/api/admin/broadcasts',
       '/api/admin/whatsapp/templates',
+      '/api/admin/storage/status',
+      '/api/admin/ai/diagnostics',
       '/api/proof/1'
     ];
     for (const path of protectedGets) {
@@ -250,6 +252,93 @@ test('API menyimpan reservasi, menghitung harga server, dan melindungi admin', {
 
     // Login response juga tidak boleh memuat hash.
     assert.ok(!JSON.stringify(login).includes('password_hash'), 'hash password ikut terkirim saat login');
+
+    // ------------------------------------------------------------------
+    // BACKUP: harus terenkripsi (tidak ada PII dalam bentuk teks polos),
+    // tahan passphrase salah, dan bisa dipulihkan dengan passphrase benar.
+    // ------------------------------------------------------------------
+    const passphrase = 'passphrase-uji-yang-panjang';
+    const encRes = await fetch(`${baseUrl}/api/admin/backup/encrypted`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${login.token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ passphrase })
+    });
+    assert.equal(encRes.status, 200);
+    const envelope = await encRes.json();
+    assert.equal(envelope.format, 'adzkiya-backup-enc-v1');
+    assert.equal(envelope.cipher, 'aes-256-gcm');
+    assert.equal(envelope.kdf, 'scrypt');
+    const envelopeText = JSON.stringify(envelope);
+    for (const secret of ['Bunda Rahasia', 'Alamat rahasia', '081200000000', 'INV-']) {
+      assert.ok(!envelopeText.includes(secret), `backup terenkripsi masih memuat "${secret}" polos`);
+    }
+
+    const shortPass = await fetch(`${baseUrl}/api/admin/backup/encrypted`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${login.token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ passphrase: 'abc' })
+    });
+    assert.equal(shortPass.status, 400, 'passphrase terlalu pendek harus ditolak');
+
+    const wrongPass = await fetch(`${baseUrl}/api/admin/restore`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${login.token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...envelope, passphrase: 'passphrase-salah-sekali', mode: 'append' })
+    });
+    assert.equal(wrongPass.status, 400, 'backup terenkripsi terbuka dengan passphrase salah');
+
+    const rightPass = await fetch(`${baseUrl}/api/admin/restore`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${login.token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...envelope, passphrase, mode: 'append', sync_reservations: false })
+    });
+    assert.equal(rightPass.status, 200, 'restore dengan passphrase benar gagal');
+
+    // Backup juga tidak boleh bocor tanpa token.
+    const encNoAuth = await fetch(`${baseUrl}/api/admin/backup/encrypted`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ passphrase })
+    });
+    assert.equal(encNoAuth.status, 401, 'backup terenkripsi bisa dibuat tanpa token');
+
+    // ------------------------------------------------------------------
+    // STORAGE: status hanya untuk admin, dan sinkronisasi wajib konfirmasi.
+    // ------------------------------------------------------------------
+    const storageStatus = await (await fetch(`${baseUrl}/api/admin/storage/status`, {
+      headers: { Authorization: `Bearer ${login.token}` }
+    })).json();
+    assert.equal(storageStatus.configured_storage, 'file', 'tes ini berjalan di mode file');
+    assert.equal(storageStatus.active_storage, 'file');
+    assert.equal(storageStatus.can_sync, false);
+
+    const syncNoConfirm = await fetch(`${baseUrl}/api/admin/storage/sync-to-db`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${login.token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({})
+    });
+    assert.equal(syncNoConfirm.status, 400, 'sinkronisasi tanpa konfirmasi dijalankan');
+    const syncInFileMode = await fetch(`${baseUrl}/api/admin/storage/sync-to-db`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${login.token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ confirm: 'SINKRON' })
+    });
+    assert.equal(syncInFileMode.status, 400, 'sinkronisasi di mode file seharusnya ditolak');
+
+    // ------------------------------------------------------------------
+    // DIAGNOSA AI/WHATSAPP: hanya admin, tanpa membocorkan kredensial.
+    // ------------------------------------------------------------------
+    const diagRes = await fetch(`${baseUrl}/api/admin/ai/diagnostics`, {
+      headers: { Authorization: `Bearer ${login.token}` }
+    });
+    assert.equal(diagRes.status, 200);
+    const diag = await diagRes.json();
+    assert.ok(Array.isArray(diag.checklist) && diag.checklist.length >= 5, 'checklist diagnosa kosong');
+    assert.ok(/^https?:\/\//.test(diag.webhook_url), 'URL webhook harus absolut');
+    assert.ok(!/AIza|sk-or-v1|EAA[A-Za-z0-9]{10,}/.test(JSON.stringify(diag)), 'diagnosa membocorkan kredensial');
+
+    const cfgRes = await (await fetch(`${baseUrl}/api/admin/ai/config`, {
+      headers: { Authorization: `Bearer ${login.token}` }
+    })).json();
+    assert.ok(/^https?:\/\//.test(cfgRes.webhook_url), 'config webhook_url harus absolut');
 
     // Non-admin tidak bisa menembus lewat metode selain GET.
     for (const [method, path] of [['PUT', '/api/admin/settings'], ['DELETE', '/api/admin/receipts'], ['POST', '/api/admin/restore']]) {

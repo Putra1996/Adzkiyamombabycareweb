@@ -6,6 +6,9 @@ const express = require('express');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
+// Modul crypto di-require eksplisit: Node >=19 punya global `crypto`
+// versi Web Crypto yang TIDAK punya randomBytes/createCipheriv.
+const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const ExcelJS = require('exceljs');
@@ -128,12 +131,216 @@ function sanitizeDbError(err) {
 let saveTimer = null;
 let saveChain = Promise.resolve();
 
-function normalizeState() {
-  DB._seq = DB._seq || { admins: 0, reservations: 0, receipts: 0, broadcasts: 0, expenses: 0 };
-  ['admins', 'reservations', 'receipts', 'broadcasts', 'expenses'].forEach((key) => { DB[key] = DB[key] || []; });
+function normalizeStateObject(state) {
+  const out = state && typeof state === 'object' ? state : {};
+  out._seq = out._seq || { admins: 0, reservations: 0, receipts: 0, broadcasts: 0, expenses: 0 };
+  ['admins', 'reservations', 'receipts', 'broadcasts', 'expenses'].forEach((key) => { out[key] = Array.isArray(out[key]) ? out[key] : []; });
   // share_tokens is the persistent mirror of shareTokenMap. Older
   // data.json files won't have this key — initialize to {}.
-  DB.share_tokens = DB.share_tokens || {};
+  out.share_tokens = out.share_tokens && typeof out.share_tokens === 'object' ? out.share_tokens : {};
+  out.settings = out.settings && typeof out.settings === 'object' ? out.settings : null;
+  return out;
+}
+function normalizeState() {
+  normalizeStateObject(DB);
+}
+
+// ---- Deteksi & pemulihan koneksi database ----
+// Kondisi yang ditangani: server boot SAAT database tidak bisa dihubungi
+// (password Neon berubah, kuota habis, jaringan putus). Selama itu semua
+// tulisan hanya masuk file container — hilang setiap deploy. Dua hal yang
+// dilakukan di sini:
+//   1) probe berkala (1 menit) supaya status "database sudah bisa
+//      dihubungi lagi" diketahui tanpa redeploy,
+//   2) endpoint admin untuk MENGGABUNG data darurat ke database, karena
+//      berpindah storage otomatis akan membuang data salah satu sisi.
+let dbReachable = null; // null = belum pernah diprobe
+let dbProbeTimer = null;
+
+async function probeDatabase() {
+  if (DATABASE_KIND === 'file') return { ok: false, error: 'DATABASE_URL belum diset (mode file)' };
+  if (DATABASE_KIND === 'postgres') {
+    let testPool = null;
+    try {
+      testPool = new PostgresPool({
+        connectionString: DATABASE_URL,
+        ssl: IS_PRODUCTION ? { rejectUnauthorized: false } : undefined,
+        max: 1,
+        connectionTimeoutMillis: 8000
+      });
+      await testPool.query('SELECT 1');
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: sanitizeDbError(e) };
+    } finally {
+      if (testPool) { try { await testPool.end(); } catch {} }
+    }
+  }
+  if (DATABASE_KIND === 'mysql') {
+    let conn = null;
+    try {
+      conn = await mysql.createConnection(DATABASE_URL);
+      await conn.query('SELECT 1');
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: sanitizeDbError(e) };
+    } finally {
+      if (conn) { try { await conn.end(); } catch {} }
+    }
+  }
+  return { ok: false, error: 'Jenis database tidak dikenali' };
+}
+
+// Buka pool permanen + pastikan tabel app_state ada + baca state yang
+// tersimpan. Dipakai saat admin menyinkronkan data darurat ke database.
+async function openDbPoolAndReadState() {
+  if (DATABASE_KIND === 'postgres') {
+    const newPool = new PostgresPool({
+      connectionString: DATABASE_URL,
+      ssl: IS_PRODUCTION ? { rejectUnauthorized: false } : undefined,
+      max: 5,
+      idleTimeoutMillis: 30000,
+      connectionTimeoutMillis: 10000
+    });
+    await newPool.query('SELECT 1');
+    await newPool.query(`
+      CREATE TABLE IF NOT EXISTS app_state (
+        id INTEGER PRIMARY KEY,
+        data JSONB NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    const result = await newPool.query('SELECT data FROM app_state WHERE id = 1');
+    return { pool: newPool, state: result.rows.length ? result.rows[0].data : null };
+  }
+  if (DATABASE_KIND === 'mysql') {
+    const newPool = mysql.createPool(DATABASE_URL);
+    await newPool.execute(`
+      CREATE TABLE IF NOT EXISTS app_state (
+        id INT PRIMARY KEY,
+        data LONGTEXT NOT NULL,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+      )
+    `);
+    const [rows] = await newPool.execute('SELECT data FROM app_state WHERE id = 1');
+    let state = null;
+    if (rows.length) {
+      try { state = JSON.parse(rows[0].data); } catch { state = null; }
+    }
+    return { pool: newPool, state };
+  }
+  return { pool: null, state: null };
+}
+
+// Gabungkan data transaksional dari state "darurat" (file) ke state
+// database. SENGAJA tidak menyalin `settings`: state darurat dimulai dari
+// pengaturan bawaan saat boot, jadi menyalinnya bisa menimpa pengaturan
+// usaha yang sudah benar di database (nama, rekening, TTD, dsb).
+function mergeTransactionalState(dbStateInput, liveStateInput) {
+  const target = normalizeStateObject(JSON.parse(JSON.stringify(dbStateInput || {})));
+  const live = normalizeStateObject(JSON.parse(JSON.stringify(liveStateInput || {})));
+  const report = {
+    reservations_added: 0, receipts_added: 0, expenses_added: 0,
+    broadcasts_added: 0, expense_categories_copied: false,
+    db_before: {
+      reservations: target.reservations.length,
+      receipts: target.receipts.length,
+      expenses: target.expenses.length
+    },
+    live: {
+      reservations: live.reservations.length,
+      receipts: live.receipts.length,
+      expenses: live.expenses.length
+    }
+  };
+
+  // Kwitansi: kunci unik = invoice_no (kalau kosong pakai nama+tanggal).
+  const receiptKey = (k) => (k.invoice_no ? 'inv:' + k.invoice_no : 'nm:' + (k.patient_name || '') + '|' + (k.service_date || ''));
+  const receiptKeys = new Set(target.receipts.map(receiptKey));
+  for (const k of live.receipts) {
+    const key = receiptKey(k);
+    if (receiptKeys.has(key)) continue;
+    receiptKeys.add(key);
+    target.receipts.push(k);
+    report.receipts_added++;
+  }
+
+  // Reservasi: dedupe sama seperti /api/admin/restore (nama + tanggal +
+  // total dalam toleransi 1 rupiah).
+  const resKey = (r) => (r.patient_name || '') + '|' + (r.reservation_date || '') + '|' + Math.round(r.total || 0);
+  const resKeys = new Set(target.reservations.map(resKey));
+  for (const r of live.reservations) {
+    const key = resKey(r);
+    if (resKeys.has(key)) continue;
+    resKeys.add(key);
+    target.reservations.push(r);
+    report.reservations_added++;
+  }
+
+  // Pengeluaran: dedupe tanggal + kategori + jumlah + keterangan.
+  const expKey = (e) => (e.date || '') + '|' + (e.category || '') + '|' + (e.amount || 0) + '|' + (e.description || '');
+  const expKeys = new Set(target.expenses.map(expKey));
+  for (const e of live.expenses) {
+    const key = expKey(e);
+    if (expKeys.has(key)) continue;
+    expKeys.add(key);
+    target.expenses.push(e);
+    report.expenses_added++;
+  }
+
+  // Broadcast: riwayat kampanye WhatsApp.
+  const bcKey = (b) => (b.created_at || '') + '|' + (b.name || '') + '|' + (b.recipient_count || 0);
+  const bcKeys = new Set(target.broadcasts.map(bcKey));
+  for (const b of live.broadcasts) {
+    const key = bcKey(b);
+    if (bcKeys.has(key)) continue;
+    bcKeys.add(key);
+    target.broadcasts.push(b);
+    report.broadcasts_added++;
+  }
+
+  // Kategori pengeluaran & token kwitansi: hanya disalin kalau database
+  // belum punya (tidak menimpa apa pun).
+  if ((!target.expense_categories || !target.expense_categories.length) && live.expense_categories && live.expense_categories.length) {
+    target.expense_categories = live.expense_categories;
+    report.expense_categories_copied = true;
+  }
+  for (const [tok, val] of Object.entries(live.share_tokens || {})) {
+    if (!target.share_tokens[tok]) target.share_tokens[tok] = val;
+  }
+
+  // Perbaiki penomoran supaya ID berikutnya tidak bertabrakan.
+  const maxId = (arr) => arr.reduce((m, x) => Math.max(m, x && x.id ? x.id : 0), 0);
+  const liveSeq = live._seq || {};
+  target._seq.reservations = Math.max(target._seq.reservations || 0, liveSeq.reservations || 0, maxId(target.reservations));
+  target._seq.receipts = Math.max(target._seq.receipts || 0, liveSeq.receipts || 0, maxId(target.receipts));
+  target._seq.expenses = Math.max(target._seq.expenses || 0, liveSeq.expenses || 0, maxId(target.expenses));
+  target._seq.broadcasts = Math.max(target._seq.broadcasts || 0, liveSeq.broadcasts || 0, maxId(target.broadcasts));
+  target._seq.admins = Math.max(target._seq.admins || 0, liveSeq.admins || 0, maxId(target.admins));
+
+  report.db_after = {
+    reservations: target.reservations.length,
+    receipts: target.receipts.length,
+    expenses: target.expenses.length
+  };
+  return { state: target, report };
+}
+
+// Probe berkala: kalau database kembali bisa dihubungi, catat di status
+// (tidak otomatis memindahkan penyimpanan — lihat catatan di atas).
+function startDbRetryLoop() {
+  if (dbProbeTimer) return;
+  dbProbeTimer = setInterval(async () => {
+    if (pool || DATABASE_KIND === 'file') return;
+    const before = dbConnectError;
+    const result = await probeDatabase();
+    dbReachable = result.ok;
+    dbConnectError = result.ok ? null : result.error;
+    if (result.ok && before) {
+      console.log('[storage] ✅ Database kembali dapat dihubungi. Data darurat belum dipindahkan — gunakan Pengaturan → Status Penyimpanan → Sinkronkan.');
+    }
+  }, 60 * 1000);
+  if (dbProbeTimer.unref) dbProbeTimer.unref();
 }
 
 async function initStorage() {
@@ -210,6 +417,8 @@ async function initStorage() {
     console.warn(`[storage] ⚠️  DATABASE_URL (${DATABASE_KIND}) tidak bisa dihubungi saat boot — sementara pakai file.`);
     if (dbConnectError) console.warn(`[storage] ⚠️  Penyebab: ${dbConnectError}`);
   }
+  // Cek ulang tiap menit: outage sesaat tidak perlu redeploy manual.
+  if (DATABASE_KIND !== 'file' && !pool) startDbRetryLoop();
 }
 
 async function persistSnapshot(json) {
@@ -998,6 +1207,7 @@ app.get('/health', (req, res) => res.json({
   storage: pool ? DATABASE_KIND : 'file',
   configured_storage: DATABASE_KIND,
   db_connected: !!pool,
+  db_reachable: pool ? true : dbReachable,
   db_error: pool ? null : dbConnectError,
   data_file: DATABASE_KIND === 'file' ? path.basename(DATA_FILE) : null,
   time: new Date().toISOString(),
@@ -4097,44 +4307,266 @@ app.delete('/api/admin/settings/:kind', auth, (req, res) => {
   res.json({ ok: true });
 });
 
+// ===== ADMIN — STATUS & PEMULIHAN PENYIMPANAN =====
+// Panel admin memakai ini untuk melihat: storage mana yang AKTIF, apakah
+// database bisa dihubungi, dan berapa banyak data darurat yang belum
+// masuk database. Tanpa ini, satu-satunya cara sadar adalah melihat data
+// hilang setelah deploy berikutnya.
+app.get('/api/admin/storage/status', auth, async (req, res) => {
+  const payload = {
+    configured_storage: DATABASE_KIND,
+    active_storage: pool ? DATABASE_KIND : 'file',
+    db_connected: !!pool,
+    db_reachable: pool ? true : (dbReachable === null ? null : dbReachable),
+    db_error: pool ? null : dbConnectError,
+    data_file: DATABASE_KIND === 'file' || pool ? null : path.basename(DATA_FILE),
+    live_counts: {
+      reservations: DB.reservations.length,
+      receipts: DB.receipts.length,
+      expenses: DB.expenses.length,
+      broadcasts: DB.broadcasts.length
+    },
+    can_sync: DATABASE_KIND !== 'file' && !pool,
+    // Kwitansi yang dibuat setelah boot hanya ada di file darurat, jadi
+    // umurnya penting: makin lama, makin banyak data berisiko.
+    uptime_seconds: Math.round(process.uptime())
+  };
+  // Kalau database bisa dihubungi, tampilkan juga isi database supaya
+  // admin tahu berapa banyak data yang akan digabungkan.
+  if (payload.can_sync && (dbReachable === null || dbReachable === true)) {
+    try {
+      const opened = await openDbPoolAndReadState();
+      if (opened.pool) {
+        const dbState = normalizeStateObject(opened.state || {});
+        payload.db_counts = {
+          reservations: dbState.reservations.length,
+          receipts: dbState.receipts.length,
+          expenses: dbState.expenses.length
+        };
+        payload.db_reachable = true;
+        dbReachable = true;
+        dbConnectError = null;
+      }
+      if (opened.pool) { try { await opened.pool.end(); } catch {} }
+    } catch (e) {
+      payload.db_reachable = false;
+      payload.db_error = sanitizeDbError(e);
+      dbReachable = false;
+      dbConnectError = payload.db_error;
+    }
+  }
+  res.setHeader('Cache-Control', 'private, no-store');
+  res.json(payload);
+});
+
+// Pindahkan data darurat (file) ke database: gabung, bukan timpa.
+// Butuh konfirmasi eksplisit supaya tidak terklik tanpa sengaja.
+app.post('/api/admin/storage/sync-to-db', auth, async (req, res) => {
+  if (DATABASE_KIND === 'file') {
+    return res.status(400).json({ error: 'Server ini memang memakai file storage (DATABASE_URL belum diset), jadi tidak ada database tujuan.' });
+  }
+  if (pool) {
+    return res.status(400).json({ error: 'Server sudah memakai database — data sudah tersimpan di sana.' });
+  }
+  if (String((req.body && req.body.confirm) || '').trim().toUpperCase() !== 'SINKRON') {
+    return res.status(400).json({ error: 'Konfirmasi diperlukan: kirim { "confirm": "SINKRON" }' });
+  }
+  let opened = null;
+  try {
+    opened = await openDbPoolAndReadState();
+    const { state: merged, report } = mergeTransactionalState(opened.state || {}, DB);
+    // Aktifkan database sebagai storage permanen, lalu tulis state
+    // gabungan. Urutannya penting: pool harus aktif dulu supaya
+    // persistSnapshot menulis ke database, bukan ke file.
+    pool = opened.pool;
+    opened = null;
+    DB = merged;
+    normalizeState();
+    saveShareTokensMirror();
+    dbConnectError = null;
+    dbReachable = true;
+    await persistSnapshot(JSON.stringify(DB));
+    console.log(`[storage] Sinkron ke database selesai: +${report.reservations_added} reservasi, +${report.receipts_added} kwitansi, +${report.expenses_added} pengeluaran`);
+    res.json({
+      ok: true,
+      message: 'Data darurat sudah digabungkan ke database. Mulai sekarang semua perubahan disimpan ke database.',
+      report
+    });
+  } catch (e) {
+    const reason = sanitizeDbError(e);
+    console.error('[storage] sync ke database gagal:', reason);
+    if (opened && opened.pool) { try { await opened.pool.end(); } catch {} }
+    // Beda antara "server error" dan "database masih tidak bisa dihubungi":
+    // yang kedua berarti admin harus memperbaiki DATABASE_URL dulu.
+    const unreachable = /ECONNREFUSED|ETIMEDOUT|ENOTFOUND|terminated|authentication|password|timeout|EAI_AGAIN/i.test(reason);
+    return res.status(unreachable ? 503 : 500).json({
+      error: unreachable
+        ? 'Database masih belum bisa dihubungi: ' + reason + '. Perbaiki DATABASE_URL / status database lalu redeploy, setelah itu sinkronkan lagi.'
+        : 'Gagal menyinkronkan ke database: ' + reason
+    });
+  }
+});
+
+// Salin peta token kwitansi dari DB state ke penampung persisten, supaya
+// token yang dibawa dari mode file tetap bisa diverifikasi setelah
+// berpindah ke database.
+function saveShareTokensMirror() {
+  shareTokensDb = DB.share_tokens || {};
+  for (const [tok, v] of Object.entries(shareTokensDb)) {
+    if (v && v.exp && v.exp > Date.now()) shareTokenMap.set(tok, { id: v.id, exp: v.exp });
+  }
+}
+
 // ===== ADMIN — BACKUP / RESTORE =====
-app.get('/api/admin/backup', auth, (req, res) => {
-  res.json({
+//
+// ITEM KEAMANAN: file backup berisi SELURUH data pasien (nama, alamat,
+// nomor WhatsApp, riwayat layanan) dalam bentuk teks polos. File seperti
+// itu biasanya diunduh, dikirim ke diri sendiri, atau disimpan di cloud —
+// sekali bocor, semua data pasien ikut bocor.
+//
+// Karena itu backup sekarang bisa (dan secara default di UI) diunduh
+// TERENKRIPSI: AES-256-GCM dengan kunci turunan scrypt dari passphrase
+// yang hanya diketahui admin. Formatnya tetap satu file .json sehingga
+// nyaman disimpan, tapi isinya tidak bisa dibaca tanpa passphrase.
+const BACKUP_ENC_FORMAT = 'adzkiya-backup-enc-v1';
+const BACKUP_KDF = { N: 16384, r: 8, p: 1, keylen: 32 };
+
+function encryptBackupPayload(payload, passphrase) {
+  const pass = String(passphrase || '');
+  if (pass.length < 8) throw new Error('Passphrase minimal 8 karakter');
+  const salt = crypto.randomBytes(16);
+  const iv = crypto.randomBytes(12);
+  const key = crypto.scryptSync(pass, salt, BACKUP_KDF.keylen, {
+    N: BACKUP_KDF.N, r: BACKUP_KDF.r, p: BACKUP_KDF.p
+  });
+  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+  const plaintext = Buffer.from(JSON.stringify(payload), 'utf8');
+  const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return {
+    format: BACKUP_ENC_FORMAT,
+    cipher: 'aes-256-gcm',
+    kdf: 'scrypt',
+    kdf_params: BACKUP_KDF,
+    salt: salt.toString('base64'),
+    iv: iv.toString('base64'),
+    tag: tag.toString('base64'),
+    data: ciphertext.toString('base64'),
     exported_at: new Date().toISOString(),
-    reservations: DB.reservations.map(r => {
-      // Bukti transfer pasien (base64) tidak ikut: file backup sering
-      // disimpan di cloud/USB/dikirim ke diri sendiri, dan bukti transfer
-      // memuat data bank pasien. Bukti tetap bisa dibuka dari panel admin.
+    // Info non-rahasia supaya admin tahu file mana ini saat restore.
+    meta: {
+      app: 'adzkiya-mom-baby-care',
+      counts: {
+        reservations: (payload.reservations || []).length,
+        receipts: (payload.receipts || []).length,
+        expenses: (payload.expenses || []).length
+      }
+    }
+  };
+}
+
+function decryptBackupEnvelope(envelope, passphrase) {
+  if (!envelope || envelope.format !== BACKUP_ENC_FORMAT) {
+    throw new Error('Format backup terenkripsi tidak dikenali');
+  }
+  const pass = String(passphrase || '');
+  if (!pass) throw new Error('Passphrase wajib diisi untuk membuka backup terenkripsi');
+  const params = envelope.kdf_params || BACKUP_KDF;
+  const salt = Buffer.from(String(envelope.salt || ''), 'base64');
+  const iv = Buffer.from(String(envelope.iv || ''), 'base64');
+  const tag = Buffer.from(String(envelope.tag || ''), 'base64');
+  const key = crypto.scryptSync(pass, salt, params.keylen || BACKUP_KDF.keylen, {
+    N: params.N || BACKUP_KDF.N, r: params.r || BACKUP_KDF.r, p: params.p || BACKUP_KDF.p
+  });
+  const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
+  decipher.setAuthTag(tag);
+  let plaintext;
+  try {
+    plaintext = Buffer.concat([decipher.update(Buffer.from(String(envelope.data || ''), 'base64')), decipher.final()]);
+  } catch (e) {
+    // GCM menolak saat tag tidak cocok = passphrase salah atau file diubah.
+    throw new Error('Passphrase salah atau file backup rusak/tidak utuh');
+  }
+  let parsed;
+  try { parsed = JSON.parse(plaintext.toString('utf8')); }
+  catch (e) { throw new Error('Isi backup tidak valid setelah didekripsi'); }
+  return parsed;
+}
+
+// Kumpulkan payload backup. Rahasia (kunci AI, token WA, TTD pemilik, log
+// chat) dan foto bukti transfer sengaja TIDAK ikut — lihat penjelasan di
+// endpoint /api/admin/backup.
+function buildBackupPayload() {
+  return {
+    exported_at: new Date().toISOString(),
+    reservations: DB.reservations.map((r) => {
       const { proof_b64, ...rest } = r;
       return rest;
     }),
     receipts: DB.receipts,
     expenses: DB.expenses,
     expense_categories: DB.expense_categories,
-    broadcasts: DB.broadcasts.map(b => ({ id: b.id, name: b.name, body: b.body, recipient_count: b.recipient_count, filter: b.filter, created_at: b.created_at })),
-    // SECURITY: file backup diunduh, disimpan, dan sering diteruskan —
-    // jadi rahasia/aset sensitif TIDAK ikut di dalamnya:
-    //   * API key AI + token WhatsApp + App Secret (kredensial)
-    //   * token verifikasi webhook
-    //   * gambar tanda tangan pemilik (aset anti-pemalsuan kwitansi)
-    //   * log percakapan AI (berisi nomor & isi chat pasien)
-    // Kalau perlu dipakai lagi, semuanya bisa diisi ulang dari panel admin.
+    broadcasts: DB.broadcasts.map((b) => ({
+      id: b.id, name: b.name, body: b.body, recipient_count: b.recipient_count,
+      filter: b.filter, created_at: b.created_at
+    })),
     settings: (() => {
       const {
         ai_gemini_api_key, ai_openrouter_api_key, ai_assistant_access_token,
         ai_assistant_app_secret, ai_assistant_verify_token,
         owner_signature_b64, owner_signature_mime,
         ai_assistant_conversations,
-        ...s
+        ...rest
       } = (DB.settings || {});
-      return s;
+      return rest;
     })()
-  });
+  };
+}
+
+app.get('/api/admin/backup', auth, (req, res) => {
+  // PENTING: respons ini berisi data pasien dalam teks polos. Hanya
+  // dipakai oleh tombol "JSON biasa" (opsional) dan proses restore lama.
+  // Untuk pemakaian sehari-hari pakai /api/admin/backup/encrypted.
+  console.warn('[backup] Backup POLOS (tidak terenkripsi) diunduh oleh ' + (req.user && req.user.email ? req.user.email : 'admin'));
+  res.setHeader('Cache-Control', 'private, no-store');
+  res.json(buildBackupPayload());
+});
+
+// Backup terenkripsi AES-256-GCM. Dipakai tombol utama di panel admin.
+app.post('/api/admin/backup/encrypted', auth, (req, res) => {
+  try {
+    const passphrase = String((req.body && req.body.passphrase) || '');
+    if (passphrase.length < 8) {
+      return res.status(400).json({ error: 'Passphrase minimal 8 karakter (semakin panjang semakin aman).' });
+    }
+    const envelope = encryptBackupPayload(buildBackupPayload(), passphrase);
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.json(envelope);
+  } catch (e) {
+    console.error('[backup] enkripsi gagal:', e.message);
+    res.status(500).json({ error: 'Gagal membuat backup terenkripsi: ' + e.message });
+  }
 });
 
 app.post('/api/admin/restore', auth, restoreJsonParser, (req, res) => {
   try {
-    const { reservations = [], receipts = [], settings, mode = 'append', sync_reservations } = req.body;
+    // Backup terenkripsi: buka dulu dengan passphrase yang dikirim klien.
+    // Salt/IV/tag/ciphertext tidak bisa dipalsukan (GCM), dan passphrase
+    // salah akan ditolak di sini sebelum data apa pun disentuh.
+    let body = req.body || {};
+    if (body && body.format === BACKUP_ENC_FORMAT) {
+      try {
+        const decrypted = decryptBackupEnvelope(body, body.passphrase);
+        // Mode & opsi dikirim di sisi luar envelope supaya file tetap bisa
+        // dipakai lintas versi.
+        decrypted.mode = body.mode || decrypted.mode;
+        decrypted.sync_reservations = body.sync_reservations;
+        body = decrypted;
+      } catch (e) {
+        return res.status(400).json({ error: e.message });
+      }
+    }
+    const { reservations = [], receipts = [], settings, mode = 'append', sync_reservations } = body;
     const errors = [];
     if (mode === 'replace') {
       DB.reservations = []; DB.receipts = [];
@@ -4602,6 +5034,18 @@ app.get('/api/admin/ai/conversations', auth, (req, res) => {
   res.json(logs.slice(-limit).reverse());
 });
 
+// URL webhook ABSOLUT. Nilai ini yang harus di-paste ke Meta, dan harus
+// menunjuk ke server API (Railway) — bukan ke cermin GitHub Pages.
+// Sebelumnya /api/admin/ai/config hanya mengirim path relatif dan panel
+// admin menebak dari window.location, sehingga saat dibuka dari GitHub
+// Pages admin menyalin URL yang SALAH
+// (https://putra1996.github.io/Adzkiyamombabycareweb/api/webhook/whatsapp).
+function absoluteWebhookUrl(req) {
+  // PUBLIC_BASE_URL (kalau diset) selalu menang, lalu X-Forwarded-Host
+  // yang dikirim Railway.
+  return getPublicBaseUrl(req) + '/api/webhook/whatsapp';
+}
+
 // ADMIN: get AI config status (without leaking secrets)
 app.get('/api/admin/ai/config', auth, (req, res) => {
   const s = DB.settings;
@@ -4615,8 +5059,103 @@ app.get('/api/admin/ai/config', auth, (req, res) => {
     wa_verify_token: s.ai_assistant_verify_token || '',
     base_prompt: s.ai_assistant_base_prompt || '',
     conversation_count: (s.ai_assistant_conversations || []).length,
-    webhook_url: '/api/webhook/whatsapp'
+    webhook_url: absoluteWebhookUrl(req)
   });
+});
+
+// ADMIN: diagnosa koneksi WhatsApp/AI. Menjawab pertanyaan "kenapa
+// auto-reply tidak jalan?" tanpa admin harus menebak-nebak:
+//   • apakah tiap kredensial sudah diisi,
+//   • apakah token Meta masih valid (dites langsung ke Graph API),
+//   • apakah webhook sudah dilindungi signature.
+// Tidak pernah mengembalikan nilai kredensial.
+app.get('/api/admin/ai/diagnostics', auth, async (req, res) => {
+  const s = DB.settings || {};
+  const phoneId = s.ai_assistant_phone_id || '';
+  const accessToken = s.ai_assistant_access_token || '';
+  const result = {
+    enabled: !!s.ai_assistant_enabled,
+    webhook_url: absoluteWebhookUrl(req),
+    has_verify_token: !!s.ai_assistant_verify_token,
+    has_app_secret: !!s.ai_assistant_app_secret,
+    has_gemini: !!s.ai_gemini_api_key,
+    has_openrouter: !!s.ai_openrouter_api_key,
+    has_phone_id: !!phoneId,
+    has_access_token: !!accessToken,
+    signature_enforced: !!s.ai_assistant_app_secret,
+    conversation_count: (s.ai_assistant_conversations || []).length,
+    graph: { checked: false }
+  };
+
+  // Tes langsung ke Meta: endpoint ini menjawab dengan nomor & nama bisnis
+  // kalau token masih berlaku. Kalau token sudah dicabut/kedaluwarsa,
+  // error Meta ditampilkan apa adanya (tanpa nilai token).
+  if (phoneId && accessToken) {
+    result.graph.checked = true;
+    try {
+      const r = await fetchWithTimeout(
+        'https://graph.facebook.com/v18.0/' + encodeURIComponent(phoneId) +
+          '?fields=display_phone_number,verified_name,quality_rating',
+        { headers: { Authorization: 'Bearer ' + accessToken } },
+        15000
+      );
+      const data = await r.json().catch(() => ({}));
+      if (r.ok) {
+        result.graph.ok = true;
+        result.graph.display_phone_number = data.display_phone_number || null;
+        result.graph.verified_name = data.verified_name || null;
+      } else {
+        result.graph.ok = false;
+        result.graph.error = (data && data.error && data.error.message) || ('HTTP ' + r.status);
+        result.graph.error_code = (data && data.error && data.error.code) || null;
+        result.graph.error_subcode = (data && data.error && data.error.error_subcode) || null;
+      }
+    } catch (e) {
+      result.graph.ok = false;
+      result.graph.error = 'Tidak bisa menghubungi Graph API: ' + (e.message || 'network error');
+    }
+  }
+
+  // Checklist siap tampil supaya admin tahu langkah berikutnya.
+  result.checklist = [
+    {
+      ok: !!s.ai_assistant_enabled,
+      label: 'AI Assistant diaktifkan',
+      hint: 'Centang "Aktifkan AI Assistant" lalu simpan.'
+    },
+    {
+      ok: !!(s.ai_gemini_api_key || s.ai_openrouter_api_key),
+      label: 'Kunci AI tersedia (Gemini / OpenRouter)',
+      hint: 'Ambil kunci gratis di aistudio.google.com/apikey lalu tempel di panel ini.'
+    },
+    {
+      ok: !!s.ai_assistant_verify_token,
+      label: 'Webhook Verify Token diisi',
+      hint: 'Isi string acak apa saja, lalu tempel nilai yang sama di Meta → Webhooks → Verify token.'
+    },
+    {
+      ok: !!phoneId && !!accessToken,
+      label: 'Phone Number ID & Access Token WhatsApp diisi',
+      hint: 'Ambil dari Meta → WhatsApp → API Setup.'
+    },
+    {
+      ok: !!(result.graph.checked && result.graph.ok),
+      label: 'Kredensial WhatsApp diterima Meta',
+      hint: result.graph.checked
+        ? (result.graph.ok
+            ? ('Terhubung ke nomor ' + (result.graph.display_phone_number || '?'))
+            : ('Ditolak Meta: ' + (result.graph.error || 'tidak diketahui') + ' — perbarui Access Token.'))
+        : 'Isi Phone Number ID + Access Token dulu supaya bisa dites.'
+    },
+    {
+      ok: !!s.ai_assistant_app_secret,
+      label: 'App Secret diisi (webhook terlindungi dari pemalsuan)',
+      hint: 'Tanpa App Secret, siapa pun yang tahu URL webhook bisa mengirim pesan palsu. Salin dari Meta → Settings → Basic → App Secret.'
+    }
+  ];
+
+  res.setHeader('Cache-Control', 'private, no-store');
+  res.json(result);
 });
 
 // ADMIN: clear conversation logs

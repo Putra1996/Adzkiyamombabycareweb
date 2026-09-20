@@ -115,6 +115,27 @@ npm run build:pages
 
 `npm run build:pages` memperbarui data fallback dan menyalin versi terbaru admin/reservasi ke `docs/`; file `docs/js/api-config.js` tetap menjadi konfigurasi khusus GitHub Pages.
 
+## 5b. Penyimpanan data & pemulihan darurat
+
+`DATABASE_URL` adalah satu-satunya penentu permanen data. Kalau server tidak bisa
+menghubungi database, aplikasi tetap hidup tetapi menulis ke file container
+(**mode darurat**) — data akan hilang pada deploy berikutnya.
+
+Cek statusnya kapan saja di panel admin → **Pengaturan → 🗄️ Status Penyimpanan**
+(atau `/health`: `db_connected` / `db_reachable` / `db_error`).
+
+Kalau muncul mode darurat:
+
+1. **Backup & Restore → 🔐 Download Backup Terenkripsi** (isi passphrase) — lakukan ini
+   SEBELUM memperbaiki `DATABASE_URL`, karena memperbaiki env var memicu redeploy yang
+   menghapus file darurat.
+2. Perbaiki `DATABASE_URL` / status Neon, lalu redeploy.
+3. **Backup & Restore → Restore** (mode *Append*) dengan file + passphrase tadi.
+4. Pastikan Status Penyimpanan kembali hijau.
+
+Kalau database pulih sendiri tanpa redeploy, gunakan tombol
+**⬆️ Sinkronkan Data Darurat ke Database** (menggabungkan, tidak menimpa).
+
 ## 6. Keamanan dan operasi
 
 - Jangan commit `ADMIN_PASSWORD`, `JWT_SECRET`, atau `DATABASE_URL`.
