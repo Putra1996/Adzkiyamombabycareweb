@@ -113,7 +113,7 @@ button, input, select, textarea {
   background: linear-gradient(135deg, var(--pink-300), var(--peach-300));
 }
 .brand-text { line-height: 1.1; }
-.brand-text small { display: block; font-weight: 500; font-size: 0.7rem; color: var(--text-soft); letter-spacing: 0.5px; }
+.brand-text small { display: block; font-weight: 500; font-size: 0.75rem; color: var(--text-soft); letter-spacing: 0.5px; }
 .nav-links { display: flex; gap: 4px; align-items: center; }
 .nav-links a { padding: 8px 14px; border-radius: 10px; color: var(--text-soft); font-weight: 600; font-size: 0.92rem; transition: all 0.2s; }
 .nav-links a:hover, .nav-links a.active { background: var(--pink-100); color: var(--primary); }
@@ -204,15 +204,15 @@ button, input, select, textarea {
   .bank-row { grid-template-columns: 1fr !important; gap: 6px; }
   .bank-row input { width: 100%; }
   /* Calendar: tighten cells even further on phones */
-  .cal-cell { min-height: 44px; padding: 2px; font-size: 0.7rem; }
-  .cal-cell.head { font-size: 0.6rem; padding: 2px 1px; }
-  .cal-cell .day-num { font-size: 0.72rem; }
-  .cal-cell .count-badge { font-size: 0.55rem; padding: 0 3px; }
+  .cal-cell { min-height: 46px; padding: 3px 2px; font-size: 0.78rem; }
+  .cal-cell.head { font-size: 0.68rem; padding: 2px 1px; }
+  .cal-cell .day-num { font-size: 0.8rem; }
+  .cal-cell .count-badge { font-size: 0.64rem; padding: 1px 4px; }
   .cal-grid { gap: 2px; }
   .cal-compact .calendar-wrap { padding: 10px; }
   .calendar-wrap { padding: 14px; }
   .cal-header h3 { font-size: 0.9rem; }
-  .cal-legend { font-size: 0.72rem; gap: 10px; }
+  .cal-legend { font-size: 0.78rem; gap: 10px; }
   .hero { padding: 50px 14px 60px; }
   .hero h1 { font-size: 1.6rem; }
   .hero p.lead { font-size: 0.95rem; }
@@ -251,9 +251,9 @@ button, input, select, textarea {
   .stat-grid + div .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
   /* Pay options: stay side-by-side but smaller */
   .pay-options { grid-template-columns: repeat(3, 1fr) !important; gap: 6px !important; }
-  .pay-option { padding: 10px 4px !important; font-size: 0.78rem !important; }
+  .pay-option { padding: 10px 5px !important; font-size: 0.82rem !important; }
   .pay-option .icn { font-size: 1.4rem !important; }
-  .pay-option small { font-size: 0.7rem !important; }
+  .pay-option small { font-size: 0.76rem !important; }
   /* Settings: full-width upload preview */
   .upload-preview { max-width: 100% !important; height: 100px !important; }
   /* Reservation form: tighter padding */
@@ -522,18 +522,18 @@ footer { padding: 40px 24px; background: var(--card); border-top: 1px solid var(
 .cal-cell.has-events { background: linear-gradient(135deg, var(--bg) 0%, var(--pink-50) 100%); }
 .cal-cell.past { opacity: 0.5; }
 .cal-cell .day-num { font-weight: 700; font-size: 0.85rem; }
-.cal-cell .count-badge { font-size: 0.65rem; padding: 1px 5px; border-radius: 999px; background: var(--primary); color: white; font-weight: 700; align-self: flex-start; margin-top: auto; }
+.cal-cell .count-badge { font-size: 0.7rem; padding: 1px 5px; border-radius: 999px; background: var(--primary); color: white; font-weight: 700; align-self: flex-start; margin-top: auto; }
 .cal-cell.full .count-badge { background: #c43050; }
 .cal-cell .dot { width: 5px; height: 5px; border-radius: 50%; background: var(--primary); margin: 1px; display: inline-block; }
-.cal-cell .ev { font-size: 0.65rem; padding: 1px 4px; border-radius: 4px; background: var(--pink-100); color: var(--primary); margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cal-cell .ev { font-size: 0.7rem; padding: 1px 4px; border-radius: 4px; background: var(--pink-100); color: var(--primary); margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* Compact calendar variant for embedding inside the reservation page.
    Tighter cells, single-line, fits in one viewport on both mobile
    and desktop without scrolling. */
 .cal-compact .cal-cell { min-height: 48px; padding: 3px; font-size: 0.72rem; }
-.cal-compact .cal-cell.head { font-size: 0.65rem; padding: 3px 1px; }
+.cal-compact .cal-cell.head { font-size: 0.7rem; padding: 3px 1px; }
 .cal-compact .cal-cell .day-num { font-size: 0.78rem; }
-.cal-compact .cal-cell .count-badge { font-size: 0.6rem; padding: 1px 4px; }
+.cal-compact .cal-cell .count-badge { font-size: 0.66rem; padding: 1px 4px; }
 .cal-compact .cal-grid { gap: 3px; }
 .cal-compact .calendar-wrap { padding: 14px; }
 .cal-compact .cal-header { margin-bottom: 10px; }

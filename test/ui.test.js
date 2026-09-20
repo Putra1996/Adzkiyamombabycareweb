@@ -106,6 +106,20 @@ test('Tidak ada teks di bawah 0.76rem (≈12px) pada panel admin', () => {
   assert.deepEqual(tooSmall, [], `ada ${tooSmall.length} teks < 0.76rem: ${tooSmall.slice(0, 5).join(', ')}`);
 });
 
+test('CSS: tidak ada teks lebih kecil dari 0.64rem (≈10px)', () => {
+  // Batas bawah: 0.64rem dipakai HANYA untuk badge angka di kalender.
+  // Semua font lain harus >= 0.64rem supaya tetap terbaca di HP.
+  const sizes = (css.match(/font-size:\s*[0-9.]+rem/g) || [])
+    .map((v) => parseFloat(v.replace(/[^0-9.]/g, '')))
+    .filter((n) => Number.isFinite(n));
+  const tooSmall = sizes.filter((n) => n < 0.64);
+  assert.deepEqual(tooSmall, [], `ada ${tooSmall.length} font < 0.64rem: ${tooSmall.join(', ')}`);
+  // Kalender adalah halaman yang paling sering dibuka dari HP: pastikan
+  // label hari & angka tanggal tetap >= 0.68rem / 0.78rem.
+  assert.match(css, /\.cal-cell\.head\s*\{[^}]*font-size:\s*0\.(?:6[89]|[7-9]\d?)rem/, 'label hari kalender minimal 0.68rem');
+  assert.match(css, /\.cal-cell\s*\{[^}]*font-size:\s*0\.[7-9]\d?rem/, 'angka tanggal kalender minimal 0.7rem');
+});
+
 test('Mirror GitHub Pages (docs/) selalu sama dengan sumber di public/', () => {
   for (const rel of ['js/admin.js', 'js/main.js', 'js/kalender.js', 'js/i18n.js', 'js/api-config.js', 'css/style.css']) {
     const a = read(path.join('public', rel));
