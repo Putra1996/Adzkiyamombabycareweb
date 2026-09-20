@@ -197,7 +197,6 @@ button, input, select, textarea {
   .invoice-grid { grid-template-columns: 1fr !important; }
   .invoice-block + .invoice-block { border-left: none !important; border-top: 1px dashed var(--border); }
   .invoice .totals { min-width: 0 !important; max-width: none !important; }
-  .data-table { font-size: 0.78rem; }
   .data-table th, .data-table td { padding: 8px 6px; }
   .toast { min-width: 0; max-width: calc(100vw - 32px); padding: 10px 14px; }
   .notif-card { padding: 10px; }
@@ -339,6 +338,55 @@ button, input, select, textarea {
 .hero p.lead { font-size: 1.1rem; color: var(--text-soft); max-width: 540px; margin-bottom: 28px; }
 .hero-ctas { display: flex; gap: 12px; flex-wrap: wrap; }
 .btn { display: inline-flex; align-items: center; gap: 8px; padding: 14px 24px; border-radius: 999px; font-weight: 700; cursor: pointer; border: none; transition: transform 0.15s, box-shadow 0.15s; font-size: 0.95rem; }
+/* ---------- KETERBACAAN TOMBOL (semua ukuran layar) ----------
+   .btn berbentuk pil (border-radius: 999px) bagus untuk label satu baris,
+   tapi begitu ruang menyempit label panjang membungkus jadi 2–3 baris:
+   teksnya lalu menonjol keluar dari bentuk pil ("Simpan Konfigurasi AI"
+   di panel AI pada layar HP). Beberapa aturan berikut membuat tombol
+   tetap terbaca tanpa mengubah tampilan tombol satu baris:
+
+   1. teks boleh membungkus (tidak meluber) & boleh membelah kata panjang;
+   2. tombol lentur (flex:1) atau selebar penuh memakai sudut sedang,
+      bukan sudut pil, karena tingginya bisa lebih dari satu baris;
+   3. tinggi minimum nyaman disentuh (aksesibilitas). */
+.btn {
+  flex-wrap: wrap;
+  justify-content: center;
+  text-align: center;
+  line-height: 1.35;
+  min-width: 0;
+  min-height: 44px;
+  overflow-wrap: anywhere;
+}
+.btn-sm { min-height: 32px; line-height: 1.3; overflow-wrap: anywhere; }
+
+/* ---------- KETERBACAAN FORM & TABEL DI HP ---------- */
+@media (hover: none) and (pointer: coarse) {
+  /* 16px = ambang batas iOS supaya tidak auto-zoom saat input difokus. */
+  input, select, textarea { font-size: 16px !important; }
+  /* Kolom tanggal/jam yang sempit tetap proporsional setelah 16px. */
+  input[type="date"], input[type="time"], input[type="month"] { min-width: 0; }
+}
+@media (max-width: 720px), (hover: none) and (pointer: coarse) and (max-width: 1024px) {
+  .data-table { font-size: 0.85rem; }
+  .btn-sm { font-size: 0.84rem; }
+}
+.btn[style*="flex:1"], .btn[style*="flex: 1"],
+.btn[style*="width:100%"], .btn[style*="width: 100%"],
+.btn-sm[style*="flex:1"], .btn-sm[style*="width:100%"] { border-radius: 14px; }
+/* Baris tombol serbaguna: label panjang tidak lagi dipaksa berbagi ruang
+   sempit, dan di layar kecil tiap tombol jadi selebar kartu. */
+.btn-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: stretch; }
+.btn-row > .btn, .btn-row > a.btn { flex: 1 1 220px; min-width: 0; border-radius: 14px; white-space: normal; }
+.btn-row > .btn-sm, .btn-row > a.btn-sm { flex: 1 1 auto; border-radius: 10px; }
+@media (max-width: 560px), (hover: none) and (pointer: coarse) and (max-width: 1024px) {
+  .btn-row { gap: 8px; }
+  .btn-row > .btn, .btn-row > a.btn,
+  .btn-row > .btn-sm, .btn-row > a.btn-sm { flex: 1 1 100%; }
+}
+/* Teks teknis (connection string, nama file, kode) harus boleh membungkus
+   agar tidak memaksa lebar halaman melebihi layar HP. */
+code, kbd, samp { overflow-wrap: anywhere; }
 .btn-primary { background: linear-gradient(135deg, var(--pink-500), var(--pink-400)); color: white; box-shadow: var(--shadow); }
 .btn-primary:hover { transform: translateY(-2px); box-shadow: var(--shadow-lg); color: white; }
 .btn-outline { background: white; color: var(--primary); border: 2px solid var(--pink-200); }

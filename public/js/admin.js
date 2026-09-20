@@ -933,7 +933,7 @@ function openAdmCalDetail(dateStr, evs) {
     const list = sorted.map(e => {
       const items = itemsByRes[e.reservation_id] || [];
       const itemsHtml = items.length
-        ? `<div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:4px;">${items.map((it) => `<span style="display:inline-block;padding:2px 8px;background:var(--pink-100);color:var(--primary);border-radius:999px;font-size:0.78rem;font-weight:600;">${esc(it.name)}${it.qty > 1 ? ` ×${it.qty}` : ''}</span>`).join('')}</div>`
+        ? `<div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:4px;">${items.map((it) => `<span style="display:inline-block;padding:3px 9px;background:var(--pink-100);color:var(--primary);border-radius:999px;font-size:0.8rem;font-weight:600;">${esc(it.name)}${it.qty > 1 ? ` ×${it.qty}` : ''}</span>`).join('')}</div>`
         : '<div style="margin-top:6px;color:var(--text-soft);font-size:0.8rem;font-style:italic;">(item layanan sudah ditampilkan di slot pertama)</div>';
       return `
         <div style="display:flex;gap:10px;align-items:flex-start;padding:10px 12px;margin-top:8px;background:var(--pink-50);border-radius:8px;border-left:4px solid ${e.status === 'approved' ? '#4caf85' : e.status === 'rejected' ? '#e85a78' : '#f4a83a'};">
@@ -941,8 +941,8 @@ function openAdmCalDetail(dateStr, evs) {
           <div style="flex:1;">
             <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
               <strong style="font-size:0.88rem;">${maskPatientId(e.reservation_id)}</strong>
-              <span class="badge badge-${e.status}" style="font-size:0.72rem;">${e.status}</span>
-              <span class="badge badge-${e.payment_status}" style="font-size:0.72rem;">${e.payment_status}</span>
+              <span class="badge badge-${e.status}" style="font-size:0.76rem;">${e.status}</span>
+              <span class="badge badge-${e.payment_status}" style="font-size:0.76rem;">${e.payment_status}</span>
               <small style="color:var(--text-soft);">#${e.reservation_id}</small>
             </div>
             ${itemsHtml}
@@ -1523,7 +1523,7 @@ function shareOrPrintKwitansi(id) {
     <div style="padding:16px;background:linear-gradient(135deg,#fdf2f8,#fff5f0);border:2px solid #ee5a8a;border-radius:14px;margin-bottom:14px;">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;flex-wrap:wrap;gap:8px;">
         <strong style="font-size:1rem;color:#2a1822;">💾 Save PDF — Langsung Download</strong>
-        <span style="font-size:0.7rem;background:#ee5a8a;color:white;padding:2px 8px;border-radius:999px;font-weight:700;letter-spacing:0.5px;">PRIMARY</span>
+        <span style="font-size:0.76rem;background:#ee5a8a;color:white;padding:3px 10px;border-radius:999px;font-weight:700;letter-spacing:0.5px;">PRIMARY</span>
       </div>
 
       <label style="display:block;font-size:0.82rem;color:var(--text-soft);margin-bottom:4px;font-weight:600;">📐 Ukuran Kertas</label>
@@ -1568,7 +1568,7 @@ function shareOrPrintKwitansi(id) {
 
     <!-- SECTION 2: Other options -->
     <div style="border-top:1px dashed var(--border);padding-top:12px;">
-      <div style="font-size:0.74rem;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-soft);font-weight:700;margin-bottom:8px;">Atau pilih opsi lain:</div>
+      <div style="font-size:0.76rem;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-soft);font-weight:700;margin-bottom:8px;">Atau pilih opsi lain:</div>
       <div style="display:grid;gap:8px;">
         <button type="button" onclick="shareKwitansiById(${r.id});closeModal();" class="btn btn-outline" style="width:100%;justify-content:flex-start;padding:10px 14px;">
           💬 <span style="margin-left:4px;">Share Link via WhatsApp</span>
@@ -1836,7 +1836,11 @@ async function printReceipt(r) {
     <style>
       body{background:#f7f2f4;padding:30px;font-family:'Plus Jakarta Sans',sans-serif;margin:0;}
       .print-actions{display:flex;justify-content:center;gap:10px;margin-bottom:20px;flex-wrap:wrap;}
-      .print-actions button{padding:10px 20px;color:white;border:none;border-radius:999px;font-weight:700;cursor:pointer;font-size:0.95rem;font-family:inherit;}
+      /* Sudut sedang (bukan pil) karena label seperti "Cetak / Save PDF"
+         bisa membungkus di layar sempit; teks boleh membelah kata panjang
+         supaya tidak meluber keluar tombol. */
+      .print-actions button{padding:11px 20px;color:white;border:none;border-radius:12px;font-weight:700;cursor:pointer;font-size:0.95rem;font-family:inherit;line-height:1.35;min-height:44px;overflow-wrap:anywhere;}
+      @media (max-width:560px){.print-actions{width:100%;}.print-actions button{flex:1 1 100%;}}
       @media print{body{background:white;padding:0;margin:0;}.print-actions{display:none !important;}}
     </style>
     </head><body>
@@ -1928,7 +1932,7 @@ async function printReceipt(r) {
         </div>
         <div style="margin-top:20px;padding-top:14px;border-top:1px dashed var(--pink-200);text-align:center;">
           <div style="font-size:0.92rem;">Terima kasih atas kepercayaan Anda 🌸</div>
-          <div style="font-size:0.78rem;color:var(--text-soft);margin-top:4px;">Kwitansi ini sah dan diproses secara elektronik oleh sistem.</div>
+          <div style="font-size:0.82rem;line-height:1.55;color:var(--text-soft);margin-top:6px;">Kwitansi ini sah dan diproses secara elektronik oleh sistem.</div>
         </div>
       </div>
     </div>
@@ -2912,8 +2916,8 @@ function openLaporanKeuangan() {
     <style>body{padding:30px;background:white;font-family:'Plus Jakarta Sans',sans-serif;color:#2a1822;}@media print{.no-print{display:none;}}h1,h2,h3{color:#4a2533;}</style>
     </head><body>
     <div class="no-print" style="text-align:center;margin-bottom:16px;display:flex;gap:8px;justify-content:center;">
-      <button onclick="window.print()" style="padding:10px 24px;background:#ee5a8a;color:white;border:none;border-radius:999px;font-weight:700;cursor:pointer;font-size:1rem;">🖨️ Cetak / Save PDF</button>
-      <button onclick="window.close()" style="padding:10px 24px;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:999px;font-weight:700;cursor:pointer;font-size:1rem;">✕ Tutup</button>
+      <button onclick="window.print()" style="padding:11px 24px;background:#ee5a8a;color:white;border:none;border-radius:12px;font-weight:700;cursor:pointer;font-size:0.95rem;line-height:1.35;min-height:44px;">🖨️ Cetak / Save PDF</button>
+      <button onclick="window.close()" style="padding:11px 24px;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:12px;font-weight:700;cursor:pointer;font-size:0.95rem;line-height:1.35;min-height:44px;">✕ Tutup</button>
     </div>
     <div style="display:flex;align-items:center;gap:16px;margin-bottom:14px;padding-bottom:14px;border-bottom:3px solid #ee5a8a;">
       ${logoSrc ? `<img src="${logoSrc}" style="width:70px;height:70px;object-fit:contain;">` : '<span style="font-size:2.6rem;">🌸</span>'}
@@ -3493,19 +3497,19 @@ async function openCustomerProfile(phone) {
       </div>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-bottom:14px;">
         <div style="padding:10px 14px;background:var(--bg);border-radius:10px;">
-          <div style="font-size:0.72rem;color:var(--text-soft);text-transform:uppercase;letter-spacing:0.5px;">Total Visit</div>
+          <div style="font-size:0.76rem;color:var(--text-soft);text-transform:uppercase;letter-spacing:0.5px;">Total Visit</div>
           <div style="font-size:1.4rem;font-weight:800;">${c.total_reservations}</div>
         </div>
         <div style="padding:10px 14px;background:var(--pink-50);border-radius:10px;">
-          <div style="font-size:0.72rem;color:var(--primary);text-transform:uppercase;letter-spacing:0.5px;">Total Spend</div>
+          <div style="font-size:0.76rem;color:var(--primary);text-transform:uppercase;letter-spacing:0.5px;">Total Spend</div>
           <div style="font-size:1.2rem;font-weight:800;color:var(--primary);">${fmtRp(c.total_spent)}</div>
         </div>
         <div style="padding:10px 14px;background:var(--bg);border-radius:10px;">
-          <div style="font-size:0.72rem;color:var(--text-soft);text-transform:uppercase;letter-spacing:0.5px;">Pertama</div>
+          <div style="font-size:0.76rem;color:var(--text-soft);text-transform:uppercase;letter-spacing:0.5px;">Pertama</div>
           <div style="font-size:0.95rem;font-weight:700;">${c.first_visit ? fmtDate(c.first_visit) : '—'}</div>
         </div>
         <div style="padding:10px 14px;background:var(--bg);border-radius:10px;">
-          <div style="font-size:0.72rem;color:var(--text-soft);text-transform:uppercase;letter-spacing:0.5px;">Terakhir</div>
+          <div style="font-size:0.76rem;color:var(--text-soft);text-transform:uppercase;letter-spacing:0.5px;">Terakhir</div>
           <div style="font-size:0.95rem;font-weight:700;">${c.last_visit ? fmtDate(c.last_visit) : '—'}<br><small style="color:var(--text-soft);font-weight:500;">${c.last_visit_age_days === 9999 ? '' : c.last_visit_age_days + ' hari lalu'}</small></div>
         </div>
       </div>
@@ -3548,7 +3552,7 @@ function renderHeatmap(h) {
     <h3 style="margin:14px 0 6px;font-size:1.05rem;">🕒 Heatmap Jam Sibuk (${h.total} reservasi total)</h3>
     <p style="color:var(--text-soft);font-size:0.82rem;margin:0 0 8px;">Cell lebih gelap = lebih banyak booking pada jam tersebut. Berguna untuk atur jadwal bidan.</p>
     <div style="overflow-x:auto;">
-      <table class="heatmap" style="border-collapse:separate;border-spacing:2px;font-size:0.7rem;">
+      <table class="heatmap" style="border-collapse:separate;border-spacing:2px;font-size:0.76rem;">
         <thead>
           <tr>
             <th style="background:transparent;padding:4px 6px;"></th>
@@ -3562,7 +3566,7 @@ function renderHeatmap(h) {
               ${row.map((count, hi) => `
                 <td style="padding:0;">
                   <div title="${count} booking on ${days[di]} jam ${hi.toString().padStart(2,'0')}:00"
-                    style="height:24px;width:24px;border-radius:4px;background:${count === 0 ? 'var(--bg)' : 'rgba(238,90,138,' + (0.15 + 0.65 * (count / max)) + ')'};color:${count > max / 2 ? 'white' : 'var(--text)'};font-weight:600;display:flex;align-items:center;justify-content:center;font-size:0.65rem;cursor:default;">
+                    style="height:28px;width:28px;border-radius:6px;background:${count === 0 ? 'var(--bg)' : 'rgba(238,90,138,' + (0.15 + 0.65 * (count / max)) + ')'};color:${count > max / 2 ? 'white' : 'var(--text)'};font-weight:600;display:flex;align-items:center;justify-content:center;font-size:0.78rem;cursor:default;">
                     ${count > 0 ? count : ''}
                   </div>
                 </td>
@@ -3919,15 +3923,15 @@ async function renderBackup() {
         <div class="form-group" style="margin-top:12px;">
           <label style="font-size:0.85rem;font-weight:600;">Passphrase (min. 8 karakter)</label>
           <input type="password" id="bkPassphrase" placeholder="cth: kwitansi-adzkiya-2026-rahasia" style="font-family:monospace;font-size:0.88rem;" autocomplete="new-password">
-          <div style="display:flex;gap:6px;margin-top:6px;">
-            <button type="button" class="btn-sm btn-outline" onclick="generateBackupPassphrase()" style="font-size:0.78rem;">🎲 Buat passphrase kuat</button>
-            <button type="button" class="btn-sm btn-outline" onclick="toggleBackupPassphrase()" style="font-size:0.78rem;">👁️ Lihat</button>
+          <div class="btn-row" style="margin-top:8px;">
+            <button type="button" class="btn-sm btn-outline" onclick="generateBackupPassphrase()" style="font-size:0.82rem;padding:8px 14px;">🎲 Buat passphrase kuat</button>
+            <button type="button" class="btn-sm btn-outline" onclick="toggleBackupPassphrase()" style="font-size:0.82rem;padding:8px 14px;">👁️ Lihat</button>
           </div>
         </div>
-        <button onclick="doBackupEncrypted()" class="btn btn-primary" style="margin-top:12px;">🔐 Download Backup Terenkripsi</button>
+        <button onclick="doBackupEncrypted()" class="btn btn-primary" style="margin-top:12px;width:100%;">🔐 Download Backup Terenkripsi</button>
         <details style="margin-top:12px;">
           <summary style="cursor:pointer;font-size:0.82rem;color:var(--text-soft);">JSON polos (untuk dibaca manual — tidak disarankan)</summary>
-          <button onclick="doBackupPlain()" class="btn btn-outline" style="margin-top:8px;">📥 Download JSON Polos</button>
+          <button onclick="doBackupPlain()" class="btn btn-outline" style="margin-top:8px;width:100%;">📥 Download JSON Polos</button>
         </details>
       </div>
       <div class="feature">
@@ -3939,7 +3943,7 @@ async function renderBackup() {
           <label><input type="radio" name="restoreMode" value="append" checked> Append (tambah)</label><br>
           <label><input type="radio" name="restoreMode" value="replace"> Replace (ganti semua)</label>
         </div>
-        <button onclick="doRestore()" class="btn btn-outline" style="margin-top:14px;">📤 Restore</button>
+        <button onclick="doRestore()" class="btn btn-outline" style="margin-top:14px;width:100%;">📤 Restore</button>
       </div>
     </div>
     <style>@media(max-width:920px),(hover:none) and (pointer:coarse) and (max-width:1024px){#bkGrid{grid-template-columns:1fr !important;}}</style>
@@ -4285,9 +4289,9 @@ async function renderSettings() {
       <div class="setting-card" id="storageStatusCard">
         <h3 style="display:flex;align-items:center;gap:8px;">🗄️ Status Penyimpanan Data</h3>
         <div id="storageStatusBody" style="font-size:0.88rem;color:var(--text-soft);line-height:1.6;">Memuat status…</div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;">
-          <button type="button" class="btn-sm btn-outline" onclick="loadStorageStatus(true)">🔄 Cek Ulang</button>
-          <button type="button" class="btn-sm" id="storageSyncBtn" onclick="syncStorageToDb()" style="display:none;background:#b45309;color:white;border:none;font-weight:700;">⬆️ Sinkronkan Data Darurat ke Database</button>
+        <div class="btn-row" style="margin-top:12px;">
+          <button type="button" class="btn-sm btn-outline" onclick="loadStorageStatus(true)" style="padding:10px 16px;">🔄 Cek Ulang</button>
+          <button type="button" class="btn-sm" id="storageSyncBtn" onclick="syncStorageToDb()" style="display:none;background:#b45309;color:white;border:none;font-weight:700;padding:10px 16px;">⬆️ Sinkronkan Data Darurat ke Database</button>
         </div>
       </div>
 
@@ -4302,7 +4306,7 @@ async function renderSettings() {
       </div>` : ''}
 
       <div class="setting-card" style="border:2px solid #7c3aed;background:linear-gradient(135deg,#f5f3ff 0%,#fff5f8 100%);">
-        <h3 style="display:flex;align-items:center;gap:8px;">🤖 AI Booking Assistant <span id="aiAssistantStatusBadge" style="font-size:0.72rem;padding:2px 8px;border-radius:999px;background:#e5e7eb;color:#374151;font-weight:700;letter-spacing:0.5px;">CHECKING…</span></h3>
+        <h3 style="display:flex;align-items:center;gap:8px;">🤖 AI Booking Assistant <span id="aiAssistantStatusBadge" style="font-size:0.76rem;padding:3px 10px;border-radius:999px;background:#e5e7eb;color:#374151;font-weight:700;letter-spacing:0.5px;">CHECKING…</span></h3>
         <p style="color:var(--text-soft);font-size:0.85rem;margin:6px 0 14px;line-height:1.5;">
           Otomatiskan customer service 24/7. AI menjawab chat di beranda + WA Business, bantu pilih layanan, dan arahkan ke admin untuk konfirmasi final.
           <br><strong>Dual AI:</strong> Google Gemini (free tier) sebagai primary, OpenRouter sebagai fallback otomatis.
@@ -4373,10 +4377,13 @@ async function renderSettings() {
         </div>
 
         <!-- Save button -->
-        <div style="display:flex;gap:8px;align-items:center;margin-top:12px;flex-wrap:wrap;">
-          <button type="button" id="aiAssistantSaveBtn" class="btn btn-primary" style="flex:1;justify-content:center;padding:10px 16px;background:#7c3aed;">💾 Simpan Konfigurasi AI</button>
-          <button type="button" id="aiAssistantDiagBtn" class="btn btn-outline" style="padding:10px 14px;">🔍 Tes Koneksi WhatsApp</button>
-          <button type="button" id="aiAssistantLogsBtn" class="btn btn-outline" style="padding:10px 14px;">📋 Log Percakapan</button>
+        <!-- .btn-row: label panjang diberi lebar minimum sendiri dan di
+             layar HP tiap tombol jadi selebar kartu, jadi teks tidak
+             pernah lagi meluber keluar bentuk tombol. -->
+        <div class="btn-row" style="margin-top:12px;">
+          <button type="button" id="aiAssistantSaveBtn" class="btn btn-primary" style="background:#7c3aed;">💾 Simpan Konfigurasi AI</button>
+          <button type="button" id="aiAssistantDiagBtn" class="btn btn-outline">🔍 Tes Koneksi WhatsApp</button>
+          <button type="button" id="aiAssistantLogsBtn" class="btn btn-outline">📋 Log Percakapan</button>
         </div>
         <div id="aiAssistantDiagnostics" style="margin-top:12px;"></div>
         <div id="aiAssistantFeedback" style="margin-top:10px;font-size:0.84rem;"></div>
@@ -4501,7 +4508,7 @@ async function loadStorageStatus(showAlert) {
         <div class="form-group" style="margin-top:10px;">
           <label style="font-size:0.85rem;font-weight:600;">Connection string</label>
           <input type="password" id="stConnUrl" placeholder="postgresql://user:password@host:5432/dbname" style="font-family:monospace;font-size:0.84rem;" autocomplete="off">
-          <div style="font-size:0.78rem;color:var(--text-soft);margin-top:4px;">Nilai ini hanya dipakai untuk tes &amp; sesi server ini — tidak disimpan ke file log.</div>
+          <div style="font-size:0.82rem;line-height:1.55;color:var(--text-soft);margin-top:6px;">Nilai ini hanya dipakai untuk tes &amp; sesi server ini — tidak disimpan ke file log.</div>
         </div>
         <details style="margin-top:8px;">
           <summary style="cursor:pointer;font-size:0.82rem;color:var(--text-soft);">Password memuat karakter @ : / ? # → pakai kolom terpisah</summary>
@@ -4514,9 +4521,9 @@ async function loadStorageStatus(showAlert) {
             <label style="display:flex;align-items:center;gap:6px;font-size:0.82rem;"><input type="checkbox" id="stSsl" checked> SSL</label>
           </div>
         </details>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;">
-          <button type="button" class="btn-sm" onclick="testStorageConnection()" style="background:#0f766e;color:white;border:none;font-weight:700;padding:8px 14px;">🔌 Tes Koneksi</button>
-          <button type="button" class="btn-sm" id="stApplyBtn" onclick="applyStorageConnection()" style="display:none;background:#7c3aed;color:white;border:none;font-weight:700;padding:8px 14px;">✅ Gunakan Sekarang</button>
+        <div class="btn-row" style="margin-top:10px;">
+          <button type="button" class="btn-sm" onclick="testStorageConnection()" style="background:#0f766e;color:white;border:none;font-weight:700;padding:10px 16px;">🔌 Tes Koneksi</button>
+          <button type="button" class="btn-sm" id="stApplyBtn" onclick="applyStorageConnection()" style="display:none;background:#7c3aed;color:white;border:none;font-weight:700;padding:10px 16px;">✅ Gunakan Sekarang</button>
         </div>
         <div id="stConnResult" style="margin-top:10px;"></div>
       </details>`;
