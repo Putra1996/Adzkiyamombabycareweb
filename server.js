@@ -4101,15 +4101,32 @@ app.delete('/api/admin/settings/:kind', auth, (req, res) => {
 app.get('/api/admin/backup', auth, (req, res) => {
   res.json({
     exported_at: new Date().toISOString(),
-    reservations: DB.reservations.map(r => { const { proof_b64, ...rest } = r; return rest; }),
+    reservations: DB.reservations.map(r => {
+      // Bukti transfer pasien (base64) tidak ikut: file backup sering
+      // disimpan di cloud/USB/dikirim ke diri sendiri, dan bukti transfer
+      // memuat data bank pasien. Bukti tetap bisa dibuka dari panel admin.
+      const { proof_b64, ...rest } = r;
+      return rest;
+    }),
     receipts: DB.receipts,
     expenses: DB.expenses,
     expense_categories: DB.expense_categories,
     broadcasts: DB.broadcasts.map(b => ({ id: b.id, name: b.name, body: b.body, recipient_count: b.recipient_count, filter: b.filter, created_at: b.created_at })),
-    // SECURITY: buang AI secret keys dari backup. File backup sering
-    // dibagikan/diunduh, jadi API key tidak boleh ikut terbawa.
+    // SECURITY: file backup diunduh, disimpan, dan sering diteruskan —
+    // jadi rahasia/aset sensitif TIDAK ikut di dalamnya:
+    //   * API key AI + token WhatsApp + App Secret (kredensial)
+    //   * token verifikasi webhook
+    //   * gambar tanda tangan pemilik (aset anti-pemalsuan kwitansi)
+    //   * log percakapan AI (berisi nomor & isi chat pasien)
+    // Kalau perlu dipakai lagi, semuanya bisa diisi ulang dari panel admin.
     settings: (() => {
-      const { ai_gemini_api_key, ai_openrouter_api_key, ai_assistant_access_token, ai_assistant_app_secret, ...s } = (DB.settings || {});
+      const {
+        ai_gemini_api_key, ai_openrouter_api_key, ai_assistant_access_token,
+        ai_assistant_app_secret, ai_assistant_verify_token,
+        owner_signature_b64, owner_signature_mime,
+        ai_assistant_conversations,
+        ...s
+      } = (DB.settings || {});
       return s;
     })()
   });

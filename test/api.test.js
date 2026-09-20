@@ -163,7 +163,7 @@ test('API menyimpan reservasi, menghitung harga server, dan melindungi admin', {
       const res = await fetch(`${baseUrl}${path}`);
       assert.equal(res.status, 200);
       const body = await res.text();
-      for (const leak of ['patient_name', 'Alamat pengujian', '08123456789', 'proof_b64', 'ai_gemini_api_key', 'owner_signature_b64', 'password_hash']) {
+      for (const leak of ['patient_name', 'Alamat pengujian', '08123456789', 'proof_b64', 'ai_gemini_api_key', 'owner_signature_b64', 'password_hash', 'ai_assistant_verify_token', 'ai_assistant_conversations']) {
         assert.ok(!body.includes(leak), `${path} membocorkan "${leak}"`);
       }
     }
@@ -228,6 +228,25 @@ test('API menyimpan reservasi, menghitung harga server, dan melindungi admin', {
     const profileBody = await profileRes.text();
     assert.ok(!profileBody.includes('password_hash'), 'hash password ikut terkirim ke klien');
     assert.ok(!profileBody.includes('$2a$') && !profileBody.includes('$2b$'), 'hash bcrypt ikut terkirim ke klien');
+
+    // File backup tidak boleh memuat kredensial / aset sensitif.
+    await fetch(`${baseUrl}/api/admin/settings`, {
+      method: 'PUT',
+      headers: { Authorization: `Bearer ${login.token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ai_gemini_api_key: 'AIza-dummy-key',
+        ai_assistant_app_secret: 'dummy-app-secret',
+        ai_assistant_verify_token: 'dummy-verify-token'
+      })
+    });
+    const backupText = await (await fetch(`${baseUrl}/api/admin/backup`, {
+      headers: { Authorization: `Bearer ${login.token}` }
+    })).text();
+    for (const secret of ['ai_gemini_api_key', 'ai_openrouter_api_key', 'ai_assistant_access_token',
+      'ai_assistant_app_secret', 'ai_assistant_verify_token', 'owner_signature_b64',
+      'proof_b64', 'dummy-app-secret', 'dummy-verify-token']) {
+      assert.ok(!backupText.includes(secret), `backup memuat "${secret}"`);
+    }
 
     // Login response juga tidak boleh memuat hash.
     assert.ok(!JSON.stringify(login).includes('password_hash'), 'hash password ikut terkirim saat login');

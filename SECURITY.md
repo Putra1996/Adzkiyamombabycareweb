@@ -60,6 +60,9 @@ Yang boleh publik hanya: katalog layanan, profil usaha, jam buka, tesimoni, reke
 - Endpoint AI dibatasi 20 pesan/menit; harga layanan selalu dihitung ulang dari katalog server.
 - Unggahan diverifikasi dari magic bytes (bukan hanya `Content-Type`).
 - `PUT /api/admin/settings` menolak key `__proto__`/`constructor`/`prototype` dan membatasi ukuran total.
+- File backup (`/api/admin/backup`) tidak memuat kredensial apa pun, tanda tangan pemilik, log chat pasien,
+  maupun foto bukti transfer — hanya data operasional yang memang diperlukan untuk restore.
+- Respons login & profil hanya memuat `id/email/name/role` (tanpa hash password).
 - Webhook WhatsApp memverifikasi `X-Hub-Signature-256` (HMAC-SHA256) bila App Secret diisi.
 
 ---
@@ -77,8 +80,11 @@ Yang boleh publik hanya: katalog layanan, profil usaha, jam buka, tesimoni, reke
    atau biarkan kosong — default hanya origin GitHub Pages repo ini yang diizinkan.
 4. **Aktifkan App Secret WhatsApp** (Meta → Settings → Basic → App Secret) lalu isikan di
    Pengaturan → AI Assistant → App Secret, supaya webhook tidak bisa dipalsukan orang lain.
-5. **Jangan bagikan** file backup JSON (`Pengaturan → Backup`) — isinya seluruh data pasien tanpa enkripsi.
-   Simpan di tempat aman, dan hapus file lama setelah tidak diperlukan.
+5. **Jangan bagikan** file backup JSON (`Pengaturan → Backup`) — isinya seluruh data pasien (nama, alamat,
+   nomor WhatsApp, riwayat layanan) tanpa enkripsi. Simpan di tempat aman, dan hapus file lama setelah
+   tidak diperlukan. Yang **tidak** ikut di file backup (harus diisi ulang setelah restore):
+   kunci AI, token WhatsApp, App Secret, token verifikasi webhook, gambar tanda tangan pemilik,
+   log percakapan AI, dan foto bukti transfer.
 6. **Rotasi kunci AI** (`Gemini`/`OpenRouter`) bila pernah dikirim lewat chat/screenshot.
 7. **Kelola akses Railway** seketika (log Railway bisa memuat metadata operasional);
    batasi anggota workspace hanya yang benar-benar perlu.
