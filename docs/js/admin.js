@@ -213,7 +213,18 @@ async function checkStorageHealth() {
       // Memang mode file dan file-nya tidak persisten → data bisa hilang.
       level = 'danger';
     }
-    if (!level) return; // aman: tidak ada banner sama sekali.
+    if (!level) {
+      // Aman: buang banner lama kalau ada (mis. admin baru saja
+      // menyelesaikan perbaikan penyimpanan).
+      const stale = document.getElementById('storageWarningBanner');
+      if (stale) stale.remove();
+      return;
+    }
+
+    // Buang banner sebelumnya DULU supaya tidak menumpuk saat fungsi ini
+    // dipanggil ulang (login ulang tanpa reload, tombol "Cek Ulang", dll).
+    const existing = document.getElementById('storageWarningBanner');
+    if (existing) existing.remove();
 
     const danger = level === 'danger';
     const banner = document.createElement('div');
@@ -270,8 +281,64 @@ function setupNav() {
   });
 }
 
-function navigate(page) {
+// ---- Pengaman render bersamaan ----
+// Beberapa halaman dirender ulang dari beberapa tempat: klik menu, tombol
+// "Cek Ulang", simpan pengaturan, atau polling notifikasi. Karena setiap
+// render menunggu permintaan API, dua render yang berjalan bersamaan bisa
+// selesai tidak berurutan sehingga hasil LAMA menimpa hasil BARU (mis.
+// admin menekan menu dua kali lalu data lama muncul kembali). Token di
+// bawah memastikan hanya render terbaru untuk sebuah halaman yang boleh
+// menulis ke DOM.
+const RENDER_TOKENS = {};
+let RENDER_SEQ = 0;
+function renderToken(name) {
+  // Nomor urut global: setiap render baru (halaman apa pun) membatalkan
+  // render yang masih berjalan.
+  RENDER_SEQ += 1;
+  RENDER_TOKENS[name] = RENDER_SEQ;
+  return RENDER_SEQ;
+}
+function isLatestRender(name, token) {
+  // Dua syarat: token untuk halaman ini masih yang terakhir dipasang, DAN
+  // tidak ada render lain (halaman lain) yang lebih baru. Syarat kedua
+  // mencegah render lambat — mis. dashboard saat baru login, atau refresh
+  // notifikasi periodik — menimpa halaman yang sedang dibuka admin.
+  return RENDER_TOKENS[name] === token && token === RENDER_SEQ;
+}
+
+// Halaman gagal dimuat: tampilkan pesan + tombol coba lagi.
+//
+// Sebelumnya navigate() memanggil fungsi render tanpa menunggu dan tanpa
+// menangkap error. Kalau permintaan API gagal (jaringan putus, server
+// restart, token kedaluwarsa sebelum api() menanganinya), promise-nya
+// ditolak tanpa jejak: admin hanya melihat halaman SEBELUMNYA yang tidak
+// berubah — tampak seperti aplikasi "beku" tanpa penjelasan.
+function renderPageError(page, err) {
+  const c = document.getElementById('pageContent');
+  if (!c) return;
+  const pesan = (err && err.message) ? err.message : 'Tidak diketahui';
+  c.innerHTML = `
+    <div class="admin-header"><h1>⚠️ Gagal memuat halaman</h1></div>
+    <div class="setting-card" style="border:1.5px solid #f0b4b4;background:#fff5f5;">
+      <p style="font-size:0.92rem;line-height:1.6;color:#7f1d1d;margin:0 0 10px;">
+        Halaman <strong>${esc(page)}</strong> tidak bisa dimuat: <em>${esc(pesan)}</em>
+      </p>
+      <p style="font-size:0.86rem;line-height:1.6;color:var(--text-soft);margin:0 0 12px;">
+        Periksa koneksi internet, lalu coba lagi. Kalau tetap gagal, buka ulang halaman
+        <code>/admin</code> dan login kembali.
+      </p>
+      <div class="btn-row">
+        <button type="button" class="btn btn-primary" onclick="navigate('${escJs(page)}')">🔄 Coba Lagi</button>
+        <button type="button" class="btn btn-outline" onclick="location.reload()">↻ Muat Ulang Halaman</button>
+      </div>
+    </div>`;
+}
+
+async function navigate(page) {
   CURRENT_PAGE = page;
+  // Batalkan render yang masih berjalan: hasilnya tidak relevan lagi
+  // begitu admin pindah halaman.
+  renderToken('__navigate__');
   document.querySelectorAll('.admin-sidebar nav button').forEach(b => {
     b.classList.toggle('active', b.dataset.page === page);
   });
@@ -291,13 +358,22 @@ function navigate(page) {
     customers: renderCustomers,
     accounting: renderAccounting,
   };
-  (handlers[page] || renderDashboard)();
+  const handler = handlers[page] || renderDashboard;
+  try {
+    // Ditunggu supaya kegagalan async (fetch) ikut tertangkap di sini.
+    await handler();
+  } catch (e) {
+    console.error('[navigate] halaman "' + page + '" gagal dimuat:', e);
+    renderPageError(page, e);
+  }
 }
 
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]); }
 
 // ---------- DASHBOARD ----------
 async function renderDashboard() {
+  const _tk_renderDashboard = renderToken('dashboard');
+  if (!isLatestRender('dashboard', _tk_renderDashboard)) return;
   const c = document.getElementById('pageContent');
   c.innerHTML = `
     <div class="admin-header">
@@ -603,6 +679,7 @@ async function renderReservations() {
 }
 
 async function loadReservations(refetch) {
+  const _token342 = renderToken('reservations');
   // The first load (or an explicit "Refresh" button) refetches the
   // server. Subsequent toggles of search/sort just re-filter the
   // cached list to keep the UI snappy on slow networks.
@@ -616,6 +693,8 @@ async function loadReservations(refetch) {
     if (RES_FILTERS.to) qs.set('to', RES_FILTERS.to);
     try {
       RES_CACHE = await api('/api/admin/reservations?' + qs);
+  // Render yang lebih baru sudah dimulai — jangan menimpa hasilnya.
+  if (!isLatestRender('reservations', _token342)) return;
     } catch (e) {
       document.getElementById('reservationsList').innerHTML = `<div class="alert alert-error">${e.message}</div>`;
       return;
@@ -770,6 +849,8 @@ let admCalDate = new Date();
 let admCalEvents = []; // {date, time, items, status, reservation_id, items_count}
 let admCalSelectedDate = null;
 async function renderCalendarAdmin() {
+  const _tk_renderCalendarAdmin = renderToken('calendar');
+  if (!isLatestRender('calendar', _tk_renderCalendarAdmin)) return;
   const c = document.getElementById('pageContent');
   c.innerHTML = `
     <div class="admin-header">
@@ -1367,6 +1448,7 @@ const KW_PAGE_SIZE = 200;
 let KW_QUERY = '';        // kata kunci pencarian aktif (server-side)
 let KW_SEARCH_TIMER = null;
 async function loadReceipts(append) {
+  const _token799 = renderToken('receipts');
   try {
     const cache = append ? (window._receiptsCache || []) : [];
     // Pencarian diteruskan ke server (?q=) supaya kwitansi lama yang
@@ -1375,6 +1457,8 @@ async function loadReceipts(append) {
     const url = '/api/admin/receipts?limit=' + KW_PAGE_SIZE + '&offset=' + cache.length +
       (KW_QUERY ? '&q=' + encodeURIComponent(KW_QUERY) : '');
     const batch = await api(url);
+  // Render yang lebih baru sudah dimulai — jangan menimpa hasilnya.
+  if (!isLatestRender('receipts', _token799)) return;
     const rows = append ? cache.concat(batch) : batch;
     window._receiptsCache = rows;
     const hasMore = batch.length >= KW_PAGE_SIZE;
@@ -1665,7 +1749,10 @@ async function deleteSelectedReceipts() {
 async function deleteAllReceipts() {
   const rows = window._receiptsCache || [];
   if (!rows.length) return alert('Tidak ada kwitansi untuk dihapus.');
-  if (!confirm(`⚠️ HAPUS SEMUA ${rows.length} kwitansi?\n\nTindakan ini PERMANEN dan tidak dapat dibatalkan.\n\nLanjutkan?`)) return;
+  // Hati-hati: daftar di layar hanya sebagian (maks. 200 per halaman),
+  // sedangkan aksi ini menghapus SELURUH kwitansi di sistem. Sebutkan itu
+  // supaya admin tidak salah sangka soal berapa data yang hilang.
+  if (!confirm(`⚠️ HAPUS SEMUA kwitansi di sistem?\n\nDaftar di layar saat ini memuat ${rows.length} kwitansi (maksimal 200 per halaman), tetapi aksi ini menghapus SELURUH kwitansi termasuk yang belum dimuat.\n\nTindakan ini PERMANEN dan tidak dapat dibatalkan.\n\nLanjutkan?`)) return;
   const confirm2 = prompt('Ketik HAPUS SEMUA untuk konfirmasi:');
   if (confirm2 !== 'HAPUS SEMUA') return alert('Dibatalkan.');
   try {
@@ -2156,10 +2243,13 @@ async function renderRecap() {
 let RECAP_DATA = null;
 let RECAP_RECEIPTS = [];
 async function loadRecap() {
+  const _token461 = renderToken('recap');
   const month = document.getElementById('recapMonth').value;
   const months = document.getElementById('recapMonths')?.value || '1';
   try {
     RECAP_DATA = await api('/api/admin/recap?month=' + month + '&months=' + months);
+  // Render yang lebih baru sudah dimulai — jangan menimpa hasilnya.
+  if (!isLatestRender('recap', _token461)) return;
     // For receipts table we only show the single-month receipts (the
     // receipts list is too long to mix across multi-month views).
     RECAP_RECEIPTS = await api('/api/admin/receipts?month=' + month);
@@ -4044,7 +4134,10 @@ async function doRestore() {
 
 // ---------- SETTINGS ----------
 async function renderSettings() {
+  const _token73 = renderToken('settings');
   const s = await api('/api/admin/settings');
+  // Render yang lebih baru sudah dimulai — jangan menimpa hasilnya.
+  if (!isLatestRender('settings', _token73)) return;
   SETTINGS = s;
   const c = document.getElementById('pageContent');
   c.innerHTML = `
@@ -4429,11 +4522,14 @@ async function renderSettings() {
 // file container dan akan hilang pada deploy berikutnya — admin harus
 // melihat itu di depan mata, bukan menemukannya setelah data lenyap.
 async function loadStorageStatus(showAlert) {
+  const _token666 = renderToken('storage-status');
   const body = document.getElementById('storageStatusBody');
   const syncBtn = document.getElementById('storageSyncBtn');
   if (!body) return;
   try {
     const st = await api('/api/admin/storage/status');
+  // Render yang lebih baru sudah dimulai — jangan menimpa hasilnya.
+  if (!isLatestRender('storage-status', _token666)) return;
     const live = st.live_counts || {};
     const db = st.db_counts;
     let html = '';
@@ -4598,13 +4694,17 @@ async function applyStorageConnection() {
       body: JSON.stringify({ ...input, confirm: 'PAKAI' })
     });
     const r = res.report || {};
-    box.innerHTML = '<div style="padding:10px 12px;background:#ecfdf5;border:1.5px solid #6ee7b7;border-radius:10px;color:#065f46;">'
+    const successHtml = '<div style="padding:10px 12px;background:#ecfdf5;border:1.5px solid #6ee7b7;border-radius:10px;color:#065f46;">'
       + '<strong>✅ Server sekarang memakai database</strong><br>'
       + '<span style="font-size:0.84rem;">Ditambahkan: ' + (r.reservations_added || 0) + ' reservasi, ' + (r.receipts_added || 0) + ' kwitansi, '
       + (r.expenses_added || 0) + ' pengeluaran' + (r.admins_added ? ', ' + r.admins_added + ' akun admin' : '') + '.</span><br>'
       + '<span style="font-size:0.84rem;font-weight:700;">Langkah terakhir: salin connection string yang sama ke Railway → Variables → DATABASE_URL, lalu deploy.</span></div>';
     alert('Berhasil. Jangan lupa menyalin connection string ke Railway → Variables → DATABASE_URL agar permanen.');
+    // Muat ulang status DULU (kartu & kotak hasil ikut dibuat ulang), baru
+    // tulis pesannya ke kotak yang masih ada.
     await loadStorageStatus();
+    const freshBox = document.getElementById('stConnResult');
+    if (freshBox) freshBox.innerHTML = successHtml;
   } catch (e) {
     box.innerHTML = '<div style="padding:10px 12px;background:#fef2f2;border:1.5px solid #fca5a5;border-radius:10px;color:#7f1d1d;">'
       + 'Gagal memakai koneksi: ' + esc(e.message) + '</div>';
@@ -5103,6 +5203,8 @@ function playBeep(urgent) {
 }
 
 async function renderNotifications() {
+  const _tk_renderNotifications = renderToken('notifications');
+  if (!isLatestRender('notifications', _tk_renderNotifications)) return;
   const c = document.getElementById('pageContent');
   c.innerHTML = `
     <div class="admin-header">
