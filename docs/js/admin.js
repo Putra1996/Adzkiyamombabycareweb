@@ -134,6 +134,22 @@ async function downloadProtected(path, filename) {
   setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
 }
 
+// Ambil tanda tangan pemilik sebagai data URL lewat endpoint ber-token.
+// Hasilnya di-cache di memori selama sesi supaya print/PDF berulang tidak
+// memanggil server terus. Tidak pernah ditulis ke localStorage.
+let OWNER_SIG_CACHE = null; // { data_url, mime, at } | false
+async function fetchOwnerSignatureDataUrl(force) {
+  if (!force && OWNER_SIG_CACHE) return OWNER_SIG_CACHE.data_url || '';
+  try {
+    const res = await api('/api/admin/settings/owner-signature');
+    OWNER_SIG_CACHE = res && res.has_signature ? res : { data_url: '' };
+    return OWNER_SIG_CACHE.data_url || '';
+  } catch (e) {
+    console.warn('Gagal memuat tanda tangan:', e.message);
+    return '';
+  }
+}
+
 function logout() {
   localStorage.removeItem('adm_token'); localStorage.removeItem('adm_user');
   TOKEN = ''; USER = null; showLogin();
@@ -1751,9 +1767,12 @@ async function shareKwitansiById(id) {
   } catch (e) { alert('Gagal membuat link share: ' + e.message); }
 }
 
-function printReceipt(r) {
+async function printReceipt(r) {
   const items = Array.isArray(r.items) ? r.items : (r.items || JSON.parse(r.items_json || '[]'));
   const biz = SETTINGS || {};
+  // Tanda tangan diambil lebih dulu (butuh token admin). Kalau gagal,
+  // kwitansi tetap tercetak tanpa gambar tanda tangan.
+  const ownerSigDataUrl = (biz && biz.has_owner_signature) ? await fetchOwnerSignatureDataUrl() : '';
   const logoSrc = biz.has_logo ? apiUrl('/api/logo') : null;
   // Preferensi "sembunyikan blok tanda tangan (Penerima & Hormat kami)"
   // juga diterapkan pada tampilan cetak agar konsisten dgn PDF.
@@ -2013,38 +2032,26 @@ function printReceipt(r) {
         // placeholder — the printed kwitansi just shows the underline.
         const ownerImg = document.getElementById('ownerSigEmbed');
         const ownerUnderline = document.getElementById('ownerSigUnderline');
-        const wantOwner = window.__hasOwnerSignature === true;
+        // Data URL tanda tangan sudah diambil PARENT (panel admin) lewat
+        // endpoint ber-token dan dioper ke window ini. Jendela cetak tidak
+        // pernah mengakses endpoint publik lagi.
+        const ownerDataUrl = window.__ownerSigDataUrl || '';
         function finalize() { window.print(); }
-        if (wantOwner && ownerImg) {
-          // Use the same origin the page was loaded from so /api works
-          // whether this print preview was opened from the same
-          // origin or a different one.
-          const url = (location.origin || '') + '/api/owner-signature';
-          fetch(url, { credentials: 'omit' })
-            .then((r) => r.ok ? r.blob() : null)
-            .then((blob) => {
-              if (!blob) {
-                if (ownerImg) ownerImg.style.display = 'none';
-                if (ownerUnderline) ownerUnderline.style.marginTop = '50px';
-                return;
-              }
-              const reader = new FileReader();
-              reader.onload = () => {
-                ownerImg.src = reader.result;
-                ownerImg.style.display = 'block';
-                if (ownerUnderline) ownerUnderline.style.marginTop = '6px';
-              };
-              reader.readAsDataURL(blob);
-            })
-            .catch(() => {
-              if (ownerImg) ownerImg.style.display = 'none';
+        if (ownerDataUrl && ownerImg) {
+          ownerImg.src = ownerDataUrl;
+          ownerImg.style.display = 'block';
+          if (ownerUnderline) ownerUnderline.style.marginTop = '6px';
+          // Tunggu gambar benar-benar ter-load sebelum snapshot print.
+          if (ownerImg.complete && ownerImg.naturalWidth > 0) finalize();
+          else {
+            ownerImg.onload = () => finalize();
+            ownerImg.onerror = () => {
+              ownerImg.style.display = 'none';
               if (ownerUnderline) ownerUnderline.style.marginTop = '50px';
-            })
-            .finally(() => {
-              // Wait a beat so the FileReader.onload fires before
-              // window.print() snapshots the layout.
-              setTimeout(finalize, 60);
-            });
+              finalize();
+            };
+            setTimeout(finalize, 400);
+          }
         } else {
           if (ownerImg) ownerImg.style.display = 'none';
           if (ownerUnderline) ownerUnderline.style.marginTop = '50px';
@@ -2060,11 +2067,12 @@ function printReceipt(r) {
     </body></html>`;
   const w = window.open('', '_blank');
   w.document.write(html); w.document.close();
-  // Tell the print preview whether the owner signature is saved on
-  // the server. The inline script reads this in embedSigAndPrint() to
-  // decide whether to fetch /api/owner-signature before window.print().
+  // Oper data URL tanda tangan (kalau ada) ke jendela cetak. Parent sudah
+  // mengambilnya lewat /api/admin/settings/owner-signature dengan token
+  // admin, jadi halaman cetak tidak butuh akses endpoint apa pun.
   try {
-    w.__hasOwnerSignature = !!(biz && biz.has_owner_signature);
+    w.__hasOwnerSignature = !!ownerSigDataUrl;
+    w.__ownerSigDataUrl = ownerSigDataUrl || '';
   } catch (e) {}
 
   // The new tab now owns its own canvas + listeners. Nothing for the
@@ -3977,7 +3985,7 @@ async function renderSettings() {
         </p>
         <div id="ownerSigPreviewWrap" style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;margin-bottom:14px;padding:12px;background:var(--bg);border:1px dashed var(--border);border-radius:12px;">
           <div id="ownerSigPreviewBox" style="width:200px;min-height:80px;background:var(--card);border:1px solid var(--border);border-radius:10px;display:flex;align-items:center;justify-content:center;padding:8px;">
-            ${s.has_owner_signature ? `<img src="${apiUrl('/api/owner-signature')}?v=${Date.now()}" style="max-height:80px;max-width:180px;display:block;" alt="Tanda tangan">` : '<span style="color:var(--text-soft);font-size:0.85rem;">Belum ada tanda tangan</span>'}
+            ${s.has_owner_signature ? `<img id="ownerSigPreviewImg" style="max-height:80px;max-width:180px;display:block;" alt="Tanda tangan">` : '<span style="color:var(--text-soft);font-size:0.85rem;">Belum ada tanda tangan</span>'}
           </div>
           <div style="flex:1;min-width:200px;">
             <div style="font-weight:700;margin-bottom:2px;">${s.has_owner_signature ? '✅ Tanda tangan tersimpan' : '⚠️ Belum ada tanda tangan'}</div>
@@ -4156,6 +4164,16 @@ async function renderSettings() {
         </div>
       </div>
 
+      ${USER && !USER.password_changed_at ? `
+      <div class="setting-card" style="border:2px solid #b91c1c;background:#fff5f5;">
+        <h3 style="color:#b91c1c;">🔐 Ganti Password &mdash; Belum Pernah Diganti</h3>
+        <p style="color:#7f1d1d;font-size:0.88rem;margin:8px 0 0;line-height:1.6;">
+          Akun ini masih memakai password bawaan. Password adalah satu-satunya kunci ke data pasien
+          (nama, alamat, nomor WhatsApp, bukti transfer), jadi wajib diganti sebelum dipakai serius.
+          Isi kolom <strong>Password Baru</strong> di bawah, lalu simpan — semua sesi lama otomatis dicabut.
+        </p>
+      </div>` : ''}
+
       <div class="setting-card" style="border:2px solid #7c3aed;background:linear-gradient(135deg,#f5f3ff 0%,#fff5f8 100%);">
         <h3 style="display:flex;align-items:center;gap:8px;">🤖 AI Booking Assistant <span id="aiAssistantStatusBadge" style="font-size:0.72rem;padding:2px 8px;border-radius:999px;background:#e5e7eb;color:#374151;font-weight:700;letter-spacing:0.5px;">CHECKING…</span></h3>
         <p style="color:var(--text-soft);font-size:0.85rem;margin:6px 0 14px;line-height:1.5;">
@@ -4254,6 +4272,14 @@ async function renderSettings() {
   renderSocials();
   renderTestimonials();
   renderBlackouts();
+  // Tanda tangan pemilik: preview diisi belakangan lewat endpoint ber-token
+  // (gambar tidak lagi bisa diambil publik tanpa izin).
+  (async () => {
+    const img = document.getElementById('ownerSigPreviewImg');
+    if (!img) return;
+    const dataUrl = await fetchOwnerSignatureDataUrl(true);
+    if (dataUrl) img.src = dataUrl;
+  })();
   // Phase 3: AI Assistant settings
   wireAIAssistantSettings();
 }
@@ -4835,8 +4861,8 @@ async function saveProfile() {
     curEl?.focus();
     return;
   }
-  if (new_password && new_password.length < 8) {
-    alertBox.innerHTML = '<div class="alert alert-error">❌ Password baru minimal 8 karakter.</div>';
+  if (new_password && new_password.length < 10) {
+    alertBox.innerHTML = '<div class="alert alert-error">❌ Password baru minimal 10 karakter (kunci utama data pasien).</div>';
     newEl?.focus();
     return;
   }
@@ -4870,9 +4896,18 @@ async function saveProfile() {
     if (confEl) confEl.value = '';
 
     const lines = [];
-    if (data.email_changed) lines.push('✅ Email diperbarui' + (data.requires_relogin ? ' (silakan login ulang dengan email baru)' : ''));
-    if (data.password_changed) lines.push('✅ Password diperbarui' + (data.requires_relogin ? '' : ' — gunakan password baru untuk login berikutnya'));
+    if (data.email_changed) lines.push('✅ Email diperbarui');
+    if (data.password_changed) lines.push('✅ Password diperbarui');
     alertBox.innerHTML = '<div class="alert alert-success">' + lines.join('<br>') + '</div>';
+
+    // Email / password berubah = semua sesi lama dicabut server (token
+    // terbitan lama tidak berlaku lagi). Bersihkan token lokal dan minta
+    // login ulang supaya user tidak menabrak error 401 beruntun.
+    if (data.requires_relogin) {
+      alert('Perubahan tersimpan.\n\nSemua sesi lama sudah dicabut demi keamanan — silakan login ulang dengan kredensial terbaru.');
+      logout();
+      return;
+    }
 
     renderSettings();
   } catch (e) {
@@ -5050,6 +5085,7 @@ async function uploadOwnerSignature() {
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || res.statusText);
     alert('✅ Tanda tangan diupload (' + data.bytes + ' bytes, ' + data.mime + ').');
+    OWNER_SIG_CACHE = null; // gambar baru — buang cache lama
     await loadCache();
     renderSettings();
   } catch (e) {
@@ -5078,6 +5114,7 @@ async function saveOwnerSignatureScan(opts) {
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || res.statusText);
     if (!opts) alert('✅ Tanda tangan dari ' + method + ' tersimpan (' + data.bytes + ' bytes, ' + data.mime + ').');
+    OWNER_SIG_CACHE = null; // gambar baru — buang cache lama
     await loadCache();
     renderSettings();
   } catch (e) {
@@ -5087,6 +5124,7 @@ async function saveOwnerSignatureScan(opts) {
 }
 
 async function deleteOwnerSignature() {
+  OWNER_SIG_CACHE = null; // buang cache supaya tidak memakai gambar lama
   if (!confirm('Hapus tanda tangan bidan/pemilik? Kwitansi yang dicetak setelah ini tidak akan menampilkan tanda tangan sampai yang baru di-upload.')) return;
   try {
     await api('/api/admin/settings/owner-signature', { method: 'DELETE' });
@@ -5494,18 +5532,8 @@ async function saveKwitansiAsPDF(r, paperSize, options) {
   const wantOwner = includeSignature && !!(SETTINGS && SETTINGS.has_owner_signature);
   if (wantOwner && ownerImg) {
     try {
-      const r2 = await fetch(apiUrl('/api/owner-signature'), { credentials: 'omit' });
-      if (r2.ok) {
-        const blob = await r2.blob();
-        // Convert blob → data URL via FileReader (NOT URL.createObjectURL,
-        // because createObjectURL'd images may not be in the same origin
-        // for html2canvas's tainting check).
-        const dataUrl = await new Promise((resolve, reject) => {
-          const fr = new FileReader();
-          fr.onload = () => resolve(fr.result);
-          fr.onerror = () => reject(new Error('FileReader gagal'));
-          fr.readAsDataURL(blob);
-        });
+      const dataUrl = await fetchOwnerSignatureDataUrl();
+      if (dataUrl) {
         ownerImg.src = dataUrl;
         ownerImg.style.display = 'block';
         if (ownerUnderline) ownerUnderline.style.marginTop = '2mm';

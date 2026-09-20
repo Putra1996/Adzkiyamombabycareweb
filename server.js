@@ -121,10 +121,9 @@ let pool = null;
 // ada tapi gagal connect" bisa didiagnosa tanpa buka log Railway.
 let dbConnectError = null;
 function sanitizeDbError(err) {
-  return String((err && err.message) || err || 'unknown')
-    .replace(/\/\/[^@\s/]+@/g, '//***@')      // user:password@host
-    .replace(/\b[A-Za-z0-9_-]{24,}\b/g, '***') // token panjang
-    .slice(0, 240);
+  // Pesan ini muncul di /health (dapat diakses publik) — jangan sampai
+  // membocorkan host, kredensial, nama user, atau nama database internal.
+  return redactSecrets((err && err.message) || err || 'unknown');
 }
 let saveTimer = null;
 let saveChain = Promise.resolve();
@@ -366,6 +365,16 @@ function seedAdmin() {
   }
 
   const existing = DB.admins.find((admin) => admin.email.toLowerCase() === email);
+  if (existing) {
+    const rounds = parseInt(String(existing.password_hash || '').split('$')[2], 10) || 0;
+    if (rounds > 0 && rounds < 12) {
+      console.warn(`[auth] ⚠️  Hash password admin memakai bcrypt cost ${rounds} (disarankan 12). ` +
+        'Akan otomatis di-upgrade saat login berhasil — atau ganti password sekarang.');
+    }
+    if (!existing.password_changed_at) {
+      console.warn('[auth] ⚠️  Password admin belum pernah diganti sejak dibuat. Ganti lewat menu Pengaturan → Profil.');
+    }
+  }
   if (!existing) {
     DB.admins.push({
       id: nextId('admins'),
@@ -685,6 +694,39 @@ const webhookLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false
 });
+// Form reservasi publik = satu-satunya endpoint yang bisa MENULIS data
+// tanpa login, dan tiap kiriman membawa bukti transfer (maks 5 MB, masuk
+// sebagai base64 ke state). Limiter global 240/menit jauh terlalu longgar:
+// cukup beberapa menit untuk menggelembungkan database/kuota. Batasi per
+// IP, tapi tetap longgar untuk pemakaian wajar (satu keluarga bisa kirim
+// beberapa kali karena salah pilih jadwal).
+const reservationLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 12,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Terlalu banyak pengiriman reservasi dari jaringan ini. Coba lagi beberapa menit lagi atau hubungi admin via WhatsApp.' }
+});
+
+// Tutupi sebagian besar digit nomor telepon untuk keperluan log:
+// '628123456789' -> '6281****6789'.
+function maskPhone(phone) {
+  const d = String(phone || '').replace(/\D/g, '');
+  if (d.length <= 6) return '***';
+  return d.slice(0, 4) + '****' + d.slice(-4);
+}
+
+// Buang kredensial/identitas internal dari pesan error DB sebelum
+// ditampilkan di /health atau log.
+function redactSecrets(text) {
+  return String(text == null ? '' : text)
+    .replace(/\/\/[^@\s/]+@/g, '//***@')                      // user:password@host
+    .replace(/\b[A-Za-z0-9_-]{24,}\b/g, '***')                 // token/ID panjang
+    .replace(/(user|username|role|database)\s+["'][^"']+["']/gi, '$1 ***') // user 'x'
+    .replace(/\b(user|username|role|database)\s+[^\s,'"]+/gi, '$1 ***')   // user x
+    .replace(/\b[a-z0-9-]{2,}\.[a-z0-9-]{3,}\.[a-z]{2,}\b/gi, '***')     // host internal
+    .slice(0, 240);
+}
 
 // Bandingkan dua string dengan waktu konstan (hindari timing attack saat
 // memverifikasi token/signature webhook).
@@ -703,6 +745,23 @@ app.use((req, res, next) => {
   if (IS_PRODUCTION) res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
   if (req.path.startsWith('/api/admin') || req.path.startsWith('/api/auth')) {
     res.setHeader('Cache-Control', 'private, no-store');
+  }
+  // Jangan biarkan panel admin & data API di-embed di situs lain
+  // (clickjacking: admin mengira sedang mengetik di situsnya sendiri).
+  // Hanya aktif di production supaya preview/iframe lokal tetap jalan.
+  if (IS_PRODUCTION && (req.path === '/admin' || req.path.startsWith('/api/admin') || req.path.startsWith('/api/auth'))) {
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('Content-Security-Policy', "frame-ancestors 'none'");
+  }
+  // Halaman kwitansi memuat nama, alamat, dan nomor WhatsApp pasien.
+  // Jangan biarkan mesin pencari mengindeksnya walau link-nya tersebar,
+  // dan jangan simpan di cache publik mana pun.
+  if (req.path.startsWith('/kwitansi/') || req.path.startsWith('/api/public/receipt/') || req.path.startsWith('/api/owner-signature')) {
+    res.setHeader('X-Robots-Tag', 'noindex, nofollow, noarchive');
+    res.setHeader('Cache-Control', 'private, no-store');
+  }
+  if (req.path === '/admin' || req.path === '/admin.html') {
+    res.setHeader('X-Robots-Tag', 'noindex, nofollow, noarchive');
   }
   next();
 });
@@ -874,8 +933,37 @@ function auth(req, res, next) {
   const h = req.headers.authorization || '';
   const token = h.startsWith('Bearer ') ? h.slice(7) : null;
   if (!token) return res.status(401).json({ error: 'No token' });
-  try { req.user = jwt.verify(token, JWT_SECRET, { issuer: 'adzkiya-api' }); next(); }
-  catch (e) { return res.status(401).json({ error: 'Token tidak valid atau kedaluwarsa' }); }
+  let payload;
+  try {
+    // algorithms dibatasi ke HS256 — mencegah serangan algorithm confusion
+    // (mis. token yang mengaku ditandatangani dengan 'none' atau RSA).
+    payload = jwt.verify(token, JWT_SECRET, { issuer: 'adzkiya-api', algorithms: ['HS256'] });
+  } catch (e) {
+    return res.status(401).json({ error: 'Token tidak valid atau kedaluwarsa' });
+  }
+  // Token harus milik akun admin yang MASIH ADA. Kalau admin dihapus dari
+  // DB tetapi token lama masih beredar (mis. token dicuri), token itu
+  // otomatis mati.
+  const admin = DB.admins.find((a) => a.id === payload.id);
+  if (!admin) return res.status(401).json({ error: 'Akun tidak ditemukan. Silakan login ulang.' });
+  // Cabut token yang diterbitkan SEBELUM password terakhir diubah: kalau
+  // password diganti karena token suspect bocor, token lama tidak bisa
+  // dipakai lagi sampai masa berlakunya habis.
+  if (admin.password_changed_at) {
+    // Nilai iat pada JWT hanya presisi DETIK, sedangkan password_changed_at
+    // presisi milidetik. Tanpa pembulatan ke bawah, token yang baru saja
+    // diterbitkan (detik yang sama saat ganti password) ikut dianggap
+    // "terbitan lama" dan langsung ditolak — user terjebak tidak bisa apa-apa
+    // walau baru saja login dengan password baru.
+    const changedMs = Math.floor(new Date(admin.password_changed_at).getTime() / 1000) * 1000;
+    const issuedMs = (payload.iat || 0) * 1000;
+    if (Number.isFinite(changedMs) && changedMs > 0 && issuedMs && issuedMs < changedMs) {
+      return res.status(401).json({ error: 'Sesi lama sudah tidak berlaku. Silakan login ulang.' });
+    }
+  }
+  req.user = payload;
+  req.admin = admin;
+  next();
 }
 
 // Compute reservation total: sum(items × price) × slots count
@@ -1066,7 +1154,7 @@ app.get('/api/qris', (req, res) => {
 });
 
 // ===== RESERVATIONS (PUBLIC) =====
-app.post('/api/reservations', upload.single('proof'), (req, res) => {
+app.post('/api/reservations', reservationLimiter, upload.single('proof'), (req, res) => {
   try {
     const b = req.body;
     const required = ['patient_name', 'whatsapp', 'address', 'payment_method'];
@@ -1202,6 +1290,12 @@ app.get('/api/proof/:id', auth, (req, res) => {
 
 // ===== AUTH =====
 const loginAttempts = new Map();
+// Throttle KEDUA per akun, bukan hanya per IP. Penyerang bisa memakai
+// banyak IP/proxy (atau jaringan bergantian) supaya batas per-IP tidak
+// pernah tercapai, lalu menebak password satu akun tanpa henti. Dengan
+// pembatas per-email, satu akun tetap terkunci setelah beberapa kali gagal
+// walau IP-nya selalu berubah.
+const loginAttemptsByAccount = new Map();
 // Bersihkan entri login-attempts yang sudah lewat window-nya secara
 // berkala supaya Map tidak tumbuh tanpa batas (memory leak) saat banyak
 // IP berbeda gagal login sekali lalu tidak pernah kembali.
@@ -1209,6 +1303,9 @@ setInterval(() => {
   const now = Date.now();
   for (const [key, val] of loginAttempts) {
     if (!val || val.resetAt < now) loginAttempts.delete(key);
+  }
+  for (const [key, val] of loginAttemptsByAccount) {
+    if (!val || val.resetAt < now) loginAttemptsByAccount.delete(key);
   }
 }, 30 * 60 * 1000);
 app.post('/api/auth/login', authLimiter, (req, res) => {
@@ -1220,20 +1317,51 @@ app.post('/api/auth/login', authLimiter, (req, res) => {
 
   const email = String(req.body.email || '').trim().toLowerCase();
   const password = String(req.body.password || '');
+  // Kunci per akun memakai hash email (tidak menyimpan email di memori/log).
+  const acctKey = require('crypto').createHash('sha256').update(email).digest('hex').slice(0, 16);
+  const acct = loginAttemptsByAccount.get(acctKey) || { count: 0, resetAt: now + 15 * 60 * 1000 };
+  if (now > acct.resetAt) Object.assign(acct, { count: 0, resetAt: now + 15 * 60 * 1000 });
+  if (acct.count >= 8) {
+    return res.status(429).json({ error: 'Akun ini terkunci sementara karena terlalu banyak percobaan gagal. Coba lagi 15 menit lagi.' });
+  }
+
   const admin = DB.admins.find((item) => item.email.toLowerCase() === email);
   if (!admin || !bcrypt.compareSync(password, admin.password_hash)) {
     current.count += 1;
     loginAttempts.set(key, current);
+    acct.count += 1;
+    loginAttemptsByAccount.set(acctKey, acct);
     return res.status(401).json({ error: 'Email atau password salah' });
   }
 
   loginAttempts.delete(key);
+  loginAttemptsByAccount.delete(acctKey);
+  // Kalau hash lama dibuat dengan biaya bcrypt lebih rendah (mis. data.json
+  // warisan dengan cost 10), naikkan diam-diam ke 12 begitu password
+  // terbukti benar. Tidak mengubah password user sama sekali.
+  try {
+    const rounds = parseInt(String(admin.password_hash || '').split('$')[2], 10) || 0;
+    if (rounds > 0 && rounds < 12) {
+      admin.password_hash = bcrypt.hashSync(password, 12);
+      admin.password_rounds_upgraded_at = new Date().toISOString();
+      save();
+      console.log('[auth] Hash password di-upgrade ke bcrypt cost 12');
+    }
+  } catch (e) { /* upgrade bersifat opsional */ }
   const token = jwt.sign(
     { id: admin.id, email: admin.email, role: admin.role },
     JWT_SECRET,
     { expiresIn: '12h', issuer: 'adzkiya-api' }
   );
-  res.json({ token, user: { id: admin.id, email: admin.email, name: admin.name, role: admin.role } });
+  res.json({
+    token,
+    user: {
+      id: admin.id, email: admin.email, name: admin.name, role: admin.role,
+      // Dipakai panel admin untuk mengingatkan kalau password default
+      // belum pernah diganti (null = belum pernah).
+      password_changed_at: admin.password_changed_at || null
+    }
+  });
 });
 
 // ===== ADMIN — RESERVATIONS =====
@@ -2178,7 +2306,13 @@ function verifyShareToken(token) {
   const [payload, ts, sig] = parts;
   const crypto = require('crypto');
   const tsNum = parseInt(ts, 10);
+  // SECURITY: `ts` tidak ikut ditandatangani (signature hanya menutup
+  // payload), jadi tanpa batas atas siapa pun bisa mengubah ts menjadi
+  // tahun 3000 dan membuat link kwitansi yang sudah bocor berlaku
+  // SELAMANYA. Tolak timestamp yang berada di masa depan (toleransi 5
+  // menit untuk selisih jam antar server).
   if (!Number.isFinite(tsNum) || tsNum + SHARE_TOKEN_TTL_MS < Date.now()) return null;
+  if (tsNum > Date.now() + 5 * 60 * 1000) return null;
   let data;
   try { data = Buffer.from(payload, 'base64url').toString('utf8'); } catch { return null; }
   const expectedSig = crypto.createHmac('sha256', JWT_SECRET).update(data).digest('base64url').slice(0, 22);
@@ -2188,7 +2322,8 @@ function verifyShareToken(token) {
   const r = DB.receipts.find((x) => x.invoice_no === invoice_no && x.created_at === created_at && Math.abs((x.total || 0) - parseFloat(total)) < 1);
   if (!r) return null;
   // Cache for next time. Persist in background so it survives restart.
-  saveShareToken(token, r.id, tsNum + SHARE_TOKEN_TTL_MS).catch(() => {});
+  // Batas masa berlaku tetap dihitung dari ts yang sudah divalidasi.
+  saveShareToken(token, r.id, Math.min(tsNum, Date.now()) + SHARE_TOKEN_TTL_MS).catch(() => {});
   return r.id;
 }
 app.post('/api/admin/receipts/:id/share', auth, (req, res) => {
@@ -2405,7 +2540,7 @@ body { opacity: 1 !important; }
           </div>
           <div style="flex:1;min-width:200px;text-align:right;">
             <div style="font-size:0.82rem;color:var(--text-soft);">Hormat kami,</div>
-            ${biz.has_owner_signature ? `<img id="ownerSigImg" src="/api/owner-signature" alt="Tanda tangan ${fullName}" style="display:block;max-height:60px;max-width:220px;margin:4px 0 4px auto;background:transparent;" />` : ''}
+            ${biz.has_owner_signature ? `<img id="ownerSigImg" src="${ownerSignatureDataUrl() || ''}" alt="Tanda tangan ${fullName}" style="display:block;max-height:60px;max-width:220px;margin:4px 0 4px auto;background:transparent;" />` : ''}
             <div id="ownerSigUnderline" style="${biz.has_owner_signature ? 'margin-top:6px;' : 'margin-top:50px;'}border-top:1px solid #2a1822;padding-top:6px;font-weight:700;"><em>${practitioner}</em></div>
             <div style="font-size:0.78rem;color:var(--text-soft);">${fullName}</div>
           </div>
@@ -3659,7 +3794,8 @@ app.get('/api/admin/settings', auth, (req, res) => {
   // Don't return the giant base64 blobs — use flags + endpoints.
   // owner_signature_b64 is a base64 PNG that can also be huge for
   // high-DPI scans, so strip it the same way we do for logo/hero/qris.
-  // The frontend fetches it via /api/owner-signature when needed.
+  // Frontend mengambilnya lewat /api/admin/settings/owner-signature
+  // (ber-token) hanya saat mau menampilkan preview / membuat PDF.
   //
   // SECURITY: also strip the AI secret keys (Gemini / OpenRouter API
   // keys and the WhatsApp Business access token). These must never be
@@ -3721,6 +3857,15 @@ app.put('/api/admin/settings', auth, (req, res) => {
   if (body.owner_signature_b64 === '' || body.owner_signature_b64 === null) {
     body.owner_signature_b64 = null;
     body.owner_signature_mime = null;
+  }
+  // Buang key yang bisa merusak objek settings / prototype pollution.
+  // (Frontend tidak pernah mengirimnya; ini murni pertahanan terhadap
+  // payload tangan yang dibuat manual.)
+  ['__proto__', 'constructor', 'prototype'].forEach((k) => { delete body[k]; });
+  // Batasi ukuran total supaya settings tidak bisa dipakai menjejalkan
+  // data besar (menggembungkan state + backup + biaya storage).
+  if (JSON.stringify({ ...DB.settings, ...body }).length > 4 * 1024 * 1024) {
+    return res.status(413).json({ error: 'Pengaturan terlalu besar (>4MB). Kurangi ukuran gambar yang diunggah.' });
   }
   DB.settings = { ...DB.settings, ...body };
   save();
@@ -3873,16 +4018,40 @@ app.delete('/api/admin/settings/owner-signature', auth, (req, res) => {
   res.json({ ok: true });
 });
 
-// Public: serve the saved signature image so the print-preview HTML
-// and the server-rendered kwitansi page can <img src='/api/owner-signature'>
-// without needing the admin token. Cached aggressively because the
-// file never changes once saved (only when the admin re-saves).
-app.get('/api/owner-signature', (req, res) => {
-  const s = DB.settings;
-  if (!s || !s.owner_signature_b64) return res.status(404).end();
-  res.setHeader('Content-Type', s.owner_signature_mime || 'image/png');
-  res.setHeader('Cache-Control', 'public, max-age=86400');
-  res.send(Buffer.from(s.owner_signature_b64, 'base64'));
+// Tanda tangan bidan/pemilik HANYA boleh keluar lewat jalur berizin.
+//
+// SEBELUMNYA endpoint ini PUBLIK (tanpa auth), jadi siapa pun yang tahu
+// URL-nya bisa mengunduh gambar tanda tangan asli lalu memakainya untuk
+// memalsukan kwitansi. Sekarang:
+//   * admin  -> GET /api/admin/settings/owner-signature (pakai token)
+//   * halaman kwitansi publik -> tanda tangan disisipkan langsung sebagai
+//     data URL di HTML yang dirender server (lihat renderKwitansiHtml)
+//   * print/PDF panel admin -> data URL diambil lebih dulu via endpoint
+//     admin, lalu di-inject ke halaman cetak
+// Route lama tetap ada sebagai 404 eksplisit supaya tidak jatuh ke catch-all.
+function ownerSignatureDataUrl() {
+  const s = DB.settings || {};
+  if (!s.owner_signature_b64) return null;
+  return 'data:' + (s.owner_signature_mime || 'image/png') + ';base64,' + s.owner_signature_b64;
+}
+app.get('/api/owner-signature', (req, res) => res.status(404).json({ error: 'Endpoint tidak tersedia' }));
+
+// Admin-only: ambil tanda tangan sebagai data URL (untuk preview, print,
+// dan PDF). Tidak ikut otomatis di payload /api/admin/settings supaya
+// respons itu tetap ringan dan data ini tidak beredar tanpa perlu.
+app.get('/api/admin/settings/owner-signature', auth, (req, res) => {
+  const s = DB.settings || {};
+  if (!s.owner_signature_b64) {
+    return res.json({ ok: true, has_signature: false, mime: null, data_url: null });
+  }
+  res.setHeader('Cache-Control', 'private, no-store');
+  res.json({
+    ok: true,
+    has_signature: true,
+    mime: s.owner_signature_mime || 'image/png',
+    data_url: ownerSignatureDataUrl(),
+    at: s.owner_signature_at || null
+  });
 });
 
 // Upload an icon image for one social media entry (Instagram, TikTok, etc.).
@@ -4059,8 +4228,10 @@ app.put('/api/admin/profile', auth, (req, res) => {
     // to patient data; we want a reasonable minimum without being
     // annoying). Reject if new_password equals current.
     if (new_password && typeof new_password === 'string') {
-      if (new_password.length < 8) {
-        return res.status(400).json({ error: 'Password baru minimal 8 karakter' });
+      // Password admin = satu-satunya kunci ke data pasien (nama, alamat,
+      // nomor WhatsApp, bukti transfer). Minimal 10 karakter.
+      if (new_password.length < 10) {
+        return res.status(400).json({ error: 'Password baru minimal 10 karakter' });
       }
       if (bcrypt.compareSync(new_password, admin.password_hash)) {
         return res.status(400).json({ error: 'Password baru tidak boleh sama dengan yang lama' });
@@ -4070,7 +4241,13 @@ app.put('/api/admin/profile', auth, (req, res) => {
     }
 
     if (!Object.keys(updates).length) {
-      return res.json({ ok: true, user: admin, changed: false });
+      // JANGAN kirim objek admin mentah — di dalamnya ada password_hash.
+      // Kirim hanya field yang boleh dilihat klien.
+      return res.json({
+        ok: true,
+        changed: false,
+        user: { id: admin.id, email: admin.email, name: admin.name, role: admin.role }
+      });
     }
 
     Object.assign(admin, updates);
@@ -4086,7 +4263,9 @@ app.put('/api/admin/profile', auth, (req, res) => {
       email_changed: !!updates.email,
       password_changed: !!updates.password_hash,
       user: { id: admin.id, email: admin.email, name: admin.name, role: admin.role },
-      requires_relogin: !!updates.email
+      // Ganti email ATAU password sama-sama mengharuskan login ulang:
+      // sesi lama otomatis dicabut oleh middleware auth.
+      requires_relogin: !!(updates.email || updates.password_hash)
     });
   } catch (e) {
     console.error('profile update error:', e);
@@ -4349,7 +4528,12 @@ app.post('/api/webhook/whatsapp', webhookLimiter, async (req, res) => {
           const fromPhone = msg.from;
           const userText = msg.text?.body || '';
           const senderName = contacts.find(c => c.wa_id === fromPhone)?.profile?.name || '';
-          console.log('[wa-webhook] Incoming from ' + fromPhone + ': ' + userText.slice(0, 100));
+          // PRIVASI: log Railway dapat dibaca orang lain (operator, pihak
+          // ketiga, screenshot support). Jangan pernah menuliskan nomor
+          // lengkap atau isi pesan pasien — cukup nomor bertopeng + panjang
+          // pesan + nama kecil untuk penelusuran masalah.
+          console.log('[wa-webhook] Pesan masuk dari ' + maskPhone(fromPhone) +
+            ' (' + (senderName ? senderName.split(' ')[0] : 'tanpa nama') + '), ' + userText.length + ' karakter');
 
           // Build history-aware context per sender
           const sessionId = 'wa-' + fromPhone;
