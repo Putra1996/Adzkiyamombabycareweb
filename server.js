@@ -479,13 +479,16 @@ async function initStorage() {
 }
 
 async function persistSnapshot(json) {
-  if (DATABASE_KIND === 'postgres' && pool) {
+  // activeDatabaseKind() — bukan DATABASE_KIND — supaya tulisan mengikuti
+  // koneksi yang sedang dipakai (termasuk koneksi yang dipasang dari panel).
+  const kind = activeDatabaseKind();
+  if (kind === 'postgres' && pool) {
     await pool.query(
       `INSERT INTO app_state (id, data, updated_at) VALUES (1, $1::jsonb, CURRENT_TIMESTAMP)
        ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = CURRENT_TIMESTAMP`,
       [json]
     );
-  } else if (DATABASE_KIND === 'mysql' && pool) {
+  } else if (kind === 'mysql' && pool) {
     await pool.execute(
       'INSERT INTO app_state (id, data) VALUES (1, ?) ON DUPLICATE KEY UPDATE data = VALUES(data)',
       [json]
@@ -499,7 +502,7 @@ function queueSave() {
   const json = JSON.stringify(DB);
   saveChain = saveChain
     .then(() => persistSnapshot(json))
-    .catch((error) => console.error(`[storage] ${DATABASE_KIND} save gagal:`, error.message));
+    .catch((error) => console.error(`[storage] ${activeDatabaseKind()} save gagal:`, error.message));
   return saveChain;
 }
 
@@ -846,7 +849,7 @@ function ensureNewSettings() {
     setInterval(() => { pruneShareTokens().catch(() => {}); }, 6 * 60 * 60 * 1000);
     await queueSave();
     server = app.listen(PORT, '0.0.0.0', () => {
-      console.log(`Adzkiya Mom Baby Care v2.2 on 0.0.0.0:${PORT} (storage: ${pool ? DATABASE_KIND : 'file'})`);
+      console.log(`Adzkiya Mom Baby Care v2.2 on 0.0.0.0:${PORT} (storage: ${pool ? activeDatabaseKind() : 'file'})`);
     });
   } catch (error) {
     console.error('FATAL boot:', error);
@@ -1261,7 +1264,7 @@ app.use('/api/', apiLimiter);
 // sebagai "file", yang bikin data hilang tanpa jejak sulit ditelusuri.
 app.get('/health', (req, res) => res.json({
   ok: true,
-  storage: pool ? DATABASE_KIND : 'file',
+  storage: pool ? activeDatabaseKind() : 'file',
   configured_storage: DATABASE_KIND,
   db_connected: !!pool,
   db_reachable: pool ? true : dbReachable,
@@ -2456,7 +2459,7 @@ const shareTokenMap = new Map(); // token -> { id, exp }
 // in file-storage mode. Loaded back on boot.
 let shareTokensDb = {}; // mirror of DB.share_tokens
 async function loadShareTokens() {
-  if (DATABASE_KIND === 'postgres' && pool) {
+  if (activeDatabaseKind() === 'postgres' && pool) {
     try {
       await pool.query(`
         CREATE TABLE IF NOT EXISTS share_tokens (
@@ -2473,7 +2476,7 @@ async function loadShareTokens() {
     } catch (e) {
       console.error('[share-tokens] postgres load failed:', e.message);
     }
-  } else if (DATABASE_KIND === 'mysql' && pool) {
+  } else if (activeDatabaseKind() === 'mysql' && pool) {
     try {
       await pool.execute(`
         CREATE TABLE IF NOT EXISTS share_tokens (
@@ -2502,7 +2505,7 @@ async function loadShareTokens() {
 }
 async function saveShareToken(token, id, exp) {
   shareTokenMap.set(token, { id, exp });
-  if (DATABASE_KIND === 'postgres' && pool) {
+  if (activeDatabaseKind() === 'postgres' && pool) {
     try {
       await pool.query(
         'INSERT INTO share_tokens (token, receipt_id, exp) VALUES ($1, $2, $3) ON CONFLICT (token) DO UPDATE SET receipt_id = EXCLUDED.receipt_id, exp = EXCLUDED.exp',
@@ -2511,7 +2514,7 @@ async function saveShareToken(token, id, exp) {
     } catch (e) {
       console.error('[share-tokens] postgres save failed:', e.message);
     }
-  } else if (DATABASE_KIND === 'mysql' && pool) {
+  } else if (activeDatabaseKind() === 'mysql' && pool) {
     try {
       await pool.execute(
         'INSERT INTO share_tokens (token, receipt_id, exp) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE receipt_id = VALUES(receipt_id), exp = VALUES(exp)',
@@ -2534,9 +2537,9 @@ async function pruneShareTokens() {
   for (const [k, v] of shareTokenMap) if (v.exp < now) expired.push(k);
   for (const k of expired) shareTokenMap.delete(k);
   if (!expired.length) return;
-  if (DATABASE_KIND === 'postgres' && pool) {
+  if (activeDatabaseKind() === 'postgres' && pool) {
     try { await pool.query('DELETE FROM share_tokens WHERE exp < $1', [now]); } catch {}
-  } else if (DATABASE_KIND === 'mysql' && pool) {
+  } else if (activeDatabaseKind() === 'mysql' && pool) {
     try { await pool.execute('DELETE FROM share_tokens WHERE exp < ?', [now]); } catch {}
   } else {
     for (const k of expired) delete shareTokensDb[k];
