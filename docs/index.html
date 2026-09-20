@@ -494,14 +494,17 @@ fetch(adzkiyaApiUrl('/api/public-settings')).then(r => r.json()).then(s => {
   flex: 1;
   border: 1.5px solid #ffd6e2;
   border-radius: 12px;
-  padding: 8px 10px;
+  padding: 10px 12px;
   font-family: inherit;
   font-size: 0.88rem;
+  line-height: 1.4;
+  min-height: 42px;
   resize: none;
   max-height: 80px;
   outline: none;
   background: #fffafc;
   color: #2a1822;
+  overflow-wrap: anywhere;
 }
 .ai-chat-input textarea:focus { border-color: #ee5a8a; background: white; }
 .ai-chat-send {
@@ -557,7 +560,7 @@ fetch(adzkiyaApiUrl('/api/public-settings')).then(r => r.json()).then(s => {
   <div id="aiChatMessages" class="ai-chat-messages"></div>
   <div id="aiChatQuick" class="ai-quick-replies"></div>
   <div class="ai-chat-input">
-    <textarea id="aiChatText" rows="1" data-i18n-attr="placeholder:ai.placeholder" placeholder="Ketik pesan... (Enter untuk kirim, Shift+Enter untuk baris baru)" maxlength="500"></textarea>
+    <textarea id="aiChatText" rows="1" data-i18n-attr="placeholder:ai.placeholder" placeholder="Ketik pesan… (Enter kirim)" maxlength="500"></textarea>
     <button id="aiChatSend" class="ai-chat-send" aria-label="Kirim pesan" title="Kirim">➤</button>
   </div>
   <div class="ai-chat-footer-note" data-i18n="ai.footer_note">Powered by AI · untuk booking final via WhatsApp admin</div>
@@ -582,21 +585,67 @@ fetch(adzkiyaApiUrl('/api/public-settings')).then(r => r.json()).then(s => {
   }
 
   function linkifyAndEscape(text) {
-    // Escape HTML, then convert markdown links and bare URLs into anchors.
-    //
     // SECURITY: href wajib difilter skemanya. Respons AI bisa memuat
     // markdown seperti [klik](javascript:alert(1)) — tanpa filter ini,
     // teks dari model (yang bisa dipengaruhi prompt pengguna) berubah
-    // menjadi link berbahaya yang bisa dieksekusi saat diklik.
+    // menjadi tautan berbahaya yang bisa dieksekusi saat diklik.
     const safeHref = (u) => {
-      const raw = String(u || '').trim().replace(/&amp;/g, '&');
+      const raw = String(u || '').trim().replace(/&amp;/g, '&').replace(/"/g, '%22');
       return /^(https?:\/\/|mailto:|tel:)/i.test(raw) ? raw : '#';
     };
-    const escaped = escapeHtml(text);
-    return escaped
-      .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (m, label, href) => '<a href="' + safeHref(href) + '" target="_blank" rel="noopener">' + label + '</a>')
-      .replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" rel="noopener">$1</a>')
-      .replace(/(wa\.me\/\d+[^\s<]*)/g, '<a href="https://$1" target="_blank" rel="noopener">$1</a>');
+
+    // 1) Buang tag HTML yang kadang dikirim model (<a href=...>, <br>, <b>).
+    //    Server juga sudah membersihkannya, ini lapisan kedua supaya balasan
+    //    lama/ter-cache tidak pernah tampil sebagai potongan tag.
+    const plain = String(text == null ? '' : text)
+      .replace(/<\s*br\s*\/?\s*>/gi, '\n')
+      // <a href="X">Label</a> -> "Label (X)" supaya URL tidak hilang saat
+      // tag dibuang (mis. <a href="https://wa.me/628...">WhatsApp</a>).
+      .replace(/<a\s[^>]*href\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi, function (m, href, label) {
+        const clean = String(label).replace(/<[^>]*>/g, '').trim();
+        const url = String(href).trim();
+        if (clean && clean !== url) return clean + ' (' + url + ')';
+        return clean || url;
+      })
+      .replace(/<[^>]*>/g, '');
+
+    // 2) Escape supaya aman dimasukkan lewat innerHTML.
+    const escaped = escapeHtml(plain);
+
+    // 3) Jadikan tautan dalam SATU pass (satu regex + callback).
+    //
+    //    BUG LAMA: sebelumnya dipakai tiga .replace() berurutan. Markup
+    //    <a href="..."> yang dibuat pass kedua ikut dipindai ulang pass
+    //    ketiga, dan regex `wa\.me\/\d+[^\s<]*` yang rakus menelan tanda
+    //    kutip — hasilnya teks rusak seperti:
+    //      wa.me/085887018194" target="_blank" rel="noopener">https://...
+    //    Dengan satu pass, teks yang sudah menjadi tautan tidak diproses
+    //    ulang.
+    //    Tanda kutip (& " '), '&' (dari &amp;), dan '<'/'>' (&lt;/&gt;)
+    //    ditolak di dalam URL supaya tidak menelan markup di sekitarnya.
+    const LINK_RE = /\[([^\]]+)\]\(([^)\s]+)\)|((?:https?:\/\/|wa\.me\/)[^\s&<>"']+)/gi;
+    return escaped.replace(LINK_RE, function (match, label, mdHref, bareUrl) {
+      let url = mdHref || bareUrl;
+      // Tanda baca di akhir kalimat jangan ikut masuk ke dalam tautan —
+      // termasuk tanda penutup seperti ")" pada teks "WhatsApp (https://wa.me/...)".
+      let trailing = '';
+      for (;;) {
+        const last = url.slice(-1);
+        if (/[.,;:!?]/.test(last)) { trailing = last + trailing; url = url.slice(0, -1); continue; }
+        const unbalanced =
+          (last === ')' && !url.includes('(')) ||
+          (last === ']' && !url.includes('[')) ||
+          (last === '}' && !url.includes('{'));
+        if (unbalanced) { trailing = last + trailing; url = url.slice(0, -1); continue; }
+        break;
+      }
+      const href = safeHref(/^wa\.me\//i.test(url) ? 'https://' + url : url);
+      const text = label ? label : url;
+      // Skema tidak diizinkan (mis. javascript:) → tampilkan sebagai teks
+      // biasa saja, jangan jadi tautan mati yang membingungkan.
+      if (href === '#') return text + trailing;
+      return '<a href="' + href + '" target="_blank" rel="noopener">' + text + '</a>' + trailing;
+    });
   }
 
   function appendMessage(text, role) {
@@ -678,9 +727,12 @@ fetch(adzkiyaApiUrl('/api/public-settings')).then(r => r.json()).then(s => {
     .then(({ status, data }) => {
       typing.remove();
       if (status >= 400 || data.error) {
-        // Friendly fallback to WA when AI is unavailable
+        // Friendly fallback to WA when AI is unavailable.
+        // Nomor diambil dari server (fallback_wa); pesan memakai i18n supaya
+        // konsisten ID/EN, dan ditulis sebagai teks biasa (tautan akan
+        // otomatis jadi link oleh linkifyAndEscape).
         const wa = data.fallback_wa || 'https://wa.me/6285887018194';
-        appendMessage('Maaf, saya sedang gangguan 😅. Silakan chat langsung via WhatsApp ya: ' + wa, 'bot');
+        appendMessage(window.t('ai.wa_fallback_msg') + ' ' + wa, 'bot');
         history.push({ role: 'assistant', content: '[fallback]' });
       } else {
         appendMessage(data.reply, 'bot');

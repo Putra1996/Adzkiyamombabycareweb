@@ -3002,6 +3002,23 @@ function renderTemplate(body, row) {
 // We strip every non-digit from the phone. Numbers that begin with
 // "0" (Indonesian format) get rewritten to "62" so they're valid for
 // wa.me.
+// Nomor Indonesia -> format internasional untuk wa.me.
+// BUG: sebelumnya dipakai `phone.replace(/\D/g,'')` apa adanya, sehingga
+// nomor lokal seperti "085887018194" menghasilkan https://wa.me/085887018194
+// — WhatsApp mengharapkan nomor tanpa angka 0 di depan (6285887018194).
+// Tautan seperti itu bisa gagal dibuka atau salah arah.
+function waNumberFor(phone, fallback) {
+  let digits = String(phone || '').replace(/\D/g, '');
+  if (!digits) digits = String(fallback || '6285887018194').replace(/\D/g, '');
+  if (digits.startsWith('0')) digits = '62' + digits.slice(1);       // 08xx -> 628xx
+  else if (digits.startsWith('620')) digits = '62' + digits.slice(3); // salah tulis 620xx
+  else if (!digits.startsWith('62') && digits.length <= 12) digits = '62' + digits; // 8xx -> 628xx
+  return digits;
+}
+function waLinkFor(phone, fallback) {
+  return 'https://wa.me/' + waNumberFor(phone, fallback);
+}
+
 function buildWaLink(phone, message) {
   if (!phone) return null;
   const digits = String(phone).replace(/\D/g, '');
@@ -5042,7 +5059,42 @@ app.get('/admin', (req, res) => res.sendFile(path.join(__dirname, 'public', 'adm
 
 
 // ===== AI BOOKING ASSISTANT =====
-const AI_DEFAULT_PERSONA = `Kamu adalah Adzkiya Assistant, customer service AI untuk klinik home-service Adzkiya Mom Baby Care di Cilacap.\n\nTugas kamu:\n1. Menyapa customer dengan hangat dalam Bahasa Indonesia\n2. Membantu memilih layanan yang sesuai dari katalog\n3. Memberi info harga, jam operasional, dan area layanan\n4. Membantu booking: tanyakan tanggal & jam yang diinginkan, lalu arahkan customer untuk konfirmasi via WhatsApp ke admin\n\nAturan penting:\n- Jawab singkat (max 3-4 kalimat per pesan)\n- Gunakan emoji secukupnya (🌸 untuk sapaan, ✅ untuk konfirmasi)\n- SELALU akhiri dengan pertanyaan untuk lanjutkan percakapan\n- JANGAN sebut harga detail kecuali customer tanya\n- JANGAN janjikan booking tanpa admin confirmation\n- Untuk finalisasi booking, arahkan ke WhatsApp admin`;
+// Rapikan balasan AI sebelum dikirim ke klien / WhatsApp.
+//
+// Kenapa perlu: model (Gemini/OpenRouter) kadang menjawab dengan HTML —
+// mis. `<a href="https://wa.me/0858...">https://wa.me/0858...</a>`. Di
+// widget chat HTML itu ter-escape lalu dirusak oleh linkifier sehingga
+// pembaca melihat potongan tag (`wa.me/0858..." target="_blank"...`),
+// dan di WhatsApp tag HTML memang tidak didukung sama sekali.
+//
+// Di sini tag dibuang dan teks dikembalikan ke bentuk polos; URL tetap
+// utuh sehingga klien bisa menjadikannya tautan dan WhatsApp tetap
+// menampilkannya sebagai teks yang bisa diketuk.
+function sanitizeAIReply(text) {
+  return String(text == null ? '' : text)
+    .replace(/<\s*br\s*\/?\s*>/gi, '\n')
+    .replace(/<\s*\/\s*(p|div|li|tr)\s*>/gi, '\n')
+    .replace(/<\s*li[^>]*>/gi, '\u2022 ')
+    // <a href="X">Label</a> -> "Label (X)" supaya tautan tidak hilang saat
+    // tag dibuang (mis. <a href="https://wa.me/628...">WhatsApp</a>).
+    .replace(/<a\s[^>]*href\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi, (m, href, label) => {
+      const clean = String(label).replace(/<[^>]*>/g, '').trim();
+      const url = String(href).trim();
+      if (clean && clean !== url) return clean + ' (' + url + ')';
+      return clean || url;
+    })
+    .replace(/<[^>]*>/g, '')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#0?39;|&apos;/gi, "'")
+    .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, '$1 ($2)')
+    .replace(/[ \t]+$/gm, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+const AI_DEFAULT_PERSONA = `Kamu adalah Adzkiya Assistant, customer service AI untuk klinik home-service Adzkiya Mom Baby Care di Cilacap.\n\nTugas kamu:\n1. Menyapa customer dengan hangat dalam Bahasa Indonesia\n2. Membantu memilih layanan yang sesuai dari katalog\n3. Memberi info harga, jam operasional, dan area layanan\n4. Membantu booking: tanyakan tanggal & jam yang diinginkan, lalu arahkan customer untuk konfirmasi via WhatsApp ke admin\n\nAturan penting:\n- Jawab singkat (max 3-4 kalimat per pesan)\n- Gunakan emoji secukupnya (🌸 untuk sapaan, ✅ untuk konfirmasi)\n- SELALU akhiri dengan pertanyaan untuk lanjutkan percakapan\n- JANGAN sebut harga detail kecuali customer tanya\n- JANGAN janjikan booking tanpa admin confirmation\n- Untuk finalisasi booking, arahkan ke WhatsApp admin\n\nFormat jawaban (WAJIB):\n- Tulis TEKS BIASA saja, JANGAN pakai HTML atau tag apa pun\n  (jangan tulis <a href=\"...\">, <br>, <b>, dan sejenisnya)\n- Tulis tautan apa adanya, contoh: https://wa.me/6285887018194\n- JANGAN pakai format markdown seperti [teks](tautan)`;
 
 function buildAISystemPrompt() {
   const s = DB.settings || {};
@@ -5094,7 +5146,7 @@ async function callGemini(systemPrompt, messages) {
   const data = await r.json();
   const reply = data.candidates?.[0]?.content?.parts?.[0]?.text;
   if (!reply) throw new Error('Gemini: empty response');
-  return reply;
+  return sanitizeAIReply(reply);
 }
 
 // --- Provider: OpenRouter (fallback) ---
@@ -5127,7 +5179,7 @@ async function callOpenRouter(systemPrompt, messages) {
   const data = await r.json();
   const reply = data.choices?.[0]?.message?.content;
   if (!reply) throw new Error('OpenRouter: empty response');
-  return reply;
+  return sanitizeAIReply(reply);
 }
 
 // Try Gemini first, fall back to OpenRouter. Returns { reply, provider }.
@@ -5160,13 +5212,13 @@ app.post('/api/ai/chat', aiLimiter, async (req, res) => {
     if (!DB.settings.ai_assistant_enabled) {
       return res.status(503).json({
         error: 'AI assistant belum diaktifkan. Hubungi admin via WhatsApp untuk booking.',
-        fallback_wa: 'https://wa.me/' + (DB.settings.phone || '6285887018194').replace(/\D/g, '')
+        fallback_wa: waLinkFor(DB.settings.phone, '6285887018194')
       });
     }
     if (!DB.settings.ai_gemini_api_key && !DB.settings.ai_openrouter_api_key) {
       return res.status(503).json({
         error: 'AI provider belum dikonfigurasi. Hubungi admin via WhatsApp.',
-        fallback_wa: 'https://wa.me/' + (DB.settings.phone || '6285887018194').replace(/\D/g, '')
+        fallback_wa: waLinkFor(DB.settings.phone, '6285887018194')
       });
     }
 
@@ -5201,7 +5253,7 @@ app.post('/api/ai/chat', aiLimiter, async (req, res) => {
     console.error('[ai/chat]', e);
     res.status(500).json({
       error: 'AI chat gagal: ' + (e.message || 'unknown error'),
-      fallback_wa: 'https://wa.me/' + (DB.settings.phone || '6285887018194').replace(/\D/g, '')
+      fallback_wa: waLinkFor(DB.settings.phone, '6285887018194')
     });
   }
 });
