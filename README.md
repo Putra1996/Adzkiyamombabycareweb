@@ -1,114 +1,64 @@
-[npm-image]: https://img.shields.io/npm/v/mysql2.svg
-[npm-url]: https://npmjs.com/package/mysql2
-[node-version-image]: https://img.shields.io/node/v/mysql2.svg
-[node-version-url]: https://nodejs.org/en/download
-[downloads-image]: https://img.shields.io/npm/dm/mysql2.svg
-[downloads-url]: https://npmjs.com/package/mysql2
-[license-url]: https://github.com/sidorares/node-mysql2/blob/master/License
-[license-image]: https://img.shields.io/npm/l/mysql2.svg?maxAge=2592000
-[node-mysql]: https://github.com/mysqljs/mysql
-[mysqljs]: https://github.com/mysqljs
-[mysql-native]: https://github.com/sidorares/nodejs-mysql-native
-[sidorares]: https://github.com/sidorares
-[TooTallNate]: https://gist.github.com/TooTallNate
-[starttls.js]: https://gist.github.com/TooTallNate/848444
-[node-mariasql]: https://github.com/mscdex/node-mariasql
-[contributors]: https://github.com/sidorares/node-mysql2/graphs/contributors
-[contributing]: https://github.com/sidorares/node-mysql2/blob/master/Contributing.md
-[docs-base]: https://sidorares.github.io/node-mysql2/docs
-[docs-base-zh-CN]: https://sidorares.github.io/node-mysql2/zh-CN/docs
-[docs-base-pt-BR]: https://sidorares.github.io/node-mysql2/pt-BR/docs
-[docs-prepared-statements]: https://sidorares.github.io/node-mysql2/docs/documentation/prepared-statements
-[docs-mysql-server]: https://sidorares.github.io/node-mysql2/docs/documentation/mysql-server
-[docs-promise-wrapper]: https://sidorares.github.io/node-mysql2/docs/documentation/promise-wrapper
-[docs-authentication-switch]: https://sidorares.github.io/node-mysql2/docs/documentation/authentication-switch
-[docs-streams]: https://sidorares.github.io/node-mysql2/docs/documentation/extras
-[docs-typescript-docs]: https://sidorares.github.io/node-mysql2/docs/documentation/typescript-examples
-[docs-qs-pooling]: https://sidorares.github.io/node-mysql2/docs#using-connection-pools
-[docs-qs-first-query]: https://sidorares.github.io/node-mysql2/docs#first-query
-[docs-qs-using-prepared-statements]: https://sidorares.github.io/node-mysql2/docs#using-prepared-statements
-[docs-examples]: https://sidorares.github.io/node-mysql2/docs/examples
-[docs-faq]: https://sidorares.github.io/node-mysql2/docs/faq
-[docs-documentation]: https://sidorares.github.io/node-mysql2/docs/documentation
-[docs-contributing]: https://sidorares.github.io/node-mysql2/docs/contributing/website
-[coverage]: https://img.shields.io/codecov/c/github/sidorares/node-mysql2
-[coverage-url]: https://app.codecov.io/github/sidorares/node-mysql2
-[ci-url]: https://github.com/sidorares/node-mysql2/actions/workflows/ci-coverage.yml?query=branch%3Amaster
-[ci-image]: https://img.shields.io/github/actions/workflow/status/sidorares/node-mysql2/ci-coverage.yml?event=push&style=flat&label=CI&branch=master
+# 🌸 Adzkiya Mom Baby Care
 
-# MySQL2
+Website reservasi + panel admin untuk layanan home-service ibu & anak
+(Nusawungu, Cilacap). Frontend statis, backend Express, data di
+PostgreSQL/MySQL (atau file untuk mode darurat).
 
-[![NPM Version][npm-image]][npm-url]
-[![NPM Downloads][downloads-image]][downloads-url]
-[![Node.js Version][node-version-image]][node-version-url]
-[![GitHub Workflow Status (with event)][ci-image]][ci-url]
-[![Codecov][coverage]][coverage-url]
-[![License][license-image]][license-url]
+- **Produksi (API + panel + situs):** https://adzkiyamombabycareweb-production.up.railway.app
+- **Cermin GitHub Pages:** https://putra1996.github.io/Adzkiyamombabycareweb/
+- **Panel admin:** `/admin` (akun dibuat dari env `ADMIN_EMAIL` / `ADMIN_PASSWORD`)
 
-[English][docs-base] | [简体中文][docs-base-zh-CN] | [Português (BR)][docs-base-pt-BR]
+## 📚 Dokumentasi
 
-> MySQL client for Node.js with focus on performance. Supports prepared statements, non-utf8 encodings, binary log protocol, compression, ssl [much more][docs-documentation].
+| Dokumen | Isi |
+|---|---|
+| **[PANDUAN-AI-WA.md](PANDUAN-AI-WA.md)** | Cara setting AI (Gemini/OpenRouter) & mendapatkan token WhatsApp Business API |
+| [SECURITY.md](SECURITY.md) | Perlindungan data pasien + checklist wajib admin |
+| [DEPLOYMENT.md](DEPLOYMENT.md) | Deploy Railway + GitHub Pages, penanganan penyimpanan |
+| [FITUR-DAN-BUG.md](FITUR-DAN-BUG.md) | Catatan fitur & riwayat perbaikan |
 
-**Table of Contents**
+## ✨ Fitur
 
-- [History and Why MySQL2](#history-and-why-mysql2)
-- [Installation](#installation)
-- [Documentation](#documentation)
-- [Acknowledgements](#acknowledgements)
-- [Contributing](#contributing)
+- **Reservasi online** multi-layanan & multi-jadwal, unggah bukti transfer, kalender ketersediaan, hari libur (blackout).
+- **Panel admin**: dashboard & grafik, reservasi, notifikasi pengingat, kalender, kwitansi (PDF/cetak), rekap bulanan + export Excel, broadcast WhatsApp, CRM mini (RFM), akunting P&L, pengaturan situs.
+- **Kwitansi**: nomor otomatis, multi-sesi, TTD bidan tersimpan, PDF A4/A5/F4/thermal, link kwitansi publik bertoken (30 hari).
+- **AI Booking Assistant**: chat widget di beranda + auto-reply WhatsApp (Gemini primary, OpenRouter fallback) lengkap dengan tes koneksi dari panel — lihat [PANDUAN-AI-WA.md](PANDUAN-AI-WA.md).
+- **Keamanan**: token admin, rate limit, backup terenkripsi (AES-256-GCM + scrypt), tanda tangan webhook, dan pemulihan penyimpanan — lihat [SECURITY.md](SECURITY.md).
 
-## History and Why MySQL2
+## 🧰 Teknologi
 
-MySQL2 project is a continuation of [MySQL-Native][mysql-native]. Protocol parser code was rewritten from scratch and api changed to match popular [Node MySQL][node-mysql]. MySQL2 team is working together with [Node MySQL][node-mysql] team to factor out shared code and move it under [mysqljs][mysqljs] organization.
+Node.js ≥ 20 · Express 4 · PostgreSQL (`pg`) / MySQL (`mysql2`) · JWT + bcrypt ·
+ExcelJS · pdf-parse · frontend vanilla JS (tanpa build step) · Chart.js & jsPDF/html2canvas dari CDN.
 
-MySQL2 is mostly API compatible with [Node MySQL][node-mysql] and supports majority of features. MySQL2 also offers these additional features:
-
-- Faster / Better Performance
-- [Prepared Statements][docs-prepared-statements]
-- MySQL Binary Log Protocol
-- [MySQL Server][docs-mysql-server]
-- Extended support for Encoding and Collation
-- [Promise Wrapper][docs-promise-wrapper]
-- Compression
-- SSL and [Authentication Switch][docs-authentication-switch]
-- [Custom Streams][docs-streams]
-- [Pooling][docs-qs-pooling]
-
-## Installation
-
-MySQL2 is free from native bindings and can be installed on Linux, Mac OS or Windows without any issues.
+## 🚀 Menjalankan lokal
 
 ```bash
-npm install --save mysql2
+npm install
+
+# variabel wajib (lihat .env.example)
+export ADMIN_EMAIL=admin@contoh.id
+export ADMIN_PASSWORD=password-panjang-min-12
+export JWT_SECRET=$(printf 'x%.0s' {1..48})   # min. 32 karakter
+# opsional: DATABASE_URL=postgresql://... (tanpa ini data disimpan di data.json)
+# opsional: DATA_FILE=/data/adzkiya-state.json
+
+npm start            # http://localhost:3000  → panel di /admin
+npm test             # uji API + uji tata letak/keamanan panel
+npm run build:pages  # sinkronkan public/ → docs/ untuk GitHub Pages
 ```
 
-If you are using TypeScript, you will need to install `@types/node`.
+## 🔐 Catatan operasional
 
-```bash
-npm install --save-dev @types/node
-```
+- **Akun admin** hanya dibuat dari env (`ADMIN_EMAIL`, `ADMIN_PASSWORD`); ganti password
+  lewat **Pengaturan → Profil** (semua sesi lama otomatis dicabut).
+- **Data permanen butuh `DATABASE_URL`.** Kalau database tidak bisa dihubungi, server masuk
+  **mode darurat** (data ke file container) dan panel menampilkan peringatan beserta
+  langkah pemulihan — detail di [DEPLOYMENT.md](DEPLOYMENT.md) §5b.
+- **Backup berisi data pasien** — selalu pakai tombol **🔐 Backup Terenkripsi**
+  (butuh passphrase) dan jangan kirim file polos lewat WhatsApp/email.
+- Setelah restore, isi ulang kredensial yang sengaja **tidak** ikut di backup:
+  kunci AI, token WhatsApp, App Secret, token verifikasi webhook, TTD pemilik, dan log chat.
 
-> For TypeScript documentation and examples, see [here][docs-typescript-docs].
+## 📄 Lisensi
 
-## Documentation
-
-- [Quickstart][docs-base]
-  - [First Query][docs-qs-first-query], [Using Prepared Statements][docs-qs-using-prepared-statements], [Using Connection Pools][docs-qs-pooling] and more.
-- [Documentation][docs-documentation]
-- [Examples][docs-examples]
-- [FAQ][docs-faq]
-
-## Acknowledgements
-
-- Internal protocol is written by [@sidorares][sidorares] [MySQL-Native][mysql-native].
-- Constants, SQL parameters interpolation, Pooling, `ConnectionConfig` class taken from [Node MySQL][node-mysql].
-- SSL upgrade code based on [@TooTallNate][TooTallNate] [code][starttls.js].
-- Secure connection / compressed connection api flags compatible to [MariaSQL][node-mariasql] client.
-- [Contributors][contributors].
-
-## Contributing
-
-Want to improve something in **MySQL2**?
-Please check [Contributing.md][contributing] for detailed instruction on how to get started.
-
-To contribute in **MySQL2 Documentation**, please visit the [Website Contributing Guidelines][docs-contributing] for detailed instruction on how to get started.
+Lihat [License](License). Proyek internal Adzkiya Mom Baby Care.
