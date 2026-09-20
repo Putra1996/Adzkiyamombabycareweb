@@ -324,6 +324,62 @@ test('API menyimpan reservasi, menghitung harga server, dan melindungi admin', {
     assert.equal(syncInFileMode.status, 400, 'sinkronisasi di mode file seharusnya ditolak');
 
     // ------------------------------------------------------------------
+    // PEMULIHAN PENYIMPANAN: tes koneksi & apply wajib token, wajib
+    // konfirmasi, dan tidak boleh mengubah apa pun saat gagal.
+    // ------------------------------------------------------------------
+    for (const path of ['/api/admin/storage/test-connection', '/api/admin/storage/apply-connection']) {
+      const res = await fetch(`${baseUrl}${path}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}'
+      });
+      assert.equal(res.status, 401, `${path} bisa dipanggil tanpa token`);
+    }
+
+    const badConn = await fetch(`${baseUrl}/api/admin/storage/test-connection`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${login.token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: 'postgresql://user:rahasia@127.0.0.1:1/db' })
+    });
+    assert.equal(badConn.status, 400, 'koneksi ke host mati seharusnya dilaporkan gagal');
+    const badConnBody = await badConn.json();
+    assert.equal(badConnBody.ok, false);
+    assert.ok(typeof badConnBody.hint === 'string' && badConnBody.hint.length > 10, 'tidak ada saran perbaikan');
+    assert.ok(!JSON.stringify(badConnBody).includes('rahasia'), 'password ikut ter-echo di respons tes koneksi');
+
+    const badFormat = await fetch(`${baseUrl}/api/admin/storage/test-connection`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${login.token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: 'bukan-url-sama-sekali' })
+    });
+    assert.equal(badFormat.status, 400);
+
+    const applyNoConfirm = await fetch(`${baseUrl}/api/admin/storage/apply-connection`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${login.token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: 'postgresql://user:pw@127.0.0.1:1/db' })
+    });
+    assert.equal(applyNoConfirm.status, 400, 'apply tanpa konfirmasi dijalankan');
+
+    const applyBadHost = await fetch(`${baseUrl}/api/admin/storage/apply-connection`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${login.token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: 'postgresql://user:pw@127.0.0.1:1/db', confirm: 'PAKAI' })
+    });
+    assert.equal(applyBadHost.status, 400, 'apply ke host mati seharusnya gagal rapi');
+
+    // Setelah kegagalan, storage TIDAK boleh berubah & sesi tetap hidup.
+    const afterFailedApply = await (await fetch(`${baseUrl}/api/admin/storage/status`, {
+      headers: { Authorization: `Bearer ${login.token}` }
+    })).json();
+    assert.equal(afterFailedApply.active_storage, 'file', 'storage berubah walau apply gagal');
+    assert.equal(afterFailedApply.using_runtime_connection, false, 'koneksi runtime tercatat walau apply gagal');
+    assert.equal(typeof afterFailedApply.file_storage_persistent, 'boolean');
+
+    const stillAlive = await fetch(`${baseUrl}/api/admin/reservations`, {
+      headers: { Authorization: `Bearer ${login.token}` }
+    });
+    assert.equal(stillAlive.status, 200, 'sesi admin mati setelah percobaan apply yang gagal');
+
+    // ------------------------------------------------------------------
     // DIAGNOSA AI/WHATSAPP: hanya admin, tanpa membocorkan kredensial.
     // ------------------------------------------------------------------
     const diagRes = await fetch(`${baseUrl}/api/admin/ai/diagnostics`, {

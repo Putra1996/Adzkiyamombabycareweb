@@ -126,15 +126,21 @@ Cek statusnya kapan saja di panel admin → **Pengaturan → 🗄️ Status Peny
 
 Kalau muncul mode darurat:
 
-1. **Backup & Restore → 🔐 Download Backup Terenkripsi** (isi passphrase) — lakukan ini
-   SEBELUM memperbaiki `DATABASE_URL`, karena memperbaiki env var memicu redeploy yang
-   menghapus file darurat.
-2. Perbaiki `DATABASE_URL` / status Neon, lalu redeploy.
-3. **Backup & Restore → Restore** (mode *Append*) dengan file + passphrase tadi.
-4. Pastikan Status Penyimpanan kembali hijau.
+1. **Database masih/ sudah bisa dihubungi?** → **Pengaturan → 🗄️ Status Penyimpanan →
+   ⬆️ Sinkronkan Data Darurat ke Database** (menggabungkan, tidak menimpa; akun admin ikut dibawa).
+2. **Kredensial berubah/salah?** → di kartu yang sama, klik
+   **🔧 Perbaiki / Ganti Koneksi Database** → tempel connection string baru → **🔌 Tes Koneksi**
+   (bisa dicoba berulang tanpa deploy, lengkap dengan saran perbaikan) → **✅ Gunakan Sekarang**
+   → lalu **salin connection string yang sama ke Railway → Variables → DATABASE_URL** dan deploy
+   (langkah ini yang membuatnya permanen).
+3. **Belum bisa juga?** → **Backup & Restore → 🔐 Download Backup Terenkripsi** (isi passphrase),
+   SEBELUM memperbaiki `DATABASE_URL` — karena memperbaiki env var memicu redeploy yang menghapus
+   file darurat. Setelah server hidup dengan database, gunakan **Restore** (mode *Append*).
+4. Pastikan Status Penyimpanan kembali hijau (`db_connected: true`).
 
-Kalau database pulih sendiri tanpa redeploy, gunakan tombol
-**⬆️ Sinkronkan Data Darurat ke Database** (menggabungkan, tidak menimpa).
+Alternatif tanpa database: pasang **Railway Volume**, lalu set
+`DATA_FILE=/data/adzkiya-state.json` (atau biarkan server memakai `RAILWAY_VOLUME_MOUNT_PATH`
+secara otomatis). Data file-mode akan tetap ada antar deploy.
 
 ## 6. Keamanan dan operasi
 

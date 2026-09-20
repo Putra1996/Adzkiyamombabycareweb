@@ -50,6 +50,13 @@ Yang boleh publik hanya: katalog layanan, profil usaha, jam buka, tesimoni, reke
 - Server mendeteksi sendiri kalau database tidak bisa dihubungi, menampilkan banner + kartu status,
   mengecek ulang koneksi tiap menit, dan menyediakan tombol sinkronisasi yang **menggabungkan**
   data darurat ke database (tanpa menimpa data lama, tanpa menyentuh pengaturan aplikasi).
+- Panel admin bisa menguji kredensial database **sebelum** dipakai (tes koneksi + saran perbaikan),
+  memakai koneksi baru untuk sesi berjalan tanpa redeploy, dan memperingatkan bahwa koneksi itu
+  belum permanen sampai disalin ke variabel environment.
+- Akun admin selalu ikut dipindahkan saat berpindah penyimpanan; proses dibatalkan bila hasilnya
+  akan menyisakan database tanpa akun admin (mencegah admin terkunci dari panelnya sendiri).
+- Koneksi database dari panel tidak pernah ditulis ke disk, log, atau respons API; nilai yang
+  tampil di UI hanya nama database/user yang aktif.
 
 **Privasi di log & header**
 - Log webhook WhatsApp hanya menulis nomor bertopeng (`6281****6789`) + panjang pesan — tanpa isi pesan.
@@ -85,17 +92,38 @@ Yang boleh publik hanya: katalog layanan, profil usaha, jam buka, tesimoni, reke
    - `db_connected: true` → aman, data tersimpan di database.
    - `db_connected: false` → **MODE DARURAT**: data baru HANYA ada di file container dan hilang saat deploy.
 
-   **Prosedur pemulihan bila muncul mode darurat (URUTANNYA PENTING):**
-   1. Buka **Backup & Restore** → isi passphrase → **🔐 Download Backup Terenkripsi**.
-      (Wajib lebih dulu: memperbaiki env var di Railway memicu redeploy yang menghapus file darurat.)
-   2. Perbaiki `DATABASE_URL` di Railway (atau status Neon) lalu redeploy.
-   3. Buka **Backup & Restore** → pilih file tadi → **Restore** (mode *Append*) → masukkan passphrase.
-   4. Cek **Status Penyimpanan** sampai hijau (`db_connected: true`).
+   **Prosedur pemulihan (pilih salah satu, urutannya penting):**
 
-   Kalau database kembali normal **tanpa redeploy**, cukup klik
-   **⬆️ Sinkronkan Data Darurat ke Database** di kartu Status Penyimpanan — proses ini
-   *menggabungkan* (bukan menimpa) data darurat ke isi database, dan pengaturan aplikasi
-   sengaja tidak ikut disalin agar konfigurasi yang sudah benar di database tidak tertimpa.
+   *Jalur cepat — database sudah bisa dihubungi lagi (tanpa redeploy):*
+   1. **Pengaturan → 🗄️ Status Penyimpanan → ⬆️ Sinkronkan Data Darurat ke Database.**
+      Proses ini *menggabungkan* (bukan menimpa) data darurat ke isi database, ikut membawa akun admin,
+      dan **tidak** menyentuh pengaturan aplikasi (nama usaha, rekening, TTD, kunci AI) agar konfigurasi
+      yang sudah benar di database tidak tertimpa.
+
+   *Jalur perbaikan kredensial — kredensial database salah/berubah:*
+   1. **Pengaturan → 🗄️ Status Penyimpanan → 🔧 Perbaiki / Ganti Koneksi Database**:
+      tempel connection string baru (dari Neon/Railway/Supabase) → **🔌 Tes Koneksi**.
+      Anda bisa mencoba berkali-kali di sini **tanpa deploy**; setiap kegagalan disertai saran perbaikan
+      (password salah, host tidak ditemukan, SSL, dll). Kalau password memuat karakter `@ : / ? #`,
+      pakai kolom terpisah supaya tidak perlu di-encode manual.
+   2. Kalau tes berhasil → **✅ Gunakan Sekarang**: server langsung pindah ke database itu dan
+      data darurat otomatis digabungkan (akun admin ikut dibawa supaya Anda tidak terkunci).
+   3. **Langkah wajib terakhir:** salin connection string yang sama ke
+      **Railway → Variables → DATABASE_URL**, lalu deploy, supaya otomatis terpakai lagi setelah restart.
+
+   *Jalur cadangan — kalau kedua cara di atas belum bisa:*
+   1. **Backup & Restore** → isi passphrase → **🔐 Download Backup Terenkripsi**
+      (wajib dilakukan SEBELUM memperbaiki env var, karena memperbaiki env var memicu redeploy
+      yang menghapus file darurat).
+   2. Perbaiki `DATABASE_URL` di Railway → redeploy.
+   3. **Backup & Restore** → pilih file tadi → **Restore** (mode *Append*) → masukkan passphrase.
+
+   Data juga aman tanpa database bila Railway Volume dipasang: server otomatis memakai
+   `RAILWAY_VOLUME_MOUNT_PATH` sebagai lokasi file state, sehingga data tetap ada antar deploy
+   (status "Mode file persisten"). Set alternatifnya: `DATA_FILE=/data/adzkiya-state.json`.
+   Peringatan di panel admin otomatis menyesuaikan: merah = data bisa hilang, kuning = aman tapi
+   sebaiknya pakai database. Peringatan bisa ditutup, tapi muncul lagi setelah 24 jam selama
+   kondisinya belum benar-benar aman.
 3. **Isi `ALLOWED_ORIGINS`** di Railway (mis. `https://adzkiyamombabycareweb-production.up.railway.app,https://putra1996.github.io`)
    atau biarkan kosong — default hanya origin GitHub Pages repo ini yang diizinkan.
 4. **Aktifkan App Secret WhatsApp** (Meta → Settings → Basic → App Secret) lalu isikan di

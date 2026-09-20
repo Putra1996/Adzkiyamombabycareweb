@@ -191,21 +191,58 @@ async function loadCache() {
 // yang dikonfigurasi (DATABASE_URL diisi tapi gagal connect → fallback ke
 // file sementara). Dalam kondisi ini semua data baru (reservasi, kwitansi,
 // pengaturan) bisa HILANG saat deploy berikutnya, jadi admin harus tahu.
+// Kunci penyimpanan preferensi "banner sudah ditutup" di localStorage.
+// Ditutup hanya menahan tampilannya selama 24 jam (bukan selamanya) supaya
+// risiko kehilangan data tidak bisa dilupakan untuk waktu lama.
+const STORAGE_BANNER_SNOOZE_KEY = 'adm_storage_banner_snoozed_until';
+
 async function checkStorageHealth() {
   try {
     const h = await fetch(apiUrl('/health')).then(r => r.json());
-    if (!h || h.configured_storage === 'file' || h.db_connected) return;
+    if (!h) return;
+    const snoozedUntil = parseInt(localStorage.getItem(STORAGE_BANNER_SNOOZE_KEY) || '0', 10) || 0;
+    if (Date.now() < snoozedUntil) return;
+
+    let level = null; // 'danger' | 'warn'
+    if (h.configured_storage !== 'file' && !h.db_connected) {
+      // Database dikonfigurasi tapi tidak bisa dihubungi.
+      // Kalau file-nya persisten (Railway Volume / DATA_FILE di luar app),
+      // data TIDAK hilang saat deploy — jangan menakuti admin tanpa alasan.
+      level = h.file_persistent ? 'warn' : 'danger';
+    } else if (h.configured_storage === 'file' && !h.file_persistent) {
+      // Memang mode file dan file-nya tidak persisten → data bisa hilang.
+      level = 'danger';
+    }
+    if (!level) return; // aman: tidak ada banner sama sekali.
+
+    const danger = level === 'danger';
     const banner = document.createElement('div');
     banner.id = 'storageWarningBanner';
-    banner.style.cssText = 'position:sticky;top:0;z-index:9999;background:#b91c1c;color:white;padding:12px 16px;font-size:0.88rem;line-height:1.5;font-weight:600;';
-    banner.innerHTML = '⚠️ <strong>Mode darurat (file):</strong> server tidak bisa terhubung ke database (' +
-      esc(h.configured_storage || 'db') + '), jadi semua data baru HANYA tersimpan sementara dan akan hilang pada deploy berikutnya. ' +
-      '<strong>Sebelum memperbaiki DATABASE_URL: unduh dulu backup terenkripsi di menu Backup &amp; Restore.</strong> ' +
-      'Detail langkah ada di Pengaturan → 🗄️ Status Penyimpanan.' +
-      (h.db_error ? '<br><small style="font-weight:500;opacity:0.9;">Penyebab: ' + esc(h.db_error) + '</small>' : '') +
-      '<button type="button" onclick="this.parentElement.remove()" style="float:right;background:none;border:none;color:white;font-size:1.1rem;cursor:pointer;font-weight:700;">×</button>';
+    banner.style.cssText = 'position:sticky;top:0;z-index:9999;padding:12px 44px 12px 16px;font-size:0.88rem;line-height:1.5;font-weight:600;color:white;background:' +
+      (danger ? '#b91c1c' : '#b45309') + ';';
+    const text = danger
+      ? ('⚠️ <strong>Data berisiko hilang saat deploy:</strong> server tidak bisa memakai database (' +
+         esc(h.configured_storage || 'file') + ') dan file penyimpanannya tidak persisten. ' +
+         '<strong>Unduh backup terenkripsi</strong> (menu Backup &amp; Restore) lalu perbaiki penyimpanan di ' +
+         '<strong>Pengaturan → 🗄️ Status Penyimpanan</strong>.')
+      : ('ℹ️ <strong>Database belum terhubung</strong> (' + esc(h.configured_storage || 'db') + '), ' +
+         'tapi file penyimpanan <strong>persisten</strong> — data tetap aman antar deploy. ' +
+         'Sambungkan database agar data terkelola: <strong>Pengaturan → 🗄️ Status Penyimpanan</strong>.');
+    banner.innerHTML = text
+      + (h.db_error ? '<br><small style="font-weight:500;opacity:0.92;">Penyebab: ' + esc(h.db_error) + '</small>' : '')
+      + '<button type="button" onclick="snoozeStorageBanner()" title="Sembunyikan 24 jam" style="position:absolute;top:6px;right:8px;background:none;border:none;color:white;font-size:1.2rem;cursor:pointer;font-weight:700;line-height:1;">×</button>';
+    banner.style.position = 'sticky';
     document.body.insertBefore(banner, document.body.firstChild);
   } catch (e) { /* health check opsional */ }
+}
+
+function snoozeStorageBanner() {
+  // Tahan 24 jam. Kalau kondisinya masih berbahaya setelah itu, banner
+  // muncul lagi — pengingat keamanan data tidak boleh bisa dimatikan
+  // permanen dari UI.
+  localStorage.setItem(STORAGE_BANNER_SNOOZE_KEY, String(Date.now() + 24 * 3600 * 1000));
+  const el = document.getElementById('storageWarningBanner');
+  if (el) el.remove();
 }
 
 document.getElementById('loginForm').addEventListener('submit', async (e) => {
@@ -4394,15 +4431,22 @@ async function loadStorageStatus(showAlert) {
     const db = st.db_counts;
     let html = '';
     if (st.active_storage === 'file' && st.configured_storage === 'file') {
-      html += '<div style="padding:10px 12px;background:#fff7ed;border:1.5px solid #fdba74;border-radius:10px;color:#7c2d12;font-weight:600;">'
-        + '📁 Mode file (DATABASE_URL belum diset)<br><span style="font-weight:500;">Data ikut ter-reset saat deploy. Set DATABASE_URL di Railway agar permanen.</span></div>';
+      if (st.file_storage_persistent) {
+        html += '<div style="padding:10px 12px;background:#ecfdf5;border:1.5px solid #6ee7b7;border-radius:10px;color:#065f46;font-weight:600;">'
+          + '✅ Mode file <strong>persisten</strong> (' + esc(st.file_storage_source || '') + ')<br>'
+          + '<span style="font-weight:500;">Data tetap ada antar deploy. Untuk pengelolaan & pemulihan yang lebih baik, sambungkan database lewat formulir di bawah.</span></div>';
+      } else {
+        html += '<div style="padding:10px 12px;background:#fff7ed;border:1.5px solid #fdba74;border-radius:10px;color:#7c2d12;font-weight:600;">'
+          + '📁 Mode file (DATABASE_URL belum diset)<br>'
+          + '<span style="font-weight:500;">File penyimpanan <strong>tidak persisten</strong> — data ikut ter-reset saat deploy. Sambungkan database lewat formulir di bawah, atau pasang Railway Volume lalu set <code>DATA_FILE</code> ke dalam volume itu.</span></div>';
+      }
     } else if (st.db_connected) {
       html += '<div style="padding:10px 12px;background:#ecfdf5;border:1.5px solid #6ee7b7;border-radius:10px;color:#065f46;font-weight:600;">'
         + '✅ Tersimpan di <strong>' + esc(st.configured_storage) + '</strong> — database terhubung.<br>'
         + '<span style="font-weight:500;">Reservasi ' + (live.reservations || 0) + ' · Kwitansi ' + (live.receipts || 0) + ' · Pengeluaran ' + (live.expenses || 0) + '</span></div>';
     } else {
       html += '<div style="padding:10px 12px;background:#fef2f2;border:1.5px solid #fca5a5;border-radius:10px;color:#7f1d1d;">'
-        + '<strong>⚠️ MODE DARURAT — data hanya di file sementara</strong><br>'
+        + '<strong>⚠️ Database belum terhubung — data masuk ke file' + (st.file_storage_persistent ? ' (persisten)' : ' SEMENTARA') + '</strong><br>'
         + '<span>Database <strong>' + esc(st.configured_storage) + '</strong> tidak bisa dihubungi'
         + (st.db_error ? ': <code>' + esc(st.db_error) + '</code>' : '') + '</span><br>'
         + '<span>Data darurat sekarang: ' + (live.reservations || 0) + ' reservasi · ' + (live.receipts || 0) + ' kwitansi · ' + (live.expenses || 0) + ' pengeluaran.</span></div>';
@@ -4431,11 +4475,132 @@ async function loadStorageStatus(showAlert) {
     if (st.can_sync) {
       html += '<div style="margin-top:8px;font-size:0.84rem;">Pengaturan aplikasi (nama usaha, rekening, TTD, kunci AI) <strong>tidak</strong> ikut disalin — supaya konfigurasi yang sudah benar di database tidak tertimpa. Isi ulang lewat panel ini setelah pindah.</div>';
     }
+    if (st.db_connected && st.db_info) {
+      const di = st.db_info;
+      html += '<div style="margin-top:8px;font-size:0.84rem;">Terhubung ke database <strong>' + esc(di.database || '?') +
+        '</strong> sebagai <strong>' + esc(di.user || '?') + '</strong>' + (di.version ? ' · ' + esc(di.version) : '') + '</div>';
+    }
+    if (st.using_runtime_connection) {
+      html += '<div style="padding:10px 12px;background:#fffbeb;border:1.5px solid #fcd34d;border-radius:10px;color:#78350f;margin-top:8px;">'
+        + '⚠️ Koneksi database ini <strong>hanya berlaku untuk sesi server yang sedang berjalan</strong> (diisi dari panel ini). '
+        + 'Salin connection string yang sama ke <strong>Railway → Variables → DATABASE_URL</strong>, lalu deploy, '
+        + 'supaya otomatis dipakai lagi setiap restart.</div>';
+    }
+
+    // Formulir perbaikan koneksi: admin bisa MENGUJI kredensial baru di sini
+    // sebelum menyentuh Railway — menghindari deploy berulang hanya untuk
+    // mencoba-coba.
+    html += `
+      <details style="margin-top:12px;" ${st.db_connected ? '' : 'open'}>
+        <summary style="cursor:pointer;font-weight:700;color:var(--text);">🔧 Perbaiki / Ganti Koneksi Database</summary>
+        <div style="margin-top:10px;font-size:0.85rem;line-height:1.6;">
+          <div>1. Tempel connection string dari penyedia database (Neon/Railway/Supabase) → klik <strong>Tes Koneksi</strong>.</div>
+          <div>2. Kalau berhasil, klik <strong>Gunakan Sekarang</strong> — data darurat otomatis digabungkan ke database.</div>
+          <div>3. Terakhir, salin connection string yang sama ke <strong>Railway → Variables → DATABASE_URL</strong> lalu deploy, agar permanen.</div>
+        </div>
+        <div class="form-group" style="margin-top:10px;">
+          <label style="font-size:0.85rem;font-weight:600;">Connection string</label>
+          <input type="password" id="stConnUrl" placeholder="postgresql://user:password@host:5432/dbname" style="font-family:monospace;font-size:0.84rem;" autocomplete="off">
+          <div style="font-size:0.78rem;color:var(--text-soft);margin-top:4px;">Nilai ini hanya dipakai untuk tes &amp; sesi server ini — tidak disimpan ke file log.</div>
+        </div>
+        <details style="margin-top:8px;">
+          <summary style="cursor:pointer;font-size:0.82rem;color:var(--text-soft);">Password memuat karakter @ : / ? # → pakai kolom terpisah</summary>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;margin-top:8px;">
+            <input type="text" id="stHost" placeholder="host (ep-xxx.neon.tech)">
+            <input type="text" id="stPort" placeholder="port (5432)">
+            <input type="text" id="stDb" placeholder="database (neondb)">
+            <input type="text" id="stUser" placeholder="user (neondb_owner)">
+            <input type="password" id="stPass" placeholder="password" autocomplete="off">
+            <label style="display:flex;align-items:center;gap:6px;font-size:0.82rem;"><input type="checkbox" id="stSsl" checked> SSL</label>
+          </div>
+        </details>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;">
+          <button type="button" class="btn-sm" onclick="testStorageConnection()" style="background:#0f766e;color:white;border:none;font-weight:700;padding:8px 14px;">🔌 Tes Koneksi</button>
+          <button type="button" class="btn-sm" id="stApplyBtn" onclick="applyStorageConnection()" style="display:none;background:#7c3aed;color:white;border:none;font-weight:700;padding:8px 14px;">✅ Gunakan Sekarang</button>
+        </div>
+        <div id="stConnResult" style="margin-top:10px;"></div>
+      </details>`;
+
     body.innerHTML = html;
     if (syncBtn) syncBtn.style.display = st.can_sync ? 'inline-block' : 'none';
     if (showAlert) alert('Status penyimpanan diperbarui.');
   } catch (e) {
     body.innerHTML = '<div class="alert alert-error">Gagal memuat status: ' + esc(e.message) + '</div>';
+  }
+}
+
+// Kumpulkan nilai dari formulir koneksi (URL penuh, atau kolom terpisah).
+function collectStorageConnectionInput() {
+  const val = (id) => { const el = document.getElementById(id); return el ? el.value.trim() : ''; };
+  const url = val('stConnUrl');
+  if (url) return { url };
+  return {
+    host: val('stHost'),
+    port: val('stPort'),
+    database: val('stDb'),
+    user: val('stUser'),
+    password: (document.getElementById('stPass') || {}).value || '',
+    ssl: !!(document.getElementById('stSsl') || {}).checked,
+    kind: /^mysql/i.test(val('stHost')) ? 'mysql' : 'postgres'
+  };
+}
+
+async function testStorageConnection() {
+  const input = collectStorageConnectionInput();
+  const box = document.getElementById('stConnResult');
+  const applyBtn = document.getElementById('stApplyBtn');
+  if (!input.url && !input.host) {
+    return alert('Tempel connection string dulu, atau isi minimal kolom host + user.');
+  }
+  box.innerHTML = '<div style="padding:10px;background:var(--bg);border-radius:10px;">⏳ Menguji koneksi…</div>';
+  if (applyBtn) applyBtn.style.display = 'none';
+  try {
+    const r = await fetch(apiUrl('/api/admin/storage/test-connection'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + TOKEN },
+      body: JSON.stringify(input)
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok || !data.ok) {
+      box.innerHTML = '<div style="padding:10px 12px;background:#fef2f2;border:1.5px solid #fca5a5;border-radius:10px;color:#7f1d1d;">'
+        + '<strong>❌ Gagal terhubung</strong><br>' + esc(data.error || 'Tidak diketahui')
+        + (data.hint ? '<br><span style="font-size:0.84rem;">💡 ' + esc(data.hint) + '</span>' : '') + '</div>';
+      return;
+    }
+    const counts = data.db_counts;
+    box.innerHTML = '<div style="padding:10px 12px;background:#ecfdf5;border:1.5px solid #6ee7b7;border-radius:10px;color:#065f46;">'
+      + '<strong>✅ Koneksi berhasil</strong> (' + (data.latency_ms || 0) + ' ms)<br>'
+      + '<span style="font-size:0.84rem;">Jenis: ' + esc(data.kind) + (data.server_version ? ' · server ' + esc(data.server_version) : '') + '</span><br>'
+      + '<span style="font-size:0.84rem;">' + (data.has_app_state_table
+          ? 'Tabel data aplikasi ditemukan' + (counts ? ': ' + (counts.reservations || 0) + ' reservasi · ' + (counts.receipts || 0) + ' kwitansi.' : '.')
+          : 'Tabel data aplikasi belum ada — akan dibuat otomatis saat digunakan.') + '</span></div>';
+    if (applyBtn) applyBtn.style.display = 'inline-block';
+  } catch (e) {
+    box.innerHTML = '<div style="padding:10px 12px;background:#fef2f2;border:1.5px solid #fca5a5;border-radius:10px;color:#7f1d1d;">Gagal menguji: ' + esc(e.message) + '</div>';
+  }
+}
+
+async function applyStorageConnection() {
+  const input = collectStorageConnectionInput();
+  if (!confirm('Gunakan koneksi database ini sekarang?\n\nData yang sekarang ada di file akan DIGABUNGKAN ke database (tidak menimpa data lama).')) return;
+  const box = document.getElementById('stConnResult');
+  box.innerHTML = '<div style="padding:10px;background:var(--bg);border-radius:10px;">⏳ Memindahkan penyimpanan ke database…</div>';
+  try {
+    const res = await api('/api/admin/storage/apply-connection', {
+      method: 'POST',
+      body: JSON.stringify({ ...input, confirm: 'PAKAI' })
+    });
+    const r = res.report || {};
+    box.innerHTML = '<div style="padding:10px 12px;background:#ecfdf5;border:1.5px solid #6ee7b7;border-radius:10px;color:#065f46;">'
+      + '<strong>✅ Server sekarang memakai database</strong><br>'
+      + '<span style="font-size:0.84rem;">Ditambahkan: ' + (r.reservations_added || 0) + ' reservasi, ' + (r.receipts_added || 0) + ' kwitansi, '
+      + (r.expenses_added || 0) + ' pengeluaran' + (r.admins_added ? ', ' + r.admins_added + ' akun admin' : '') + '.</span><br>'
+      + '<span style="font-size:0.84rem;font-weight:700;">Langkah terakhir: salin connection string yang sama ke Railway → Variables → DATABASE_URL, lalu deploy.</span></div>';
+    alert('Berhasil. Jangan lupa menyalin connection string ke Railway → Variables → DATABASE_URL agar permanen.');
+    await loadStorageStatus();
+  } catch (e) {
+    box.innerHTML = '<div style="padding:10px 12px;background:#fef2f2;border:1.5px solid #fca5a5;border-radius:10px;color:#7f1d1d;">'
+      + 'Gagal memakai koneksi: ' + esc(e.message) + '</div>';
   }
 }
 
@@ -4457,7 +4622,8 @@ async function syncStorageToDb() {
     const r = res.report || {};
     alert('✅ ' + (res.message || 'Sinkronisasi selesai.') + '\n\n' +
       'Ditambahkan: ' + (r.reservations_added || 0) + ' reservasi, ' + (r.receipts_added || 0) + ' kwitansi, ' +
-      (r.expenses_added || 0) + ' pengeluaran, ' + (r.broadcasts_added || 0) + ' broadcast.\n' +
+      (r.expenses_added || 0) + ' pengeluaran, ' + (r.broadcasts_added || 0) + ' broadcast' +
+      (r.admins_added ? ', ' + r.admins_added + ' akun admin' : '') + '.\n' +
       'Total di database: ' + ((r.db_after && r.db_after.reservations) || 0) + ' reservasi · ' +
       ((r.db_after && r.db_after.receipts) || 0) + ' kwitansi.');
     // Muat ulang tampilan supaya angka yang tampil sesuai isi database.

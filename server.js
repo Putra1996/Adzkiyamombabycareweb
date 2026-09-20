@@ -107,7 +107,30 @@ if (IS_PRODUCTION && (!process.env.JWT_SECRET || process.env.JWT_SECRET.length <
 // ---- DATA LAYER ----
 // Production supports PostgreSQL (Neon, Railway Postgres, etc.) and MySQL/TiDB.
 // Local development uses JSON.
-const DATA_FILE = process.env.DATA_FILE || path.join(__dirname, 'data.json');
+// Lokasi file state saat storage = file.
+//
+// PENTING untuk keamanan data: container Railway bersifat ephemeral —
+// file di dalamnya hilang setiap deploy. Kalau Railway Volume dipasang
+// (Railway otomatis menyuntikkan RAILWAY_VOLUME_MOUNT_PATH), kita pakai
+// volume itu supaya data file-mode IKUT SELAMAT antar deploy. Tanpa
+// volume, kita beri tanda "tidak persisten" agar UI bisa memperingatkan
+// dengan tepat.
+function detectDataFile() {
+  const explicit = (process.env.DATA_FILE || '').trim();
+  if (explicit) {
+    // Path di luar folder aplikasi (mis. /data/...) dianggap persisten.
+    const persistent = path.isAbsolute(explicit) && !explicit.startsWith(__dirname);
+    return { file: explicit, source: 'DATA_FILE env', persistent };
+  }
+  const volumePath = (process.env.RAILWAY_VOLUME_MOUNT_PATH || process.env.RAILWAY_VOLUME_MOUNT_DIR || '').trim();
+  if (volumePath) {
+    const dir = volumePath.replace(/\/+$/, '');
+    return { file: path.join(dir, 'adzkiya-state.json'), source: 'Railway volume (' + dir + ')', persistent: true };
+  }
+  return { file: path.join(__dirname, 'data.json'), source: 'filesystem container', persistent: false };
+}
+const DATA_FILE_INFO = detectDataFile();
+const DATA_FILE = DATA_FILE_INFO.file;
 let DB = {
   admins: [],
   reservations: [],
@@ -156,14 +179,24 @@ function normalizeState() {
 //      berpindah storage otomatis akan membuang data salah satu sisi.
 let dbReachable = null; // null = belum pernah diprobe
 let dbProbeTimer = null;
+// Connection string yang di-APPLY dari panel admin. Dipakai saat DATABASE_URL
+// env masih salah/tidak bisa dihubungi — supaya admin bisa memperbaiki,
+// menguji, memindahkan data, dan memverifikasi tanpa harus deploy berkali-kali.
+// Nilai ini HANYA ada di memori proses (tidak pernah ditulis ke disk/log/
+// respons) dan hilang saat redeploy — karena itu UI tetap menyuruh admin
+// menyalinnya ke Railway → Variables. Kalau env sudah benar, env dipakai.
+let runtimeDatabaseUrl = null;
+let runtimeDatabaseKind = null;
+function activeDatabaseUrl() { return runtimeDatabaseUrl || DATABASE_URL; }
+function activeDatabaseKind() { return runtimeDatabaseKind || DATABASE_KIND; }
 
 async function probeDatabase() {
-  if (DATABASE_KIND === 'file') return { ok: false, error: 'DATABASE_URL belum diset (mode file)' };
-  if (DATABASE_KIND === 'postgres') {
+  if (activeDatabaseKind() === 'file') return { ok: false, error: 'DATABASE_URL belum diset (mode file)' };
+  if (activeDatabaseKind() === 'postgres') {
     let testPool = null;
     try {
       testPool = new PostgresPool({
-        connectionString: DATABASE_URL,
+        connectionString: activeDatabaseUrl(),
         ssl: IS_PRODUCTION ? { rejectUnauthorized: false } : undefined,
         max: 1,
         connectionTimeoutMillis: 8000
@@ -176,10 +209,10 @@ async function probeDatabase() {
       if (testPool) { try { await testPool.end(); } catch {} }
     }
   }
-  if (DATABASE_KIND === 'mysql') {
+  if (activeDatabaseKind() === 'mysql') {
     let conn = null;
     try {
-      conn = await mysql.createConnection(DATABASE_URL);
+      conn = await mysql.createConnection(activeDatabaseUrl());
       await conn.query('SELECT 1');
       return { ok: true };
     } catch (e) {
@@ -193,10 +226,12 @@ async function probeDatabase() {
 
 // Buka pool permanen + pastikan tabel app_state ada + baca state yang
 // tersimpan. Dipakai saat admin menyinkronkan data darurat ke database.
-async function openDbPoolAndReadState() {
-  if (DATABASE_KIND === 'postgres') {
+async function openDbPoolAndReadState(connStr, kindOverride) {
+  const kind = kindOverride || activeDatabaseKind();
+  const conn = connStr || activeDatabaseUrl();
+  if (kind === 'postgres') {
     const newPool = new PostgresPool({
-      connectionString: DATABASE_URL,
+      connectionString: conn,
       ssl: IS_PRODUCTION ? { rejectUnauthorized: false } : undefined,
       max: 5,
       idleTimeoutMillis: 30000,
@@ -213,8 +248,8 @@ async function openDbPoolAndReadState() {
     const result = await newPool.query('SELECT data FROM app_state WHERE id = 1');
     return { pool: newPool, state: result.rows.length ? result.rows[0].data : null };
   }
-  if (DATABASE_KIND === 'mysql') {
-    const newPool = mysql.createPool(DATABASE_URL);
+  if (kind === 'mysql') {
+    const newPool = mysql.createPool(conn);
     await newPool.execute(`
       CREATE TABLE IF NOT EXISTS app_state (
         id INT PRIMARY KEY,
@@ -241,7 +276,7 @@ function mergeTransactionalState(dbStateInput, liveStateInput) {
   const live = normalizeStateObject(JSON.parse(JSON.stringify(liveStateInput || {})));
   const report = {
     reservations_added: 0, receipts_added: 0, expenses_added: 0,
-    broadcasts_added: 0, expense_categories_copied: false,
+    broadcasts_added: 0, expense_categories_copied: false, admins_added: 0,
     db_before: {
       reservations: target.reservations.length,
       receipts: target.receipts.length,
@@ -309,6 +344,23 @@ function mergeTransactionalState(dbStateInput, liveStateInput) {
     if (!target.share_tokens[tok]) target.share_tokens[tok] = val;
   }
 
+  // AKUN ADMIN — kritis.
+  // Database yang masih baru/kosong (mis. Neon yang baru dibuat) tidak
+  // punya akun admin sama sekali. Kalau kita pindah ke database itu tanpa
+  // menyalin akun dari state darurat, admin yang sedang bekerja langsung
+  // TERKUNCI dan tidak bisa login lagi. Jadi:
+  //   • akun yang sudah ada di database dipertahankan apa adanya
+  //     (versinya paling baru, termasuk hash password terakhir),
+  //   • akun yang hanya ada di state darurat ikut disalin (dedupe per email).
+  const adminEmails = new Set(target.admins.map((a) => String(a && a.email || '').toLowerCase()));
+  for (const a of live.admins) {
+    const email = String(a && a.email || '').toLowerCase();
+    if (!email || adminEmails.has(email)) continue;
+    target.admins.push(a);
+    adminEmails.add(email);
+    report.admins_added = (report.admins_added || 0) + 1;
+  }
+
   // Perbaiki penomoran supaya ID berikutnya tidak bertabrakan.
   const maxId = (arr) => arr.reduce((m, x) => Math.max(m, x && x.id ? x.id : 0), 0);
   const liveSeq = live._seq || {};
@@ -331,7 +383,7 @@ function mergeTransactionalState(dbStateInput, liveStateInput) {
 function startDbRetryLoop() {
   if (dbProbeTimer) return;
   dbProbeTimer = setInterval(async () => {
-    if (pool || DATABASE_KIND === 'file') return;
+    if (pool || activeDatabaseKind() === 'file') return;
     const before = dbConnectError;
     const result = await probeDatabase();
     dbReachable = result.ok;
@@ -410,8 +462,13 @@ async function initStorage() {
   // filesystem container — hilang setiap redeploy/rebuild di Railway.
   // Set DATABASE_URL (Postgres/MySQL) atau mount volume agar data aman.
   if (IS_PRODUCTION && DATABASE_KIND === 'file') {
-    console.warn('[storage] ⚠️  PERINGATAN: DATABASE_URL belum diset — data disimpan di file');
-    console.warn('[storage] ⚠️  File ini ikut ter-reset setiap deploy. Set DATABASE_URL agar data permanen.');
+    if (DATA_FILE_INFO.persistent) {
+      console.warn('[storage] File storage PERSISTEN (' + DATA_FILE_INFO.source + ') — data tetap ada antar deploy.');
+      console.warn('[storage] Disarankan tetap set DATABASE_URL agar data terkelola dan bisa dipulihkan otomatis.');
+    } else {
+      console.warn('[storage] ⚠️  PERINGATAN: DATABASE_URL belum diset — data disimpan di file');
+      console.warn('[storage] ⚠️  File ini ikut ter-reset setiap deploy. Set DATABASE_URL, atau pasang Railway Volume lalu set DATA_FILE ke dalam volume itu.');
+    }
   }
   if (IS_PRODUCTION && DATABASE_KIND !== 'file' && !pool) {
     console.warn(`[storage] ⚠️  DATABASE_URL (${DATABASE_KIND}) tidak bisa dihubungi saat boot — sementara pakai file.`);
@@ -1210,6 +1267,9 @@ app.get('/health', (req, res) => res.json({
   db_reachable: pool ? true : dbReachable,
   db_error: pool ? null : dbConnectError,
   data_file: DATABASE_KIND === 'file' ? path.basename(DATA_FILE) : null,
+  // Apakah file state selamat antar deploy (volume persisten)?
+  file_persistent: !!DATA_FILE_INFO.persistent,
+  using_runtime_connection: !!runtimeDatabaseUrl,
   time: new Date().toISOString(),
   today_wib: todayJakarta()
 }));
@@ -4308,6 +4368,259 @@ app.delete('/api/admin/settings/:kind', auth, (req, res) => {
 });
 
 // ===== ADMIN — STATUS & PEMULIHAN PENYIMPANAN =====
+
+// Bangun connection string dari bagian-bagian terpisah dengan encoding
+// yang BENAR. Ini penting: password Neon/Postgres sering memuat karakter
+// seperti @ : / ? # — kalau ditempel mentah ke dalam URL, hasil parsing
+// rusak dan login ke database gagal dengan pesan "password authentication
+// failed" yang membingungkan. Dengan input terpisah, kita yang meng-encode.
+function buildConnectionString(input) {
+  const b = input || {};
+  const raw = String(b.url || '').trim();
+  if (raw) {
+    if (/^postgres(ql)?:\/\//i.test(raw) || /^mysql2?:\/\//i.test(raw)) return { conn: raw, kind: /^mysql/i.test(raw) ? 'mysql' : 'postgres' };
+    if (/^postgres(ql)?:/i.test(raw) || /^mysql/i.test(raw)) return { conn: raw, kind: /^mysql/i.test(raw) ? 'mysql' : 'postgres' };
+    return { error: 'Format connection string tidak dikenali. Harus diawali postgresql:// atau mysql://.' };
+  }
+  const host = String(b.host || '').trim();
+  const user = String(b.user || '').trim();
+  if (!host || !user) return { error: 'Isi DATABASE_URL lengkap, atau minimal host + user.' };
+  const kind = String(b.kind || 'postgres').toLowerCase() === 'mysql' ? 'mysql' : 'postgres';
+  const scheme = kind === 'mysql' ? 'mysql' : 'postgresql';
+  const port = String(b.port || '').trim() || (kind === 'mysql' ? '3306' : '5432');
+  const database = String(b.database || '').trim() || (kind === 'mysql' ? '' : 'postgres');
+  const password = String(b.password == null ? '' : b.password);
+  const needsSsl = b.ssl !== false;
+  const auth = encodeURIComponent(user) + (password ? ':' + encodeURIComponent(password) : '') + '@';
+  const dbPart = database ? '/' + encodeURIComponent(database) : '';
+  const query = needsSsl ? (kind === 'mysql' ? '?ssl=true' : '?sslmode=require') : '';
+  return { conn: scheme + '://' + auth + host + ':' + port + dbPart + query, kind };
+}
+
+// Terjemahkan error koneksi menjadi langkah perbaikan yang bisa dikerjakan.
+// Pesan error asli tetap disertakan (tanpa kredensial) supaya admin bisa
+// mencocokkan dengan dokumentasi penyedia database.
+function connectionHint(err, input) {
+  const msg = String((err && err.message) || err || '');
+  const lower = msg.toLowerCase();
+  if (lower.includes('password authentication failed') || lower.includes('access denied')) {
+    return 'Password di connection string tidak cocok. Buka konsol database → Reset password / Copy connection string, lalu tempel ulang. (Kalau password memuat karakter @ : / ? #, pakai kolom terpisah di bawah supaya tidak perlu di-encode manual.)';
+  }
+  if (lower.includes('role') && lower.includes('does not exist')) return 'Nama user salah. Cek bagian user pada connection string.';
+  if (lower.includes('database') && lower.includes('does not exist')) return 'Nama database salah. Cek bagian nama database di akhir connection string.';
+  if (lower.includes('enotfound') || lower.includes('eai_again')) return 'Host tidak ditemukan. Pastikan host (mis. ep-xxx-pooler.xxx.aws.neon.tech) tersalin lengkap tanpa spasi/baris baru.';
+  if (lower.includes('econnrefused') || lower.includes('etimedout') || lower.includes('timeout')) return 'Host tidak bisa dihubungi. Cek jaringan/port, dan pastikan SSL diaktifkan (Neon mewajibkan SSL).';
+  if (lower.includes('ssl') || lower.includes('self-signed') || lower.includes('certificate')) return 'Masalah SSL. Coba aktifkan opsi SSL, atau pakai connection string yang menyertakan sslmode=require.';
+  if (lower.includes('too many connections') || lower.includes('remaining connection slots')) {
+    return 'Koneksi ke database penuh. Tutup tool lain yang terhubung (SQL editor/psql), lalu coba lagi.';
+  }
+  if (lower.includes('quota') || lower.includes('exceeded')) return 'Kuota database habis/terlampaui. Cek dashboard penyedia database.';
+  const raw = String((input && input.url) || '');
+  if (raw.includes('%')) return 'Perhatian: connection string memuat karakter persen (%) — pastikan itu memang bagian password yang ter-encode, bukan hasil generasi ganda.';
+  return 'Periksa kembali host, port, nama database, user, dan password.';
+}
+
+// Tes koneksi TANPA mengubah apa pun. Dipakai panel admin sebelum admin
+// menempelkan URL ke Railway, supaya tidak perlu deploy hanya untuk tahu
+// apakah kredensialnya benar.
+app.post('/api/admin/storage/test-connection', auth, async (req, res) => {
+  const built = buildConnectionString(req.body);
+  if (built.error) return res.status(400).json({ ok: false, error: built.error });
+  const started = Date.now();
+  try {
+    if (built.kind === 'postgres') {
+      const testPool = new PostgresPool({
+        connectionString: built.conn,
+        ssl: IS_PRODUCTION ? { rejectUnauthorized: false } : (req.body && req.body.ssl === false ? undefined : { rejectUnauthorized: false }),
+        max: 1,
+        connectionTimeoutMillis: 10000
+      });
+      try {
+        // WAJIB: query ini menentukan hasil tes. Harus dijalankan lebih dulu
+        // dan TANPA try/catch — kalau host mati, password salah, atau SSL
+        // ditolak, error di sini yang dipakai untuk melaporkan kegagalan.
+        // (Pernah salah: semua query dibungkus try/catch sehingga host mati
+        // tetap dilaporkan "berhasil".)
+        await testPool.query('SELECT 1');
+
+        // Informasi tambahan (versi server, isi tabel) bersifat opsional:
+        // sebagian database/user terbatas tidak mengizinkan query ini, dan
+        // kegagalannya tidak boleh menutupi keberhasilan koneksi.
+        let serverVersion = null;
+        try {
+          const version = await testPool.query('SHOW server_version');
+          serverVersion = (version.rows[0] && version.rows[0].server_version) || null;
+        } catch (e) {
+          try {
+            const alt = await testPool.query('SELECT version() AS v');
+            serverVersion = String((alt.rows[0] && alt.rows[0].v) || '').split(' ').slice(0, 2).join(' ') || null;
+          } catch (e2) { /* opsional */ }
+        }
+        let hasTable = null;
+        let counts = null;
+        try {
+          const tableCheck = await testPool.query(
+            "SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'app_state' LIMIT 1"
+          );
+          hasTable = tableCheck.rows.length > 0;
+        } catch (e) { /* opsional */ }
+        if (hasTable) {
+          try {
+            const rows = await testPool.query('SELECT data FROM app_state WHERE id = 1');
+            if (rows.rows.length) {
+              const state = normalizeStateObject(rows.rows[0].data);
+              counts = {
+                reservations: state.reservations.length,
+                receipts: state.receipts.length,
+                expenses: state.expenses.length
+              };
+            }
+          } catch (e) { /* opsional */ }
+        }
+        return res.json({
+          ok: true,
+          kind: 'postgres',
+          latency_ms: Date.now() - started,
+          server_version: serverVersion,
+          has_app_state_table: hasTable,
+          db_counts: counts
+        });
+      } finally {
+        try { await testPool.end(); } catch {}
+      }
+    }
+    const conn = await mysql.createConnection(built.conn);
+    try {
+      await conn.query('SELECT 1');
+      let rows = null;
+      try { [rows] = await conn.query('SELECT data FROM app_state WHERE id = 1'); } catch (e) { /* opsional */ }
+      let counts = null;
+      if (rows && rows.length) {
+        try {
+          const state = normalizeStateObject(JSON.parse(rows[0].data));
+          counts = { reservations: state.reservations.length, receipts: state.receipts.length, expenses: state.expenses.length };
+        } catch {}
+      }
+      return res.json({ ok: true, kind: 'mysql', latency_ms: Date.now() - started, has_app_state_table: !!(rows && rows.length), db_counts: counts });
+    } finally {
+      try { await conn.end(); } catch {}
+    }
+  } catch (e) {
+    return res.status(400).json({ ok: false, error: sanitizeDbError(e), hint: connectionHint(e, req.body) });
+  }
+});
+
+// Pindah ke database memakai connection string tertentu.
+// Dipakai oleh: tombol "Gunakan koneksi ini sekarang" (apply) dan
+// "Sinkronkan Data Darurat ke Database" (memakai koneksi aktif).
+async function switchStorageToDatabase(connStr, kindOverride, opts) {
+  const kind = kindOverride || activeDatabaseKind();
+  const opened = await openDbPoolAndReadState(connStr, kind);
+  if (!opened || !opened.pool) throw new Error('Tidak bisa membuka koneksi database');
+  const { state: merged, report } = mergeTransactionalState(opened.state || {}, DB);
+
+  // PENGAMAN TERAKHIR: pastikan selalu ada akun admin setelah pindah.
+  // Tanpa ini, memindahkan data ke database kosong akan mengunci admin keluar
+  // dari panel — dan pemulihannya butuh akses deploy. Kalau admin yang
+  // sedang login diketahui (opts.ensureAdmin), akun itu dipastikan ada.
+  const ensure = opts && opts.ensureAdmin;
+  if (ensure && ensure.email) {
+    const exists = merged.admins.some((a) => String(a && a.email || '').toLowerCase() === String(ensure.email).toLowerCase());
+    if (!exists) {
+      merged.admins.push(ensure);
+      report.admins_added = (report.admins_added || 0) + 1;
+    }
+  }
+  if (!merged.admins.length) {
+    try { await opened.pool.end(); } catch {}
+    throw new Error('Dibatalkan: database tujuan tidak punya akun admin, dan menyalin akun admin dari data darurat tidak memungkinkan. Login ke panel ini dulu (dengan akun dari penyimpanan lama), lalu ulangi prosesnya.');
+  }
+  // Urutan penting: aktifkan pool dulu supaya persistSnapshot menulis ke
+  // database, bukan ke file.
+  const previousPool = pool;
+  pool = opened.pool;
+  // Tutup pool lama (bila ada) supaya koneksi ke database sebelumnya tidak
+  // menggantung setelah berpindah — penting saat admin mengganti koneksi
+  // (mis. dari kredensial lama yang salah ke yang baru).
+  if (previousPool && previousPool !== pool) {
+    try { await previousPool.end(); } catch { /* sudah tidak dipakai */ }
+  }
+  if (connStr) {
+    runtimeDatabaseUrl = connStr;
+    runtimeDatabaseKind = kind;
+  }
+  DB = merged;
+  normalizeState();
+  saveShareTokensMirror();
+  dbConnectError = null;
+  dbReachable = true;
+  await persistSnapshot(JSON.stringify(DB));
+  return report;
+}
+
+// Gunakan connection string baru SEKARANG (tanpa menunggu redeploy), lalu
+// gabungkan data darurat dari file ke database itu. Connection string tetap
+// harus disalin ke Railway → Variables supaya bertahan setelah deploy.
+app.post('/api/admin/storage/apply-connection', auth, async (req, res) => {
+  const built = buildConnectionString(req.body);
+  if (built.error) return res.status(400).json({ ok: false, error: built.error });
+  if (String((req.body && req.body.confirm) || '').trim().toUpperCase() !== 'PAKAI') {
+    return res.status(400).json({ ok: false, error: 'Konfirmasi diperlukan: kirim { "confirm": "PAKAI" }' });
+  }
+  try {
+    const report = await switchStorageToDatabase(built.conn, built.kind, { ensureAdmin: req.admin });
+    console.log('[storage] Koneksi database baru dipakai (runtime). Ingat: set DATABASE_URL di Railway agar permanen.');
+    res.json({
+      ok: true,
+      message: 'Server sekarang memakai database ini. Data darurat dari file sudah digabungkan.',
+      runtime_only: true,
+      report
+    });
+  } catch (e) {
+    const reason = sanitizeDbError(e);
+    res.status(400).json({ ok: false, error: reason, hint: connectionHint(e, req.body) });
+  }
+});
+
+// Query diagnostik dari database: jumlah baris + user/host tampil apa
+// adanya TANPA mengembalikan kredensial apa pun.
+async function readActiveDbInfo() {
+  if (!pool) return null;
+  const info = { kind: activeDatabaseKind() };
+  try {
+    if (activeDatabaseKind() === 'postgres') {
+      // Query gabungan dulu; kalau versi/konfigurasi database tertentu tidak
+      // mendukung salah satu fungsi, jatuh ke query yang lebih sederhana
+      // supaya nama database tetap bisa ditampilkan.
+      try {
+        const q = await pool.query("SELECT current_database() AS db, current_user AS usr, inet_server_addr()::text AS host, version() AS ver");
+        const row = q.rows[0] || {};
+        info.database = row.db || null;
+        info.user = row.usr || null;
+        info.host = row.host || null;
+        info.version = String(row.ver || '').split(' ').slice(0, 2).join(' ');
+      } catch (e) {
+        try {
+          const q2 = await pool.query('SELECT current_database() AS db, current_user AS usr');
+          info.database = (q2.rows[0] && q2.rows[0].db) || null;
+          info.user = (q2.rows[0] && q2.rows[0].usr) || null;
+        } catch (e2) {
+          info.error = sanitizeDbError(e);
+        }
+      }
+    } else {
+      try {
+        const [rows] = await pool.query('SELECT DATABASE() AS db, CURRENT_USER() AS usr');
+        info.database = rows[0] && rows[0].db;
+        info.user = rows[0] && rows[0].usr;
+      } catch (e) { /* opsional */ }
+    }
+  } catch (e) {
+    info.error = sanitizeDbError(e);
+  }
+  return info;
+}
+
 // Panel admin memakai ini untuk melihat: storage mana yang AKTIF, apakah
 // database bisa dihubungi, dan berapa banyak data darurat yang belum
 // masuk database. Tanpa ini, satu-satunya cara sadar adalah melihat data
@@ -4315,11 +4628,21 @@ app.delete('/api/admin/settings/:kind', auth, (req, res) => {
 app.get('/api/admin/storage/status', auth, async (req, res) => {
   const payload = {
     configured_storage: DATABASE_KIND,
-    active_storage: pool ? DATABASE_KIND : 'file',
+    active_storage: pool ? activeDatabaseKind() : 'file',
     db_connected: !!pool,
     db_reachable: pool ? true : (dbReachable === null ? null : dbReachable),
     db_error: pool ? null : dbConnectError,
     data_file: DATABASE_KIND === 'file' || pool ? null : path.basename(DATA_FILE),
+    // Apakah file state selamat antar deploy? (volume Railway / DATA_FILE
+    // di luar folder aplikasi = ya). Dipakai UI untuk memilih tingkat
+    // peringatan yang jujur: merah = data bisa hilang, kuning = aman tapi
+    // lebih baik pakai database.
+    file_storage_persistent: !!DATA_FILE_INFO.persistent,
+    file_storage_source: DATA_FILE_INFO.source,
+    // True bila koneksi database yang dipakai datang dari panel admin
+    // (bukan dari env DATABASE_URL) — artinya akan hilang saat redeploy,
+    // jadi admin masih perlu menyalinnya ke Railway → Variables.
+    using_runtime_connection: !!runtimeDatabaseUrl,
     live_counts: {
       reservations: DB.reservations.length,
       receipts: DB.receipts.length,
@@ -4331,6 +4654,9 @@ app.get('/api/admin/storage/status', auth, async (req, res) => {
     // umurnya penting: makin lama, makin banyak data berisiko.
     uptime_seconds: Math.round(process.uptime())
   };
+  if (payload.db_connected) {
+    payload.db_info = await readActiveDbInfo();
+  }
   // Kalau database bisa dihubungi, tampilkan juga isi database supaya
   // admin tahu berapa banyak data yang akan digabungkan.
   if (payload.can_sync && (dbReachable === null || dbReachable === true)) {
@@ -4371,21 +4697,8 @@ app.post('/api/admin/storage/sync-to-db', auth, async (req, res) => {
   if (String((req.body && req.body.confirm) || '').trim().toUpperCase() !== 'SINKRON') {
     return res.status(400).json({ error: 'Konfirmasi diperlukan: kirim { "confirm": "SINKRON" }' });
   }
-  let opened = null;
   try {
-    opened = await openDbPoolAndReadState();
-    const { state: merged, report } = mergeTransactionalState(opened.state || {}, DB);
-    // Aktifkan database sebagai storage permanen, lalu tulis state
-    // gabungan. Urutannya penting: pool harus aktif dulu supaya
-    // persistSnapshot menulis ke database, bukan ke file.
-    pool = opened.pool;
-    opened = null;
-    DB = merged;
-    normalizeState();
-    saveShareTokensMirror();
-    dbConnectError = null;
-    dbReachable = true;
-    await persistSnapshot(JSON.stringify(DB));
+    const report = await switchStorageToDatabase(null, null, { ensureAdmin: req.admin });
     console.log(`[storage] Sinkron ke database selesai: +${report.reservations_added} reservasi, +${report.receipts_added} kwitansi, +${report.expenses_added} pengeluaran`);
     res.json({
       ok: true,
@@ -4395,7 +4708,6 @@ app.post('/api/admin/storage/sync-to-db', auth, async (req, res) => {
   } catch (e) {
     const reason = sanitizeDbError(e);
     console.error('[storage] sync ke database gagal:', reason);
-    if (opened && opened.pool) { try { await opened.pool.end(); } catch {} }
     // Beda antara "server error" dan "database masih tidak bisa dihubungi":
     // yang kedua berarti admin harus memperbaiki DATABASE_URL dulu.
     const unreachable = /ECONNREFUSED|ETIMEDOUT|ENOTFOUND|terminated|authentication|password|timeout|EAI_AGAIN/i.test(reason);
