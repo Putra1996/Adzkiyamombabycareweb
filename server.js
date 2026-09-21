@@ -5120,6 +5120,117 @@ function buildAISystemPrompt() {
 }
 
 // --- Provider: Google Gemini ---
+// Kandidat model Gemini, diurutkan dari yang paling diinginkan.
+// Dipakai bila pencarian model otomatis (ListModels) tidak bisa dijalankan.
+// Model akan terus berganti dari waktu ke waktu — itulah alasan daftar ini
+// ada dan kenapa 404 TIDAK boleh langsung dianggap gagal total.
+const GEMINI_MODEL_CANDIDATES = [
+  'gemini-flash-latest',
+  'gemini-2.5-flash',
+  'gemini-flash-lite-latest',
+  'gemini-2.5-flash-lite',
+  'gemini-2.0-flash',
+  'gemini-1.5-flash'
+];
+const GEMINI_LIST_TTL_MS = 6 * 60 * 60 * 1000;
+let geminiModelCache = { key: null, model: null, at: 0, available: null, lastError: null };
+
+// Skor urutan model Gemini.
+//
+// Aturan yang dipakai (penting, pernah salah): VERSI terbaru lebih diutamakan
+// daripada daftar preferensi statis — kalau tidak, model lawas di daftar
+// (mis. gemini-1.5-flash) akan mengalahkan model baru yang benar-benar
+// tersedia, dan kita kembali ke masalah 404.
+//   • model yang tidak mendukung generateContent (embedding/imagen/tts/…): 0
+//   • versi X.Y  -> 100 + X*10 + Y      (3.6 → 136, 2.5 → 125)
+//   • alias "latest" tanpa versi        -> 130
+//   • flash lebih dipilih daripada pro (lebih cepat & murah): +5 / +0
+//   • varian "lite" sedikit di bawah     : -4
+//   • preview/exp lebih di bawah stabil  : -15
+//   • daftar preferensi hanya sebagai penentu seri: + (8 - posisi)
+function scoreGeminiModel(name) {
+  const n = String(name || '').toLowerCase();
+  if (!n) return 0;
+  if (/embedding|aqa|imagen|veo|tts|image|native-audio|learnlm|gemma/i.test(n)) return 0;
+  if (!/flash|pro|gemini/i.test(n)) return 0;
+  let score = 0;
+  const ver = n.match(/(\d+)(?:\.(\d+))?/);
+  if (ver) score = 100 + parseInt(ver[1], 10) * 10 + parseInt(ver[2] || '0', 10);
+  else if (/latest/.test(n)) score = 130;      // alias ke model stabil terbaru
+  else score = 90;
+  if (/flash/.test(n)) score += 5;
+  if (/lite/.test(n)) score -= 4;
+  if (/preview|exp/.test(n)) score -= 15;
+  const explicit = GEMINI_MODEL_CANDIDATES.indexOf(name);
+  if (explicit >= 0) score += 8 - explicit;    // hanya penentu seri
+  return score;
+}
+function pickGeminiModel(available) {
+  if (!Array.isArray(available) || !available.length) return null;
+  // Buang model yang tidak layak (skor 0 = bukan model teks: embedding,
+  // imagen, tts, dsb.) supaya tidak pernah dipilih sebagai model chat.
+  const usable = available.filter((m) => scoreGeminiModel(m) > 0);
+  if (!usable.length) return null;
+  return usable.sort((a, b) => scoreGeminiModel(b) - scoreGeminiModel(a))[0];
+}
+
+// Tanya ke Google model apa saja yang tersedia untuk kunci ini.
+async function listGeminiModels(apiKey) {
+  const r = await fetchWithTimeout(
+    'https://generativelanguage.googleapis.com/v1beta/models?key=' + encodeURIComponent(apiKey),
+    {}, 15000
+  );
+  if (!r.ok) {
+    const t = await r.text().catch(() => '');
+    throw new Error('Gemini ListModels ' + r.status + ': ' + t.slice(0, 160));
+  }
+  const data = await r.json();
+  return (data.models || [])
+    .filter((m) => Array.isArray(m.supportedGenerationMethods) && m.supportedGenerationMethods.includes('generateContent'))
+    .map((m) => String(m.name || '').replace(/^models\//, ''))
+    .filter(Boolean);
+}
+
+// Model yang akan dicoba lebih dulu (hasil pencarian otomatis / cache / settings).
+async function resolveGeminiModel(apiKey, force) {
+  const now = Date.now();
+  if (!force && geminiModelCache.key === apiKey && geminiModelCache.model && (now - geminiModelCache.at) < GEMINI_LIST_TTL_MS) {
+    return geminiModelCache.model;
+  }
+  const saved = DB.settings && DB.settings.ai_gemini_model;
+  let discovered = null;
+  try {
+    const available = await listGeminiModels(apiKey);
+    discovered = pickGeminiModel(available);
+    geminiModelCache = { key: apiKey, model: discovered, at: now, available, lastError: null };
+  } catch (e) {
+    geminiModelCache.lastError = sanitizeDbError(e);
+  }
+  return discovered || saved || GEMINI_MODEL_CANDIDATES[0];
+}
+
+// Daftar model yang akan dicoba berurutan (tanpa duplikat).
+//
+// Urutan penting: hasil deteksi LANGSUNG dari API didahulukan, karena itulah
+// model yang benar-benar tersedia untuk kunci ini. Daftar statis hanya
+// cadangan terakhir — kalau statis dipakai lebih dulu, model yang sudah
+// dihentikan (mis. gemini-1.5-flash) akan dicoba lagi dan mengulang 404.
+function geminiCandidates(primary) {
+  const live = (geminiModelCache.available || [])
+    .slice()
+    .sort((a, b) => scoreGeminiModel(b) - scoreGeminiModel(a));
+  const list = [];
+  [primary, ...live, DB.settings && DB.settings.ai_gemini_model, ...GEMINI_MODEL_CANDIDATES]
+    .forEach((m) => { if (m && list.indexOf(m) < 0) list.push(m); });
+  return list;
+}
+
+function isModelUnavailable(status, message) {
+  const text = String(message || '').toLowerCase();
+  if (status === 404) return true;
+  return /not found|no longer available|is not supported|does not exist|deprecat|retire|unsupported model/.test(text);
+}
+
 async function callGemini(systemPrompt, messages) {
   const apiKey = DB.settings.ai_gemini_api_key;
   if (!apiKey) throw new Error('Gemini API key not configured');
@@ -5130,26 +5241,63 @@ async function callGemini(systemPrompt, messages) {
   // Always prepend system prompt as first user+model exchange
   contents.unshift({ role: 'user', parts: [{ text: systemPrompt }] });
   contents.unshift({ role: 'model', parts: [{ text: 'Siap membantu customer Adzkiya.' }] });
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
-  const r = await fetchWithTimeout(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      contents,
-      generationConfig: { temperature: 0.7, maxOutputTokens: 500 }
-    })
-  }, 30000);
-  if (!r.ok) {
-    const text = await r.text().catch(() => '');
-    throw new Error('Gemini ' + r.status + ': ' + text.slice(0, 200));
+
+  const primary = await resolveGeminiModel(apiKey);
+  const candidates = geminiCandidates(primary).slice(0, 6);
+  const errors = [];
+
+  for (const model of candidates) {
+    const url = 'https://generativelanguage.googleapis.com/v1beta/models/' +
+      encodeURIComponent(model) + ':generateContent?key=' + encodeURIComponent(apiKey);
+    let r, text = '';
+    try {
+      r = await fetchWithTimeout(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents,
+          generationConfig: { temperature: 0.7, maxOutputTokens: 500 }
+        })
+      }, 30000);
+    } catch (e) {
+      errors.push(model + ': ' + sanitizeDbError(e));
+      continue;
+    }
+    if (!r.ok) {
+      text = await r.text().catch(() => '');
+      errors.push(model + ' (' + r.status + '): ' + text.slice(0, 120));
+      // Model dihentikan / tidak dikenal -> coba kandidat berikutnya.
+      // Kuota/layanan penuh (429/503) juga dicoba ke model lain.
+      if (isModelUnavailable(r.status, text) || r.status === 429 || r.status === 503) continue;
+      continue;
+    }
+    const data = await r.json();
+    const reply = data.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (!reply) { errors.push(model + ': balasan kosong'); continue; }
+    // Ingat model yang berhasil supaya permintaan berikutnya langsung tepat.
+    if (geminiModelCache.model !== model) {
+      geminiModelCache = { ...geminiModelCache, key: apiKey, model, at: Date.now() };
+    }
+    if (DB.settings.ai_gemini_model !== model) {
+      DB.settings.ai_gemini_model = model;
+      save();
+    }
+    return { reply: sanitizeAIReply(reply), model };
   }
-  const data = await r.json();
-  const reply = data.candidates?.[0]?.content?.parts?.[0]?.text;
-  if (!reply) throw new Error('Gemini: empty response');
-  return sanitizeAIReply(reply);
+  throw new Error('Semua model Gemini gagal — ' + errors.join(' | '));
 }
 
 // --- Provider: OpenRouter (fallback) ---
+// Kandidat model OpenRouter (diurutkan). Sama seperti Gemini: nama model
+// bisa dihentikan penyedia, jadi 404 tidak boleh dianggap gagal total.
+const OPENROUTER_MODEL_CANDIDATES = [
+  'google/gemini-2.5-flash',
+  'google/gemini-2.5-flash-lite',
+  'google/gemini-2.0-flash-001',
+  'google/gemini-flash-1.5',
+  'openrouter/auto'
+];
+
 async function callOpenRouter(systemPrompt, messages) {
   const apiKey = DB.settings.ai_openrouter_api_key;
   if (!apiKey) throw new Error('OpenRouter API key not configured');
@@ -5157,29 +5305,48 @@ async function callOpenRouter(systemPrompt, messages) {
     { role: 'system', content: systemPrompt },
     ...messages
   ];
-  const r = await fetchWithTimeout('https://openrouter.ai/api/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': 'Bearer ' + apiKey,
-      'HTTP-Referer': 'https://putra1996.github.io/Adzkiyamombabycareweb',
-      'X-Title': 'Adzkiya Mom Baby Care'
-    },
-    body: JSON.stringify({
-      model: 'google/gemini-flash-1.5',
-      messages: oaMessages,
-      max_tokens: 500,
-      temperature: 0.7
-    })
-  }, 30000);
-  if (!r.ok) {
-    const text = await r.text().catch(() => '');
-    throw new Error('OpenRouter ' + r.status + ': ' + text.slice(0, 200));
+  const candidates = [];
+  [DB.settings.ai_openrouter_model, ...OPENROUTER_MODEL_CANDIDATES]
+    .forEach((m) => { if (m && candidates.indexOf(m) < 0) candidates.push(m); });
+
+  const errors = [];
+  for (const model of candidates.slice(0, 5)) {
+    let r, text = '';
+    try {
+      r = await fetchWithTimeout('https://openrouter.ai/api/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ' + apiKey,
+          'HTTP-Referer': 'https://putra1996.github.io/Adzkiyamombabycareweb',
+          'X-Title': 'Adzkiya Mom Baby Care'
+        },
+        body: JSON.stringify({
+          model,
+          messages: oaMessages,
+          max_tokens: 500,
+          temperature: 0.7
+        })
+      }, 30000);
+    } catch (e) {
+      errors.push(model + ': ' + sanitizeDbError(e));
+      continue;
+    }
+    if (!r.ok) {
+      text = await r.text().catch(() => '');
+      errors.push(model + ' (' + r.status + '): ' + text.slice(0, 120));
+      continue;
+    }
+    const data = await r.json();
+    const reply = data.choices?.[0]?.message?.content;
+    if (!reply) { errors.push(model + ': balasan kosong'); continue; }
+    if (DB.settings.ai_openrouter_model !== model) {
+      DB.settings.ai_openrouter_model = model;
+      save();
+    }
+    return { reply: sanitizeAIReply(reply), model };
   }
-  const data = await r.json();
-  const reply = data.choices?.[0]?.message?.content;
-  if (!reply) throw new Error('OpenRouter: empty response');
-  return sanitizeAIReply(reply);
+  throw new Error('Semua model OpenRouter gagal — ' + errors.join(' | '));
 }
 
 // Try Gemini first, fall back to OpenRouter. Returns { reply, provider }.
@@ -5188,14 +5355,16 @@ async function callAIChat(systemPrompt, messages) {
   // Try Gemini if key is set
   if (DB.settings.ai_gemini_api_key) {
     try {
-      return { reply: await callGemini(systemPrompt, messages), provider: 'gemini' };
-    } catch (e) { errors.push('Gemini: ' + e.message); }
+      const r = await callGemini(systemPrompt, messages);
+      return { reply: r.reply, provider: 'gemini', model: r.model };
+    } catch (e) { errors.push('Gemini: ' + sanitizeDbError(e)); }
   }
   // Fallback to OpenRouter if key is set
   if (DB.settings.ai_openrouter_api_key) {
     try {
-      return { reply: await callOpenRouter(systemPrompt, messages), provider: 'openrouter' };
-    } catch (e) { errors.push('OpenRouter: ' + e.message); }
+      const r = await callOpenRouter(systemPrompt, messages);
+      return { reply: r.reply, provider: 'openrouter', model: r.model };
+    } catch (e) { errors.push('OpenRouter: ' + sanitizeDbError(e)); }
   }
   throw new Error('Tidak ada AI provider yang berhasil: ' + errors.join(' | '));
 }
@@ -5247,12 +5416,17 @@ app.post('/api/ai/chat', aiLimiter, async (req, res) => {
     res.json({
       reply: result.reply,
       provider: result.provider,
+      model: result.model || null,
       session_id
     });
   } catch (e) {
-    console.error('[ai/chat]', e);
+    const detail = sanitizeDbError(e);
+    console.error('[ai/chat] gagal:', detail);
     res.status(500).json({
       error: 'AI chat gagal: ' + (e.message || 'unknown error'),
+      // Alasan teknis (tanpa kredensial) — dipakai panel admin & CLI untuk
+      // diagnosa; widget hanya menampilkannya bila dibuka dengan ?debug_ai=1.
+      detail,
       fallback_wa: waLinkFor(DB.settings.phone, '6285887018194')
     });
   }
@@ -5426,6 +5600,8 @@ app.get('/api/admin/ai/config', auth, (req, res) => {
     wa_verify_token: s.ai_assistant_verify_token || '',
     base_prompt: s.ai_assistant_base_prompt || '',
     conversation_count: (s.ai_assistant_conversations || []).length,
+    gemini_model: s.ai_gemini_model || null,
+    openrouter_model: s.ai_openrouter_model || null,
     webhook_url: absoluteWebhookUrl(req)
   });
 });
@@ -5523,6 +5699,60 @@ app.get('/api/admin/ai/diagnostics', auth, async (req, res) => {
 
   res.setHeader('Cache-Control', 'private, no-store');
   res.json(result);
+});
+
+// ADMIN: uji AI langsung ke provider.
+//
+// Menjawab pertanyaan "kenapa bot hanya bilang sedang gangguan?" tanpa
+// menebak: memanggil Gemini/OpenRouter dengan prompt sangat pendek, lalu
+// melaporkan model yang dipakai, waktu respons, cuplikan balasan, atau
+// pesan galat asli dari penyedia (mis. "model dihentikan/404").
+app.post('/api/admin/ai/test', auth, async (req, res) => {
+  const results = {};
+  const prompt = 'Balas satu kata: OK';
+
+  if (DB.settings.ai_gemini_api_key) {
+    const started = Date.now();
+    try {
+      const r = await callGemini(prompt, [{ role: 'user', content: 'ping' }]);
+      results.gemini = {
+        ok: true, model: r.model, latency_ms: Date.now() - started,
+        sample: String(r.reply || '').slice(0, 120)
+      };
+    } catch (e) {
+      results.gemini = { ok: false, error: sanitizeDbError(e), latency_ms: Date.now() - started };
+    }
+  } else {
+    results.gemini = { ok: false, error: 'Kunci Gemini belum diisi' };
+  }
+
+  if (DB.settings.ai_openrouter_api_key) {
+    const started = Date.now();
+    try {
+      const r = await callOpenRouter(prompt, [{ role: 'user', content: 'ping' }]);
+      results.openrouter = {
+        ok: true, model: r.model, latency_ms: Date.now() - started,
+        sample: String(r.reply || '').slice(0, 120)
+      };
+    } catch (e) {
+      results.openrouter = { ok: false, error: sanitizeDbError(e), latency_ms: Date.now() - started };
+    }
+  } else {
+    results.openrouter = { ok: false, error: 'Kunci OpenRouter belum diisi (opsional)' };
+  }
+
+  const working = Object.entries(results).filter(([, v]) => v && v.ok).map(([k, v]) => k + ' (' + v.model + ')');
+  res.setHeader('Cache-Control', 'private, no-store');
+  res.json({
+    ok: working.length > 0,
+    enabled: !!DB.settings.ai_assistant_enabled,
+    working_providers: working,
+    saved_models: {
+      gemini: DB.settings.ai_gemini_model || null,
+      openrouter: DB.settings.ai_openrouter_model || null
+    },
+    results
+  });
 });
 
 // ADMIN: clear conversation logs

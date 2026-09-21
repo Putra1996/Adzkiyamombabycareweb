@@ -149,6 +149,8 @@ tidak bisa langsung dipakai di API.
 
 | Yang terlihat | Penyebab & tindakan |
 |---|---|
+| Bot **selalu** menjawab "Maaf, saya sedang gangguan 😅…" | Klik **🤖 Tes AI** di panel AI — pesan galat asli dari Google/OpenRouter akan tampil. Penyebab paling umum: **model AI yang dipakai sudah dihentikan Google** (mis. `gemini-1.5-flash` → 404). Sistem sekarang memilih model otomatis (lihat catatan di bawah), jadi kalau masih gagal biasanya kunci salah atau kuota habis. |
+| Panel menampilkan "Kunci Gemini belum diisi" | Isi **🤖 Google Gemini API Key** lalu simpan. Kolom dikosongkan otomatis setelah simpan — itu normal (nilai tetap tersimpan). |
 | Badge tetap ⚪ OFF / chat beranda bilang "hubungi admin via WhatsApp" | **Aktifkan AI Assistant** belum dicentang, atau kunci AI belum tersimpan |
 | Chat menjawab "AI provider belum dikonfigurasi" | Kunci Gemini/OpenRouter kosong/typo — isi ulang lalu simpan |
 | Tes koneksi: **Meta menolak kredensial (code 190)** | Token kedaluwarsa/dicabut → buat token baru (B5) |
@@ -157,6 +159,31 @@ tidak bisa langsung dipakai di API.
 | Pesan WA masuk tapi tidak ada balasan | (a) field **messages** belum di-Subscribe (B4.3), (b) AI Assistant belum aktif, (c) kuota/periode percakapan WhatsApp habis |
 | Balasan WA berhenti setelah 24 jam | Anda masih memakai token sementara → ganti ke token permanen (B5) |
 | Broadcast WA berhenti/tidak jalan | Broadcast memakai `wa.me`, tidak butuh token — pastikan nomor pelanggan benar saja |
+
+## Catatan penting soal model AI (agar tidak kena masalah yang sama lagi)
+
+Google **menghentikan model lamanya dari waktu ke waktu**. Kasus nyata:
+`gemini-1.5-flash` (yang dipakai versi awal sistem ini) dihentikan, sehingga
+setiap permintaan dijawab `404 NOT_FOUND` dan bot selalu membalas
+"Maaf, saya sedang gangguan 😅. Silakan chat langsung via WhatsApp ya: …".
+
+Sistem sekarang menangani ini otomatis:
+
+1. **Mendeteksi model yang benar-benar tersedia** untuk kunci Anda lewat
+   `ListModels`, lalu memilih yang terbaru — contoh: `gemini-3.6-flash`
+   mengalahkan `gemini-2.5-flash`; model embedding/gambar tidak pernah dipilih.
+2. **Mencoba kandidat berikutnya otomatis** kalau satu model ditolak
+   (404 / "no longer available" / 503 karena permintaan tinggi).
+3. **Menyimpan model yang berhasil** (terlihat di **🤖 Tes AI** sebagai
+   "Model tersimpan") sehingga permintaan berikutnya langsung tepat.
+4. **OpenRouter juga mencoba beberapa model** (`google/gemini-2.5-flash`,
+   `…-flash-lite`, `google/gemini-2.0-flash-001`, terakhir `openrouter/auto`).
+
+Kalau suatu saat bot berhenti menjawab lagi, urutan pemeriksaannya:
+klik **🤖 Tes AI** → baca pesan galat aslinya. Kalau tertulis "model … no
+longer available", sistem biasanya sudah otomatis pindah ke model lain;
+kalau semua kandidat gagal, biasanya kunci bermasalah/kuota habis — buat
+kunci baru lalu simpan lagi.
 
 ## Aturan keamanan (penting)
 
@@ -181,3 +208,4 @@ tidak bisa langsung dipakai di API.
 | Webhook Verify Token | **buatan sendiri**, apa saja (string acak) |
 | 🔐 App Secret | Meta App → Settings → Basic → App Secret |
 | 🔍 Tes Koneksi WhatsApp | tombol verifikasi di panel (cek semua di atas sekaligus) |
+| 🤖 Tes AI | tombol uji di panel — mengirim satu pesan uji ke Gemini/OpenRouter dan menampilkan model yang dipakai atau pesan galat aslinya |

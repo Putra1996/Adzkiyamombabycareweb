@@ -4475,6 +4475,7 @@ async function renderSettings() {
              pernah lagi meluber keluar bentuk tombol. -->
         <div class="btn-row" style="margin-top:12px;">
           <button type="button" id="aiAssistantSaveBtn" class="btn btn-primary" style="background:#7c3aed;">💾 Simpan Konfigurasi AI</button>
+          <button type="button" id="aiAssistantAiTestBtn" class="btn btn-outline">🤖 Tes AI</button>
           <button type="button" id="aiAssistantDiagBtn" class="btn btn-outline">🔍 Tes Koneksi WhatsApp</button>
           <button type="button" id="aiAssistantLogsBtn" class="btn btn-outline">📋 Log Percakapan</button>
         </div>
@@ -4755,6 +4756,7 @@ async function wireAIAssistantSettings() {
   const verifyTokenEl = document.getElementById('aiWaVerifyToken');
   const appSecretEl = document.getElementById('aiWaAppSecret');
   const diagBtn = document.getElementById('aiAssistantDiagBtn');
+  const aiTestBtn = document.getElementById('aiAssistantAiTestBtn');
   const diagBox = document.getElementById('aiAssistantDiagnostics');
   const basePromptEl = document.getElementById('aiBasePrompt');
   const webhookUrlInput = document.getElementById('aiWebhookUrl');
@@ -4828,6 +4830,49 @@ async function wireAIAssistantSettings() {
     } catch (e) {
       feedback.textContent = '❌ Gagal menyimpan: ' + e.message;
       feedback.style.color = '#c43050';
+    }
+  };
+
+  if (aiTestBtn) aiTestBtn.onclick = async () => {
+    aiTestBtn.disabled = true;
+    const original = aiTestBtn.textContent;
+    aiTestBtn.textContent = '⏳ Menguji AI…';
+    diagBox.innerHTML = '<div style="padding:10px;background:var(--bg);border-radius:10px;">⏳ Mengirim satu pesan uji ke provider AI…</div>';
+    try {
+      const r = await api('/api/admin/ai/test', { method: 'POST', body: '{}' });
+      const baris = (nama, d) => {
+        const label = nama === 'gemini' ? 'Google Gemini' : 'OpenRouter';
+        if (!d) return '';
+        if (d.ok) {
+          return '<div style="padding:8px 10px;border-radius:8px;background:#ecfdf5;color:#065f46;margin-bottom:6px;font-size:0.85rem;line-height:1.5;">'
+            + '✅ <strong>' + label + '</strong> — berhasil (' + (d.latency_ms || 0) + ' ms)<br>'
+            + '<span style="opacity:0.85;">Model: <code>' + esc(d.model || '-') + '</code></span>'
+            + (d.sample ? '<br><span style="opacity:0.85;">Balasan uji: ' + esc(d.sample) + '</span>' : '')
+            + '</div>';
+        }
+        return '<div style="padding:8px 10px;border-radius:8px;background:#fef2f2;color:#7f1d1d;margin-bottom:6px;font-size:0.85rem;line-height:1.5;">'
+          + '❌ <strong>' + label + '</strong> — gagal<br>'
+          + '<span style="font-size:0.82rem;">' + esc(d.error || 'tidak diketahui') + '</span>'
+          + '</div>';
+      };
+      diagBox.innerHTML = '<div style="padding:12px;border:1.5px solid var(--border);border-radius:12px;background:var(--card);">'
+        + '<div style="font-weight:700;margin-bottom:8px;">🤖 Hasil Tes AI</div>'
+        + baris('gemini', r.results && r.results.gemini)
+        + baris('openrouter', r.results && r.results.openrouter)
+        + '<div style="font-size:0.82rem;color:var(--text-soft);margin-top:6px;line-height:1.6;">'
+        + (r.ok
+            ? 'AI siap dipakai lewat: ' + esc((r.working_providers || []).join(', ')) + '.'
+            : 'Belum ada provider yang berhasil. Perbaiki pesan galat di atas, lalu uji lagi. Pesan galat ditampilkan apa adanya dari penyedia.')
+        + '<br>Status aktif/nonaktif: <strong>' + (r.enabled ? 'aktif' : 'NONAKTIF — centang "Aktifkan AI Assistant" lalu simpan') + '</strong>.'
+        + (r.saved_models && (r.saved_models.gemini || r.saved_models.openrouter)
+            ? '<br>Model tersimpan: ' + esc([r.saved_models.gemini, r.saved_models.openrouter].filter(Boolean).join(', ')) + '.'
+            : '')
+        + '</div></div>';
+    } catch (e) {
+      diagBox.innerHTML = '<div class="alert alert-error">Gagal menguji AI: ' + esc(e.message) + '</div>';
+    } finally {
+      aiTestBtn.disabled = false;
+      aiTestBtn.textContent = original;
     }
   };
 
