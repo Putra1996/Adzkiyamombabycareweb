@@ -162,6 +162,50 @@ tidak bisa langsung dipakai di API.
 | Balasan WA berhenti setelah 24 jam | Anda masih memakai token sementara → ganti ke token permanen (B5) |
 | Broadcast WA berhenti/tidak jalan | Broadcast memakai `wa.me`, tidak butuh token — pastikan nomor pelanggan benar saja |
 
+## 📝 Reservasi otomatis dari chat AI
+
+Fitur ini membuat AI **langsung membuat reservasi** setelah percakapan
+lengkap — jadi data masuk ke panel admin tanpa calon pasien harus mengisi
+form lagi.
+
+**Apa yang dikumpulkan AI (6 data):**
+1. Nama lengkap pasien → 2) Nomor WhatsApp → 3) Alamat lengkap →
+4) Layanan (harus ada di katalog) → 5) Tanggal `YYYY-MM-DD` → 6) Jam `HH:MM`.
+
+Setelah keenam data lengkap dan pelanggan setuju, AI menutup balasannya
+dengan blok data khusus. Server memvalidasi ulang lalu menyimpan reservasi.
+
+**Hasilnya di panel admin:**
+- Reservasi muncul di menu **📅 Reservasi** dengan status **pending** &
+  pembayaran **unpaid**, lengkap dengan badge **🤖 AI** (berarti dibuat otomatis
+  dari chat, bukan dari form publik).
+- **🔔 Notifikasi** admin otomatis memberi tahu reservasi baru.
+- Catatan reservasi bertuliskan "Dibuat otomatis oleh AI Assistant".
+- Admin tinggal konfirmasi jadwal ke pelanggan via WhatsApp.
+
+**Pengaman yang sudah terpasang** (penting, karena ini jalur yang bisa
+menyimpan data):
+
+| Pengaman | Perilaku |
+|---|---|
+| Validasi ulang server | Nama, WhatsApp (9–15 angka), alamat, tanggal & jam (format ketat) wajib benar |
+| Harga dari katalog server | Harga/total yang "disebut AI" **diabaikan** — selalu dihitung dari katalog |
+| Layanan harus nyata | Nama layanan di luar katalog → ditolak |
+| Jadwal dicek | Tanggal lampau & **hari libur (blackout)** ditolak, lengkap dengan alasannya |
+| Anti-duplikat | Reservasi sama (nama + tanggal + jam) tidak dibuat dua kali |
+| Batas penyalahgunaan | Maksimal **3 reservasi per jam per IP** dan **3 per percakapan** — mencegah pembanjiran data admin |
+| Data contoh diabaikan | Bila AI hanya menyalin contoh format, server mengabaikan (tidak membuat reservasi) |
+| Blok mentah disembunyikan | Pelanggan tidak melihat teks teknis blok data; yang tampil kartu ringkasan rapi |
+
+**Yang dilihat pelanggan:** setelah data lengkap, muncul **kartu hijau**
+berisi nomor reservasi, layanan, jadwal, dan total — plus catatan bahwa admin
+akan mengonfirmasi lewat WhatsApp.
+
+**Kalau data belum lengkap**: AI tidak membuat reservasi, tetapi menanyakan
+data yang kurang (satu per satu). Pelanggan juga bisa dilayani lewat WhatsApp —
+percakapan WA memakai mekanisme yang sama, dan balasannya menambahkan
+"✅ Reservasi #… sudah masuk ke sistem kami".
+
 ## 💸 OpenRouter tanpa kredit? Tetap bisa dipakai (mode model gratis)
 
 OpenRouter membalas **HTTP 402 "Insufficient credits. This account never

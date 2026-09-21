@@ -451,7 +451,7 @@ function renderRecentList(rows) {
   skel.innerHTML = `
     <div class="card-list" aria-label="Reservasi terbaru (tampilan kartu untuk HP)">
       ${rows.map(r => `<div class="card-list-item">
-        <div class="cli-head">${esc(r.patient_name || '-')} <small style="color:var(--text-soft);font-weight:500;font-size:0.82rem;">· #${r.id}</small></div>
+        <div class="cli-head">${esc(r.patient_name || '-')} ${r.source === 'ai_chat' || r.source === 'ai_chat_wa' ? '<span style="font-size:0.76rem;background:#ede9fe;color:#5b21b6;border:1px solid #ddd6fe;border-radius:6px;padding:2px 7px;font-weight:700;">🤖 AI</span> ' : ''}<small style="color:var(--text-soft);font-weight:500;font-size:0.82rem;">· #${r.id}</small></div>
         <div class="cli-meta">📅 ${(r.slots || []).map(s => `${s.date} ${s.time}`).join(', ') || '—'}</div>
         <div class="cli-row"><span class="cli-label">Layanan</span><span class="cli-value" style="text-align:left;font-weight:500;">${(r.items || []).map(it => `${esc(it.name)} ×${it.qty}`).join(', ') || '-'}</span></div>
         <div class="cli-row"><span class="cli-label">Status</span><span class="cli-value"><span class="badge badge-${r.status}">${r.status}</span></span></div>
@@ -2318,7 +2318,7 @@ async function loadRecap() {
               </tr></thead><tbody>
               ${RECAP_DATA.rows.map(r => `<tr>
                 <td>${(r.slots||[]).map(s=>`${fmtDate(s.date)} <small>${s.time}</small>`).join('<br>')}</td>
-                <td>${esc(r.patient_name)}</td>
+                <td>${esc(r.patient_name)}${(r.source === 'ai_chat' || r.source === 'ai_chat_wa') ? ' <span style="font-size:0.76rem;background:#ede9fe;color:#5b21b6;border:1px solid #ddd6fe;border-radius:6px;padding:2px 6px;font-weight:700;white-space:nowrap;">🤖 AI</span>' : ''}</td>
                 <td><div class="items-list">${(r.items||[]).map(it=>`<div>• ${esc(it.name)} ×${it.qty}</div>`).join('')}</div></td>
                 <td>${(r.slots||[]).length}</td>
                 <td><strong>${fmtRp(r.total)}</strong></td>

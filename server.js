@@ -1661,6 +1661,9 @@ app.post('/api/auth/login', authLimiter, (req, res) => {
 // ===== ADMIN — RESERVATIONS =====
 function publicReservation(r) {
   return {
+    // `source` dipakai panel untuk menandai reservasi yang dibuat otomatis
+    // oleh AI Assistant (bukan dari form/webhook lain).
+    source: r.source || null,
     id: r.id, patient_name: r.patient_name, whatsapp: r.whatsapp, address: r.address,
     items: r.items || [{ name: r.service_name, price: r.service_price, qty: r.qty }],
     slots: r.slots || [{ date: r.reservation_date, time: r.reservation_time }],
@@ -5116,7 +5119,8 @@ function sanitizeAIReply(text) {
     .trim();
 }
 
-const AI_DEFAULT_PERSONA = `Kamu adalah Adzkiya Assistant, customer service AI untuk klinik home-service Adzkiya Mom Baby Care di Cilacap.\n\nTugas kamu:\n1. Menyapa customer dengan hangat dalam Bahasa Indonesia\n2. Membantu memilih layanan yang sesuai dari katalog\n3. Memberi info harga, jam operasional, dan area layanan\n4. Membantu booking: tanyakan tanggal & jam yang diinginkan, lalu arahkan customer untuk konfirmasi via WhatsApp ke admin\n\nAturan penting:\n- Jawab singkat (max 3-4 kalimat per pesan)\n- Gunakan emoji secukupnya (🌸 untuk sapaan, ✅ untuk konfirmasi)\n- SELALU akhiri dengan pertanyaan untuk lanjutkan percakapan\n- JANGAN sebut harga detail kecuali customer tanya\n- JANGAN janjikan booking tanpa admin confirmation\n- Untuk finalisasi booking, arahkan ke WhatsApp admin\n\nFormat jawaban (WAJIB):\n- Tulis TEKS BIASA saja, JANGAN pakai HTML atau tag apa pun\n  (jangan tulis <a href=\"...\">, <br>, <b>, dan sejenisnya)\n- Tulis tautan apa adanya, contoh: https://wa.me/6285887018194\n- JANGAN pakai format markdown seperti [teks](tautan)`;
+const AI_DEFAULT_PERSONA = `Kamu adalah Adzkiya Assistant, customer service AI untuk klinik home-service Adzkiya Mom Baby Care di Cilacap.\n\nTugas kamu:\n1. Menyapa customer dengan hangat dalam Bahasa Indonesia\n2. Membantu memilih layanan yang sesuai dari katalog\n3. Memberi info harga, jam operasional, dan area layanan\n4. Membantu booking: tanyakan tanggal & jam yang diinginkan, lalu arahkan customer untuk konfirmasi via WhatsApp ke admin\n\nAturan penting:\n- Jawab singkat (max 3-4 kalimat per pesan)\n- Gunakan emoji secukupnya (🌸 untuk sapaan, ✅ untuk konfirmasi)\n- SELALU akhiri dengan pertanyaan untuk lanjutkan percakapan\n- JANGAN sebut harga detail kecuali customer tanya\n- JANGAN janjikan booking tanpa admin confirmation\n- Untuk finalisasi booking, arahkan ke WhatsApp admin\n\nFormat jawaban (WAJIB):\n- Tulis TEKS BIASA saja, JANGAN pakai HTML atau tag apa pun\n  (jangan tulis <a href=\"...\">, <br>, <b>, dan sejenisnya)\n- Tulis tautan apa adanya, contoh: https://wa.me/6285887018194\n- JANGAN pakai format markdown seperti [teks](tautan)\n\n
+Kalau customer ingin booking, kumpulkan 6 data ini (satu per satu, ramah): NAMA lengkap pasien, NOMOR WhatsApp, ALAMAT lengkap, LAYANAN yang diinginkan (harus ada di katalog), TANGGAL layanan (format YYYY-MM-DD), dan JAM layanan (format HH:MM).\n\nSetelah KEENAM data benar-benar lengkap dan customer setuju, tulis ringkasan singkat lalu akhiri balasan dengan satu blok data yang dibuka dengan [[BOOKING]] dan ditutup dengan [[/BOOKING]].\nIsi blok itu HANYA berupa JSON satu baris dengan kunci: patient_name, whatsapp, address, items (daftar objek berisi name dan qty), dan slots (daftar objek berisi date dan time).\nWAJIB: seluruh nilai diisi data ASLI dari percakapan — jangan pernah menulis contoh, kata sandi, atau teks seperti Nama Lengkap / 0812xxxxxxx / YYYY-MM-DD / HH:MM / Nama Layanan.\nKalau ada data yang belum lengkap, JANGAN kirim blok itu; tanyakan dulu yang kurang.- Kalau ada data yang belum lengkap, JANGAN kirim blok; tanyakan yang kurang.`;
 
 // Ringkas harga: 80000 -> "80rb" (hemat token, tetap jelas bagi model).
 function shortPrice(v) {
@@ -5152,6 +5156,240 @@ function trimAIHistory(history) {
       content: String((h && h.content) || '').slice(0, AI_HISTORY_CHAR_LIMIT)
     }))
     .filter(m => m.content);
+}
+
+// ===== RESERVASI OTOMATIS DARI CHAT AI =====
+//
+// Cara kerja: persona AI diinstruksikan mengumpulkan data booking (nama,
+// WhatsApp, alamat, layanan, tanggal, jam). Setelah lengkap, AI menutup
+// balasannya dengan blok mesin-terbaca:
+//
+//   [[BOOKING]]{"patient_name":"...","whatsapp":"...","address":"...",
+//               "items":[{"name":"Massage Ibu Hamil","qty":1}],
+//               "slots":[{"date":"2026-09-25","time":"09:00"}]}[[/BOOKING]]
+//
+// Server mem-parsing blok itu, MEMVALIDASI ulang seluruh isinya (harga selalu
+// diambil dari katalog server, jadwal & hari libur dicek, identitas wajib),
+// lalu membuat reservasi sehingga langsung muncul di panel admin.
+//
+// Prinsip keamanan yang dipegang:
+//   • Teks dari AI TIDAK dipercaya. Semua nilai divalidasi seperti form publik.
+//   • Harga tidak pernah dari AI — selalu dari SERVICE_PRICE_BY_NAME.
+//   • Ada batas jumlah booking per IP dan per sesi, jadi tidak bisa dipakai
+//     untuk membanjiri data admin (spam).
+//   • Blok mentah dibuang dari balasan yang dilihat pengunjung.
+const AI_BOOKING_MAX_PER_IP_PER_HOUR = 3;
+const AI_BOOKING_MAX_PER_SESSION = 3;
+const aiBookingHits = new Map(); // key -> { count, resetAt }
+
+function aiBookingRateCheck(key, max) {
+  const now = Date.now();
+  const cur = aiBookingHits.get(key);
+  if (!cur || now > cur.resetAt) {
+    aiBookingHits.set(key, { count: 1, resetAt: now + 60 * 60 * 1000 });
+    return { ok: true };
+  }
+  if (cur.count >= max) {
+    return { ok: false, retryAfterMin: Math.max(1, Math.ceil((cur.resetAt - now) / 60000)) };
+  }
+  cur.count += 1;
+  return { ok: true };
+}
+// Bersihkan peta pembatas berkala supaya tidak tumbuh tanpa batas.
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, v] of aiBookingHits) if (v.resetAt < now) aiBookingHits.delete(k);
+}, 30 * 60 * 1000);
+
+// Ambil blok booking dari balasan AI. Mengembalikan { clean, data|raw, error }.
+function extractAISBooking(reply) {
+  const text = String(reply == null ? '' : reply);
+  const re = /\[\[BOOKING\]\]([\s\S]*?)\[\[\/BOOKING\]\]/i;
+  const m = text.match(re);
+  if (!m) return { clean: text, data: null, error: null };
+  // Balasan untuk pengunjung tanpa blok mesin + tanpa baris kosong berlebih.
+  const clean = text.replace(re, '').replace(/\n{3,}/g, '\n\n').trim() || text.replace(re, '').trim();
+  let parsed;
+  try {
+    parsed = JSON.parse(String(m[1]).trim());
+  } catch (e) {
+    return { clean, data: null, error: 'blok booking tidak bisa dibaca (JSON tidak valid)' };
+  }
+  return { clean, data: parsed, error: null };
+}
+
+// Deteksi nilai contoh (placeholder) di dalam blok booking.
+//
+// Kenapa perlu: model bahasa kadang menyalin teks contoh dari instruksinya.
+// Tanpa penyaring ini, server mencoba membuat reservasi dengan data palsu
+// seperti "Nama Lengkap"/"0812xxxxxxx" lalu menampilkan pesan galat yang
+// membingungkan ke pengunjung. Blok seperti itu cukup diabaikan.
+const AI_BOOKING_PLACEHOLDER_RE = /(nama lengkap|alamat lengkap|nama layanan|x{4,}|yyyy-mm-dd|hh:mm|nomor_wa|contoh|example|placeholder|\[\])/i;
+function looksLikePlaceholderBooking(obj) {
+  let text = '';
+  try { text = JSON.stringify(obj || {}); } catch (e) { return true; }
+  return AI_BOOKING_PLACEHOLDER_RE.test(text);
+}
+
+// Validasi + bangun data reservasi dari isi blok. Mengembalikan
+// { ok: true, reservation } atau { ok: false, error }.
+function buildReservationFromAIData(data) {
+  if (!data || typeof data !== 'object') return { ok: false, error: 'data booking kosong' };
+
+  const patient_name = String(data.patient_name || data.nama || '').trim().slice(0, 150);
+  if (patient_name.length < 2) return { ok: false, error: 'nama pasien belum lengkap' };
+
+  const whatsapp = String(data.whatsapp || data.wa || data.phone || '').replace(/[^\d+\-\s()]/g, '').trim().slice(0, 30);
+  const waDigits = whatsapp.replace(/\D/g, '');
+  if (waDigits.length < 9 || waDigits.length > 15) return { ok: false, error: 'nomor WhatsApp tidak valid (butuh 9-15 angka)' };
+
+  const address = String(data.address || data.alamat || '').trim().slice(0, 1000);
+  if (address.length < 5) return { ok: false, error: 'alamat belum lengkap' };
+
+  // Layanan: nama dicocokkan ke katalog server (toleran terhadap spasi/huruf
+  // besar-kecil). Harga SELALU dari katalog, bukan dari AI.
+  const rawItems = Array.isArray(data.items) ? data.items : [];
+  if (!rawItems.length) return { ok: false, error: 'layanan belum dipilih' };
+  const items = [];
+  for (const it of rawItems.slice(0, 20)) {
+    const name = String((it && (it.name || it.layanan)) || '').trim();
+    if (!name) continue;
+    let price = SERVICE_PRICE_BY_NAME.get(name);
+    if (!Number.isFinite(price)) {
+      const norm = (v) => String(v || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+      const target = norm(name);
+      for (const [catName, catPrice] of SERVICE_PRICE_BY_NAME) {
+        if (norm(catName) === target) { price = catPrice; break; }
+      }
+      // Pencocokan sebagian: hanya bila unik, supaya tidak salah layanan.
+      if (!Number.isFinite(price)) {
+        const hits = [...SERVICE_PRICE_BY_NAME.entries()].filter(([n]) => norm(n).includes(target) || target.includes(norm(n)));
+        if (hits.length === 1) price = hits[0][1];
+      }
+    }
+    if (!Number.isFinite(price)) return { ok: false, error: 'layanan "' + name + '" tidak ada di katalog' };
+    const qty = Math.min(20, Math.max(1, parseInt(it && it.qty, 10) || 1));
+    items.push({ name, price, qty });
+  }
+  if (!items.length) return { ok: false, error: 'layanan belum dipilih' };
+
+  // Jadwal: minimal 1, format tanggal & jam ketat, tidak boleh masa lalu.
+  const rawSlots = Array.isArray(data.slots) ? data.slots : (Array.isArray(data.jadwal) ? data.jadwal : []);
+  if (!rawSlots.length) return { ok: false, error: 'tanggal/jam belum ditentukan' };
+  const datePattern = /^\d{4}-\d{2}-\d{2}$/;
+  const timePattern = /^([01]\d|2[0-3]):[0-5]\d$/;
+  let slots = rawSlots.slice(0, 14).map((sl) => ({
+    date: String((sl && sl.date) || '').slice(0, 10).trim(),
+    time: String((sl && sl.time) || '').slice(0, 5).trim()
+  }));
+  if (!slots.every((sl) => datePattern.test(sl.date) && timePattern.test(sl.time))) {
+    return { ok: false, error: 'format tanggal/jam tidak valid (YYYY-MM-DD dan HH:MM)' };
+  }
+  slots = slots.filter((sl, i) => slots.findIndex((x) => x.date === sl.date && x.time === sl.time) === i);
+  const todayJak = todayJakarta();
+  if (slots.some((sl) => sl.date < todayJak)) {
+    return { ok: false, error: 'tanggal sudah lewat, minta pelanggan memilih tanggal berikutnya' };
+  }
+  const blackoutSet = new Set((DB.settings && DB.settings.blackout_dates) || []);
+  const blackout = slots.find((sl) => blackoutSet.has(sl.date));
+  if (blackout) {
+    const note = (DB.settings.blackout_notes && DB.settings.blackout_notes[blackout.date]) || '';
+    return { ok: false, error: 'tanggal ' + blackout.date + ' hari libur' + (note ? ' (' + note + ')' : '') };
+  }
+
+  // Cegah reservasi kembar untuk orang yang sama pada waktu yang sama.
+  const dupe = DB.reservations.find((r) =>
+    String(r.patient_name || '').toLowerCase() === patient_name.toLowerCase() &&
+    (r.reservation_date || '') === slots[0].date &&
+    (r.reservation_time || '') === slots[0].time &&
+    (r.status || '') !== 'rejected'
+  );
+  if (dupe) return { ok: false, error: 'duplicate', existing_id: dupe.id };
+
+  const itemSum = items.reduce((sum, it) => sum + it.price * it.qty, 0);
+  const total = itemSum * slots.length;
+  const id = nextId('reservations');
+  const method = ['COD', 'Transfer', 'QRIS'].includes(data.payment_method) ? data.payment_method : 'COD';
+  const rec = {
+    id,
+    patient_name,
+    whatsapp,
+    address,
+    items,
+    slots,
+    item_total: itemSum,
+    total,
+    service_name: items.map((it) => it.name).join(', '),
+    service_price: itemSum,
+    qty: slots.length,
+    reservation_date: slots[0].date,
+    reservation_time: slots[0].time,
+    payment_method: method,
+    proof_mime: null,
+    proof_b64: null,
+    notes: String(data.notes || '').slice(0, 500) || 'Dibuat otomatis oleh AI Assistant',
+    status: 'pending',
+    payment_status: 'unpaid',
+    created_at: new Date().toISOString(),
+    // Penanda asal data supaya admin tahu ini bukan dari form publik.
+    source: 'ai_chat'
+  };
+  return { ok: true, reservation: rec };
+}
+
+// Ekstraksi + validasi + simpan. Dipakai chat web DAN webhook WhatsApp.
+// Mengembalikan { clean, booking } — booking berisi ringkasan untuk klien/log.
+function processAISBooking(rawReply, ctx) {
+  const extracted = extractAISBooking(rawReply);
+  const clean = extracted.clean;
+  if (!extracted.data) {
+    return {
+      clean,
+      booking: extracted.error
+        ? { created: false, reason: extracted.error }
+        : null
+    };
+  }
+  if (looksLikePlaceholderBooking(extracted.data)) {
+    // Salinan contoh/placeholder -> abaikan tanpa pesan galat ke pengunjung.
+    return { clean, booking: { created: false, reason: 'data belum lengkap' } };
+  }
+  const built = buildReservationFromAIData(extracted.data);
+  if (!built.ok) {
+    console.warn('[ai-booking] ditolak:', built.error);
+    return { clean, booking: { created: false, reason: built.error, existing_id: built.existing_id || null } };
+  }
+  const context = ctx || {};
+  const ipKey = 'ip:' + (context.ip || 'unknown');
+  const sessionKey = 'ses:' + (context.sessionId || 'unknown');
+  const ipOk = aiBookingRateCheck(ipKey, AI_BOOKING_MAX_PER_IP_PER_HOUR);
+  if (!ipOk.ok) {
+    return { clean, booking: { created: false, reason: 'batas booking per jam tercapai', retry_after_min: ipOk.retryAfterMin } };
+  }
+  const sesOk = aiBookingRateCheck(sessionKey, AI_BOOKING_MAX_PER_SESSION);
+  if (!sesOk.ok) {
+    return { clean, booking: { created: false, reason: 'batas booking per percakapan tercapai', retry_after_min: sesOk.retryAfterMin } };
+  }
+
+  const rec = built.reservation;
+  rec.channel = context.channel || 'web';
+  DB.reservations.push(rec);
+  save();
+  console.log(`[ai-booking] reservasi #${rec.id} dibuat via ${rec.channel} (${rec.patient_name}, ${rec.slots.length} sesi, Rp${rec.total})`);
+  return {
+    clean,
+    booking: {
+      created: true,
+      id: rec.id,
+      patient_name: rec.patient_name,
+      whatsapp: rec.whatsapp,
+      service_name: rec.service_name,
+      slots: rec.slots,
+      total: rec.total,
+      payment_method: rec.payment_method,
+      channel: rec.channel
+    }
+  };
 }
 
 function buildAISystemPrompt() {
@@ -5825,6 +6063,28 @@ app.post('/api/ai/chat', aiLimiter, async (req, res) => {
     }
     const latencyMs = Date.now() - startedAt;
     console.log(`[ai/chat] ${result.provider}${result.model ? '/' + result.model : ''} ${latencyMs}ms${result.hedged ? ' (hedged)' : ''}`);
+
+    // Reservasi otomatis: kalau AI sudah mengumpulkan seluruh data booking,
+    // blok [[BOOKING]] di balasannya divalidasi ulang lalu disimpan sebagai
+    // reservasi (muncul di panel admin dengan status "pending").
+    const bookingResult = processAISBooking(result.reply, {
+      ip: req.ip,
+      sessionId: session_id,
+      channel: 'ai_chat'
+    });
+    const cleanReply = bookingResult.clean;
+    const booking = bookingResult.booking;
+    if (booking && booking.created) {
+      result.reply = cleanReply;
+    } else if (cleanReply !== result.reply) {
+      result.reply = cleanReply;
+    }
+    if (booking && !booking.created && booking.reason) {
+      // Beri tahu admin kalau AI mengirim data yang ditolak validasi.
+      if (booking.reason !== 'duplicate') {
+        console.warn('[ai-booking] data booking dari AI ditolak:', booking.reason);
+      }
+    }
     // Berhasil -> bersihkan catatan kegagalan lama supaya panel tidak
     // menampilkan peringatan yang sudah tidak relevan.
     clearAIError();
@@ -5839,7 +6099,8 @@ app.post('/api/ai/chat', aiLimiter, async (req, res) => {
       assistant: result.reply,
       provider: result.provider,
       model: result.model || null,
-      latency_ms: latencyMs
+      latency_ms: latencyMs,
+      booking_id: booking && booking.created ? booking.id : null
     });
     if (DB.settings.ai_assistant_conversations.length > 200) {
       DB.settings.ai_assistant_conversations = DB.settings.ai_assistant_conversations.slice(-200);
@@ -5852,6 +6113,16 @@ app.post('/api/ai/chat', aiLimiter, async (req, res) => {
       model: result.model || null,
       latency_ms: latencyMs,
       hedged: !!result.hedged,
+      booking: booking ? {
+        created: !!booking.created,
+        id: booking.id || null,
+        total: booking.total || null,
+        slots: booking.slots || null,
+        service_name: booking.service_name || null,
+        patient_name: booking.patient_name || null,
+        reason: booking.created ? null : (booking.reason || null),
+        retry_after_min: booking.retry_after_min || null
+      } : null,
       session_id
     });
   } catch (e) {
@@ -5975,6 +6246,21 @@ app.post('/api/webhook/whatsapp', webhookLimiter, async (req, res) => {
           const systemPrompt = buildAISystemPrompt() +
             (senderName ? `\n\nCustomer ini bernama: ${senderName}` : '');
           const result = await callAIChat(systemPrompt, messages);
+
+          // Reservasi otomatis dari percakapan WhatsApp (data kunci divalidasi
+          // sama seperti chat web).
+          const waBooking = processAISBooking(result.reply, {
+            ip: 'wa:' + fromPhone,
+            sessionId,
+            channel: 'ai_chat_wa'
+          });
+          let waReply = waBooking.clean;
+          if (waBooking.booking && waBooking.booking.created) {
+            waReply += '\n\n✅ Reservasi #' + waBooking.booking.id + ' sudah masuk ke sistem kami. Admin akan mengonfirmasi via WhatsApp ini. Terima kasih 🌸';
+          } else if (waBooking.booking && !waBooking.booking.created && waBooking.booking.reason === 'duplicate') {
+            waReply += '\n\nℹ️ Reservasi dengan jadwal yang sama sudah tercatat sebelumnya.';
+          }
+          result.reply = waReply;
 
           // Reply via WA
           await sendWAReply(fromPhone, result.reply);

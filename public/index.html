@@ -458,6 +458,8 @@ fetch(adzkiyaApiUrl('/api/public-settings')).then(r => r.json()).then(s => {
 .ai-msg.typing span:nth-child(3) { animation-delay: 0.4s; }
 @keyframes ai-bounce { 0%, 60%, 100% { transform: translateY(0); opacity: 0.5; } 30% { transform: translateY(-6px); opacity: 1; } }
 .ai-msg a { color: #ee5a8a; text-decoration: underline; font-weight: 700; }
+/* Kartu ringkasan reservasi (dibuat otomatis oleh AI dari percakapan). */
+.ai-msg.booking, .ai-msg[style*="ecfdf5"] { overflow-wrap: anywhere; word-break: break-word; }
 .ai-msg.user a { color: white; text-decoration: underline; }
 
 .ai-quick-replies {
@@ -683,6 +685,29 @@ fetch(adzkiyaApiUrl('/api/public-settings')).then(r => r.json()).then(s => {
       .catch(() => { /* status opsional: kegagalan di sini tidak mengganggu chat */ });
   }
 
+  // Kartu ringkasan reservasi: ditampilkan saat server berhasil membuat
+  // reservasi otomatis dari percakapan (data sudah lengkap & tervalidasi).
+  function appendBookingCard(b) {
+    const div = document.createElement('div');
+    div.className = 'ai-msg bot';
+    div.style.cssText = 'background:#ecfdf5;border:1.5px solid #6ee7b7;color:#065f46;padding:12px 14px;';
+    const slots = Array.isArray(b.slots) ? b.slots : [];
+    const jam = slots.map((s) => s.date + ' ' + s.time).join(', ');
+    const total = 'Rp ' + (Number(b.total) || 0).toLocaleString('id-ID');
+    div.innerHTML =
+      '<div style="font-weight:800;margin-bottom:6px;">✅ Reservasi #' + escapeHtml(String(b.id || '')) + ' sudah terkirim</div>' +
+      '<div style="font-size:0.88rem;line-height:1.6;">' +
+      '<strong>' + escapeHtml(b.patient_name || '') + '</strong><br>' +
+      escapeHtml(b.service_name || '') + '<br>' +
+      '🗓️ ' + escapeHtml(jam) + '<br>' +
+      '💰 ' + escapeHtml(total) + ' · ' + escapeHtml(b.payment_method || 'COD') +
+      '</div>' +
+      '<div style="font-size:0.82rem;margin-top:8px;opacity:0.9;">Admin akan mengonfirmasi jadwal Anda via WhatsApp. Simpan nomor reservasi ini ya 🌸</div>';
+    messagesEl.appendChild(div);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+    return div;
+  }
+
   function appendTypingIndicator() {
     const div = document.createElement('div');
     div.className = 'ai-msg typing';
@@ -785,6 +810,23 @@ fetch(adzkiyaApiUrl('/api/public-settings')).then(r => r.json()).then(s => {
       } else {
         appendMessage(data.reply, 'bot');
         history.push({ role: 'assistant', content: data.reply });
+        if (data.booking && data.booking.created) {
+          // Kartu konfirmasi + arahkan menyimpan nomor reservasi.
+          appendBookingCard(data.booking);
+          history.push({ role: 'assistant', content: '[reservasi dibuat #' + data.booking.id + ']' });
+          setQuickReplies(['💬 Chat WhatsApp admin', 'Lihat layanan']);
+        } else if (data.booking && !data.booking.created && data.booking.reason) {
+          if (data.booking.reason === 'duplicate') {
+            appendMessage('ℹ️ Reservasi dengan jadwal yang sama sudah tercatat sebelumnya, jadi tidak dibuat dua kali.', 'bot');
+          } else if (/batas booking/.test(String(data.booking.reason))) {
+            appendMessage('ℹ️ Reservasi lewat chat sudah mencapai batas untuk saat ini. Silakan lanjutkan lewat WhatsApp admin ya.', 'bot');
+            setQuickReplies(['💬 Chat WhatsApp admin']);
+          } else {
+            // Data belum lengkap/tidak valid -> AI akan menanyakan lagi;
+            // beri info halus supaya pengunjung melengkapi.
+            appendMessage('ℹ️ Beberapa data belum lengkap, jadi reservasi belum dibuat: ' + data.booking.reason + '. Boleh dilengkapi lagi?', 'bot');
+          }
+        }
         if (history.length > 20) history = history.slice(-20);
         // Suggest follow-up actions based on keywords in last user message
         const lower = text.toLowerCase();
