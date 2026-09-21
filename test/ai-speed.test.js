@@ -66,6 +66,10 @@ function makeSandbox(opts) {
       }
       return ok({ candidates: [{ content: { parts: [{ text: 'Jawaban Gemini 🌸' }] } }] });
     }
+    if (target.includes('openrouter.ai/api/v1/models')) {
+      // Daftar model gratis (dipanggil sekali lalu di-cache).
+      return ok({ data: [{ id: 'google/gemini-2.0-flash-exp:free', context_length: 1000000, pricing: { prompt: '0', completion: '0' } }] });
+    }
     if (target.includes('openrouter.ai')) {
       calls.openrouter.push(JSON.parse((options && options.body) || '{}'));
       await wait(orDelay, options && options.signal);

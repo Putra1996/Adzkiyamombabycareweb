@@ -149,6 +149,8 @@ tidak bisa langsung dipakai di API.
 
 | Yang terlihat | Penyebab & tindakan |
 |---|---|
+| Tes AI: OpenRouter gagal **402 Insufficient credits** | Wajar bila akun belum beli kredit — sistem otomatis memakai model gratis (`:free`). Untuk model terbaik, tambah kredit di openrouter.ai/credits lalu matikan centang "hanya pakai model gratis". |
+| Tes AI: OpenRouter gagal **401** | Kunci salah/dicabut → buat kunci baru di openrouter.ai/keys, tempel ulang di panel. |
 | Bot **selalu** menjawab "Maaf, saya sedang gangguan 😅…" | Klik **🤖 Tes AI** di panel AI — pesan galat asli dari Google/OpenRouter akan tampil. Penyebab paling umum: **model AI yang dipakai sudah dihentikan Google** (mis. `gemini-1.5-flash` → 404). Sistem sekarang memilih model otomatis (lihat catatan di bawah), jadi kalau masih gagal biasanya kunci salah atau kuota habis. |
 | Panel menampilkan "Kunci Gemini belum diisi" | Isi **🤖 Google Gemini API Key** lalu simpan. Kolom dikosongkan otomatis setelah simpan — itu normal (nilai tetap tersimpan). |
 | Badge tetap ⚪ OFF / chat beranda bilang "hubungi admin via WhatsApp" | **Aktifkan AI Assistant** belum dicentang, atau kunci AI belum tersimpan |
@@ -159,6 +161,45 @@ tidak bisa langsung dipakai di API.
 | Pesan WA masuk tapi tidak ada balasan | (a) field **messages** belum di-Subscribe (B4.3), (b) AI Assistant belum aktif, (c) kuota/periode percakapan WhatsApp habis |
 | Balasan WA berhenti setelah 24 jam | Anda masih memakai token sementara → ganti ke token permanen (B5) |
 | Broadcast WA berhenti/tidak jalan | Broadcast memakai `wa.me`, tidak butuh token — pastikan nomor pelanggan benar saja |
+
+## 💸 OpenRouter tanpa kredit? Tetap bisa dipakai (mode model gratis)
+
+OpenRouter membalas **HTTP 402 "Insufficient credits. This account never
+purchased credits."** untuk **semua model berbayar** bila akun belum pernah
+membeli kredit. Dulu ini membuat OpenRouter selalu gagal, sehingga tidak bisa
+menjadi cadangan Gemini.
+
+Sekarang sistem menanganinya otomatis:
+
+1. **Deteksi 402** → sistem menandai akun ini tanpa kredit dan langsung
+   berpindah ke **model gratis** (`:free`) yang tidak berbiaya.
+2. **Daftar model gratis diambil dari API OpenRouter** (bukan daftar hardcode),
+   disaring (model embedding/moderasi/audio dibuang) dan diberi peringkat
+   (keluarga Gemini/Llama/DeepSeek/Qwen/Mistral + konteks besar diutamakan).
+   Kalau API tidak bisa diakses, ada daftar cadangan statis.
+3. **Mode hemat diingat** sehingga permintaan berikutnya tidak membuang waktu
+   mencoba model berbayar. Centang **💸 OpenRouter: hanya pakai model gratis**
+   di panel bisa dinyalakan/dimatikan manual.
+4. **Pemulihan otomatis 24 jam**: setelah 24 jam, sistem mencoba model berbayar
+   sekali lagi — jadi begitu Anda menambah kredit di
+   [openrouter.ai/credits](https://openrouter.ai/credits), kualitas model
+   terbaik kembali otomatis tanpa perlu mengubah pengaturan.
+5. **Kunci salah (401)** dideteksi dan dihentikan cepat (tidak mencoba semua
+   model), dengan pesan jelas di panel + saran membuat kunci baru.
+
+**Pembagian tugas yang disarankan** (sudah berjalan otomatis):
+
+| Kondisi | Yang menjawab |
+|---|---|
+| Normal | **Gemini** (paling cepat, ±0,1–0,7 detik) |
+| Gemini lambat (>4 detik) | **OpenRouter** lebih dulu menjawab (hedging) |
+| Gemini gagal/kuota habis | **OpenRouter model gratis** mengambil alih |
+| Akun OpenRouter punya kredit | OpenRouter memakai model berbayar terbaik |
+
+Catatan: model gratis punya **batas laju lebih ketat** (mis. beberapa
+permintaan/menit). Kalau limit tercapai, OpenRouter dicoba ke model gratis
+berikutnya; Gemini tetap menjadi penyedia utama sehingga pengunjung jarang
+terdampak.
 
 ## ⚡ Membuat balasan AI lebih cepat
 

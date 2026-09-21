@@ -4475,6 +4475,18 @@ async function renderSettings() {
           </div>
         </label>
 
+        <label style="display:flex;align-items:flex-start;gap:10px;padding:12px;background:white;border:1.5px solid var(--border);border-radius:10px;margin:0 0 12px;cursor:pointer;">
+          <input type="checkbox" id="aiOpenRouterFreeOnly" style="width:20px;height:20px;margin-top:2px;cursor:pointer;accent-color:#7c3aed;">
+          <div style="flex:1;">
+            <div style="font-weight:700;color:var(--text);">💸 OpenRouter: hanya pakai model gratis</div>
+            <div style="font-size:0.82rem;line-height:1.5;color:var(--text-soft);">
+              Dipakai otomatis bila akun OpenRouter belum punya kredit (error 402). Model gratis
+              (<code>:free</code>) tidak berbiaya tetapi batas lajunya lebih ketat — Gemini tetap
+              menjadi penyedia utama.
+            </div>
+          </div>
+        </label>
+
         <!-- Custom persona prompt -->
         <div class="form-group" style="margin-top:8px;">
           <label>🎭 Custom Persona Prompt <span style="color:var(--text-soft);font-weight:500;">(opsional, override default instructions)</span></label>
@@ -4770,6 +4782,7 @@ async function wireAIAssistantSettings() {
   const verifyTokenEl = document.getElementById('aiWaVerifyToken');
   const appSecretEl = document.getElementById('aiWaAppSecret');
   const preferFastEl = document.getElementById('aiPreferFast');
+  const orFreeEl = document.getElementById('aiOpenRouterFreeOnly');
   const diagBtn = document.getElementById('aiAssistantDiagBtn');
   const aiTestBtn = document.getElementById('aiAssistantAiTestBtn');
   const diagBox = document.getElementById('aiAssistantDiagnostics');
@@ -4804,6 +4817,7 @@ async function wireAIAssistantSettings() {
     if (appSecretEl) appSecretEl.placeholder = cfg.has_app_secret ? '•••••••• (set, kosongkan untuk tetap)' : 'App Secret dari Meta';
     // Pengaturan kecepatan (default aktif) + model yang sedang dipakai.
     if (preferFastEl) preferFastEl.checked = cfg.prefer_fast_model !== false;
+    if (orFreeEl) orFreeEl.checked = cfg.openrouter_free_only === true;
     if (cfg.gemini_model || cfg.openrouter_model) {
       const info = document.getElementById('aiModelInfo');
       if (info) info.textContent = 'Model aktif: ' + [cfg.gemini_model, cfg.openrouter_model].filter(Boolean).join(' · ');
@@ -4822,6 +4836,22 @@ async function wireAIAssistantSettings() {
         html = '<div style="padding:10px 12px;background:#fff7ed;border:1.5px solid #fdba74;border-radius:10px;color:#7c2d12;font-size:0.86rem;">'
           + '<strong>⚠️ AI belum siap: ' + esc(rd.message || 'belum dikonfigurasi') + '</strong>'
           + '<br><span style="font-weight:500;">Selama ini pengunjung akan diarahkan ke WhatsApp admin.</span></div>';
+      }
+      // Status OpenRouter: sehat / tanpa kredit (mode gratis) / kunci ditolak.
+      if (cfg.has_openrouter) {
+        if (cfg.openrouter_health === 'bad_key') {
+          html += '<div style="padding:10px 12px;background:#fef2f2;border:1.5px solid #fca5a5;border-radius:10px;color:#7f1d1d;margin-top:8px;font-size:0.84rem;">'
+            + '<strong>❌ Kunci OpenRouter ditolak</strong> — buat kunci baru di openrouter.ai/keys lalu tempel ulang di kolom OpenRouter.</div>';
+        } else if (cfg.openrouter_free_only || cfg.openrouter_health === 'no_credits') {
+          html += '<div style="padding:10px 12px;background:#eff6ff;border:1.5px solid #93c5fd;border-radius:10px;color:#1e3a8a;margin-top:8px;font-size:0.84rem;line-height:1.55;">'
+            + '💸 <strong>OpenRouter mode model gratis.</strong> Akun OpenRouter belum pernah membeli kredit, jadi semua model berbayar ditolak (402). '
+            + 'Sistem otomatis memakai model <code>:free</code> yang tidak berbiaya sebagai cadangan Gemini.'
+            + (cfg.openrouter_free_models_cached ? ' Terdeteksi <strong>' + cfg.openrouter_free_models_cached + '</strong> model gratis.' : '')
+            + '<br>Ingin model terbaik? Tambah kredit di <a href="https://openrouter.ai/credits" target="_blank" rel="noopener">openrouter.ai/credits</a>, lalu matikan centang "hanya pakai model gratis".</div>';
+        } else {
+          html += '<div style="padding:10px 12px;background:#ecfdf5;border:1.5px solid #6ee7b7;border-radius:10px;color:#065f46;margin-top:8px;font-size:0.84rem;">'
+            + '✅ OpenRouter siap sebagai cadangan Gemini.</div>';
+        }
       }
       if (cfg.last_error) {
         const kapan = cfg.last_error_at ? new Date(cfg.last_error_at).toLocaleString('id-ID', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : '';
@@ -4854,7 +4884,8 @@ async function wireAIAssistantSettings() {
         ai_assistant_enabled: enabledEl.checked,
         ai_assistant_verify_token: verifyTokenEl.value.trim(),
         ai_assistant_base_prompt: basePromptEl.value.trim(),
-        ai_prefer_fast_model: preferFastEl ? preferFastEl.checked : true
+        ai_prefer_fast_model: preferFastEl ? preferFastEl.checked : true,
+        ai_openrouter_free_only: orFreeEl ? orFreeEl.checked : false
       };
       // Only update keys if admin typed something new
       if (geminiEl.value.trim()) body.ai_gemini_api_key = geminiEl.value.trim();
@@ -4892,13 +4923,15 @@ async function wireAIAssistantSettings() {
         if (d.ok) {
           return '<div style="padding:8px 10px;border-radius:8px;background:#ecfdf5;color:#065f46;margin-bottom:6px;font-size:0.85rem;line-height:1.5;">'
             + '✅ <strong>' + label + '</strong> — berhasil (' + (d.latency_ms || 0) + ' ms)<br>'
-            + '<span style="opacity:0.85;">Model: <code>' + esc(d.model || '-') + '</code></span>'
+            + '<span style="opacity:0.85;">Model: <code>' + esc(d.model || '-') + '</code>'
+            + (d.mode ? ' · ' + esc(d.mode) : '') + '</span>'
             + (d.sample ? '<br><span style="opacity:0.85;">Balasan uji: ' + esc(d.sample) + '</span>' : '')
             + '</div>';
         }
         return '<div style="padding:8px 10px;border-radius:8px;background:#fef2f2;color:#7f1d1d;margin-bottom:6px;font-size:0.85rem;line-height:1.5;">'
           + '❌ <strong>' + label + '</strong> — gagal<br>'
           + '<span style="font-size:0.82rem;">' + esc(d.error || 'tidak diketahui') + '</span>'
+          + (d.hint ? '<br><span style="font-size:0.82rem;opacity:0.9;">💡 ' + esc(d.hint) + '</span>' : '')
           + '</div>';
       };
       diagBox.innerHTML = '<div style="padding:12px;border:1.5px solid var(--border);border-radius:12px;background:var(--card);">'

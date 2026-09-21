@@ -142,7 +142,7 @@ test('Kedua provider AI memakai sanitizer (Gemini & OpenRouter)', () => {
   assert.match(gemini, /sanitizeAIReply\(reply\)/, 'Gemini tidak membersihkan balasan');
   assert.match(gemini, /return \{ reply: cleanReply, model \}/, 'Gemini tidak mengembalikan balasan bersih');
   assert.match(router, /sanitizeAIReply\(data\.choices/, 'OpenRouter tidak membersihkan balasan');
-  assert.match(router, /return \{ reply: cleanReply, model \}/, 'OpenRouter tidak mengembalikan balasan bersih');
+  assert.match(router, /return \{ reply: cleanReply, model, free: isOpenRouterFree\(model\) \}/, 'OpenRouter tidak mengembalikan balasan bersih');
   // Hanya dua provider ini yang boleh dipakai.
   assert.ok(!/anthropic|claude|openai\.com|groq\.com|cohere/i.test(serverSrc),
     'ada provider AI lain yang tidak seharusnya dipakai');

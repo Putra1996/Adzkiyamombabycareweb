@@ -4869,7 +4869,7 @@ function buildBackupPayload() {
         ai_assistant_app_secret, ai_assistant_verify_token,
         owner_signature_b64, owner_signature_mime,
         ai_assistant_conversations,
-        ai_last_error, ai_last_error_at,
+        ai_last_error, ai_last_error_at, ai_openrouter_free_only, ai_openrouter_free_only_at,
         ...rest
       } = (DB.settings || {});
       return rest;
@@ -5446,27 +5446,156 @@ async function callGemini(systemPrompt, messages, opts) {
 // --- Provider: OpenRouter (fallback) ---
 // Kandidat model OpenRouter (diurutkan). Sama seperti Gemini: nama model
 // bisa dihentikan penyedia, jadi 404 tidak boleh dianggap gagal total.
+// ===== OPENROUTER =====
+//
+// Model berbayar pertama (kualitas terbaik) lalu — bila akun belum punya
+// kredit — otomatis pindah ke model GRATIS.
+//
+// Kenapa: OpenRouter membalas HTTP 402 "Insufficient credits. This account
+// never purchased credits." untuk semua model berbayar bila akun belum pernah
+// membeli kredit. Sebelumnya itu membuat OpenRouter selalu gagal sehingga
+// perannya sebagai cadangan Gemini tidak pernah berfungsi. OpenRouter
+// menyediakan banyak model berakhiran `:free` yang bisa dipakai tanpa kredit
+// (dengan batas laju lebih ketat).
 const OPENROUTER_MODEL_CANDIDATES = [
   'google/gemini-2.5-flash',
   'google/gemini-2.5-flash-lite',
   'google/gemini-2.0-flash-001',
-  'google/gemini-flash-1.5',
   'openrouter/auto'
 ];
+
+// Cadangan statis bila daftar model dari API tidak bisa diambil.
+// (Daftar model gratis OpenRouter berubah dari waktu ke waktu, jadi ini hanya
+//  jaring terakhir — sumber utamanya adalah hasil pemindaian API.)
+const OPENROUTER_FREE_FALLBACKS = [
+  'google/gemini-2.0-flash-exp:free',
+  'deepseek/deepseek-chat-v3-0324:free',
+  'meta-llama/llama-3.3-70b-instruct:free',
+  'qwen/qwen-2.5-72b-instruct:free',
+  'mistralai/mistral-small-3.2-24b-instruct:free'
+];
+
+// Keluarga model yang biasanya paling baik untuk CS berbahasa Indonesia.
+const OPENROUTER_FREE_PREFERRED = ['gemini', 'llama-3.3', 'llama-3.1', 'deepseek', 'qwen', 'mistral', 'phi'];
+
+function isOpenRouterFree(model) {
+  const id = String((model && model.id) || model || '');
+  if (/:free$/i.test(id)) return true;
+  const p = (model && model.pricing) || null;
+  if (!p) return false;
+  const zero = (v) => v === 0 || v === '0' || parseFloat(v) === 0;
+  return zero(p.prompt) && zero(p.completion);
+}
+
+function scoreOpenRouterFree(model) {
+  const id = String((model && model.id) || '').toLowerCase();
+  // Bukan model teks (embedding/moderasi/audio/gambar) -> jangan dipakai chat.
+  if (/embed|moderation|whisper|tts|audio|image|vision-only|rerank/.test(id)) return 0;
+  let score = 50;
+  const fam = OPENROUTER_FREE_PREFERRED.findIndex((f) => id.includes(f));
+  if (fam >= 0) score += 40 - fam * 5;
+  if (/instruct|chat/.test(id)) score += 10;
+  const ctx = Number((model && model.context) || 0);
+  if (ctx >= 1000000) score += 20;
+  else if (ctx >= 128000) score += 15;
+  else if (ctx >= 32000) score += 8;
+  if (/70b|72b|32b|27b|24b|13b|12b/.test(id)) score += 6;
+  return score;
+}
+
+// Daftar model OpenRouter (endpoint publik, tidak butuh kunci). Dipakai untuk
+// menemukan model gratis yang sedang tersedia — pengganti daftar statis.
+let orModelsCache = { at: 0, models: [], error: null };
+let orModelsInflight = null;
+async function listOpenRouterModels(force) {
+  const now = Date.now();
+  if (!force && orModelsCache.models && orModelsCache.models.length && (now - orModelsCache.at) < GEMINI_LIST_TTL_MS) {
+    return orModelsCache.models;
+  }
+  if (orModelsInflight) return orModelsInflight;
+  orModelsInflight = (async () => {
+    try {
+      const r = await fetchWithTimeout('https://openrouter.ai/api/v1/models', {}, 12000);
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const data = await r.json();
+      const models = (data && data.data ? data.data : []).map((m) => ({
+        id: m.id,
+        context: m.context_length || (m.top_provider && m.top_provider.context_length) || 0,
+        free: isOpenRouterFree(m)
+      }));
+      orModelsCache = { at: Date.now(), models, error: null };
+      return models;
+    } catch (e) {
+      orModelsCache = { ...orModelsCache, error: sanitizeAIError(e) };
+      return orModelsCache.models || [];
+    } finally {
+      orModelsInflight = null;
+    }
+  })();
+  return orModelsInflight;
+}
+
+async function openRouterFreeCandidates(limit) {
+  const max = limit || 4;
+  const models = await listOpenRouterModels();
+  const discovered = models
+    .filter((m) => m.free && scoreOpenRouterFree(m) > 0)
+    .sort((a, b) => scoreOpenRouterFree(b) - scoreOpenRouterFree(a))
+    .map((m) => m.id);
+  const list = [];
+  discovered.concat(OPENROUTER_FREE_FALLBACKS).forEach((m) => { if (m && list.indexOf(m) < 0) list.push(m); });
+  return list.slice(0, max);
+}
+
+// Kesehatan OpenRouter (di memori, tidak perlu disimpan ke disk).
+// Dipakai supaya hedging tidak memanggil provider yang jelas-jelas bermasalah.
+let openRouterHealth = { status: 'unknown', at: 0, detail: null };
+function markOpenRouter(status, detail) {
+  openRouterHealth = { status, at: Date.now(), detail: detail ? sanitizeAIError(detail) : null };
+}
+function openRouterKeyUsable() {
+  // Kunci ditolak (401) -> jangan buang waktu memanggil ulang beberapa menit.
+  return !(openRouterHealth.status === 'bad_key' && Date.now() - openRouterHealth.at < 5 * 60 * 1000);
+}
 
 async function callOpenRouter(systemPrompt, messages, opts) {
   const apiKey = DB.settings.ai_openrouter_api_key;
   if (!apiKey) throw new Error('OpenRouter API key not configured');
+  if (!openRouterKeyUsable()) {
+    throw new Error('Kunci OpenRouter ditolak pada percobaan sebelumnya. Perbarui kunci di panel admin.');
+  }
+
   const oaMessages = [
     { role: 'system', content: systemPrompt },
     ...messages
   ];
+
+  // Mode hemat: dipakai saat akun OpenRouter belum punya kredit (402) atau
+  // ketika admin menyalakan "hanya model gratis".
+  //
+  // PEMULIHAN OTOMATIS: bila mode hemat dinyalakan otomatis lebih dari 24 jam
+  // lalu, coba lagi model berbayar sekali. Begitu admin menambah kredit di
+  // OpenRouter, sistem kembali ke model terbaik dengan sendirinya tanpa harus
+  // ingat mematikan centangnya. Kalau masih 402, mode hemat dinyalakan lagi.
+  const saved = DB.settings.ai_openrouter_model || '';
+  const freeOnlyFlagAt = DB.settings.ai_openrouter_free_only_at ? new Date(DB.settings.ai_openrouter_free_only_at).getTime() : 0;
+  const freeOnlyStale = !!(freeOnlyFlagAt && (Date.now() - freeOnlyFlagAt) > 24 * 60 * 60 * 1000);
+  const freeOnly = (DB.settings.ai_openrouter_free_only === true && !freeOnlyStale)
+    || openRouterHealth.status === 'no_credits';
+
   const candidates = [];
-  [DB.settings.ai_openrouter_model, ...OPENROUTER_MODEL_CANDIDATES]
-    .forEach((m) => { if (m && candidates.indexOf(m) < 0) candidates.push(m); });
+  const add = (m) => { if (m && candidates.indexOf(m) < 0) candidates.push(m); };
+
+  // Jalur cepat: model yang sudah terbukti berhasil dipakai lebih dulu
+  // (tanpa memanggil daftar model) supaya latensi tetap rendah.
+  if (saved && (!freeOnly || isOpenRouterFree(saved))) add(saved);
+  if (!freeOnly) OPENROUTER_MODEL_CANDIDATES.forEach(add);
+  // Model gratis selalu disiapkan sebagai cadangan (berbayar hanya sebagai
+  // pilihan pertama ketika akun punya kredit).
+  (await openRouterFreeCandidates(4)).forEach(add);
 
   const errors = [];
-  for (const model of candidates.slice(0, 5)) {
+  for (const model of candidates.slice(0, 6)) {
     let r, text = '';
     try {
       r = await fetchWithTimeout('https://openrouter.ai/api/v1/chat/completions', {
@@ -5488,26 +5617,57 @@ async function callOpenRouter(systemPrompt, messages, opts) {
         })
       }, AI_GEMINI_TIMEOUT_MS, opts && opts.signal);
     } catch (e) {
+      if (opts && opts.signal && opts.signal.aborted) throw new Error('dibatalkan (provider lain sudah menjawab)');
       errors.push(model + ': ' + sanitizeAIError(e));
       continue;
     }
+
     if (!r.ok) {
       text = await r.text().catch(() => '');
       errors.push(model + ' (' + r.status + '): ' + text.slice(0, 120));
+
+      // 401 -> kunci salah/dicabut. Tidak ada gunanya mencoba model lain.
+      if (r.status === 401) {
+        markOpenRouter('bad_key', text);
+        throw new Error('Kunci OpenRouter ditolak (401). Periksa/ Perbarui kunci di panel admin.');
+      }
+      // 402 -> akun belum punya kredit. Semua model BERBAYAR akan gagal, jadi
+      // ingat kondisi ini dan lanjut ke model gratis.
+      if (r.status === 402) {
+        markOpenRouter('no_credits', text);
+        if (!DB.settings.ai_openrouter_free_only || freeOnlyStale) {
+          DB.settings.ai_openrouter_free_only = true;
+          DB.settings.ai_openrouter_free_only_at = new Date().toISOString();
+          console.log('[ai] OpenRouter tanpa kredit — memakai model gratis (:free). Model berbayar akan dicoba lagi dalam 24 jam.');
+          save();
+        }
+        continue;
+      }
+      // 429 (batas laju model gratis) / 404 (model dihentikan) / 503:
+      // coba kandidat berikutnya.
       continue;
     }
+
     const data = await r.json();
     const cleanReply = sanitizeAIReply(data.choices?.[0]?.message?.content);
     if (!cleanReply) { errors.push(model + ': balasan kosong'); continue; }
+
+    markOpenRouter('ok');
+    // Model berbayar berhasil -> kredit tersedia; kembali ke mode normal.
+    if (!isOpenRouterFree(model) && DB.settings.ai_openrouter_free_only) {
+      DB.settings.ai_openrouter_free_only = false;
+      DB.settings.ai_openrouter_free_only_at = null;
+      console.log('[ai] OpenRouter kembali memakai model berbayar (kredit tersedia).');
+    }
     if (DB.settings.ai_openrouter_model !== model) {
       DB.settings.ai_openrouter_model = model;
       save();
     }
-    return { reply: cleanReply, model };
+    return { reply: cleanReply, model, free: isOpenRouterFree(model) };
   }
+
   throw new Error('Semua model OpenRouter gagal — ' + errors.join(' | '));
 }
-
 // Try Gemini first, fall back to OpenRouter. Returns { reply, provider }.
 async function callAIChat(systemPrompt, messages, opts) {
   const result = await callAIChatInner(systemPrompt, messages, opts);
@@ -5520,7 +5680,10 @@ async function callAIChat(systemPrompt, messages, opts) {
 
 async function callAIChatInner(systemPrompt, messages, opts) {
   const hasGemini = !!DB.settings.ai_gemini_api_key;
-  const hasOpenRouter = !!DB.settings.ai_openrouter_api_key;
+  // Kunci OpenRouter yang sudah ditolak (401) tidak dipakai untuk hedging —
+  // percuma, dan hanya membuang waktu/kuota. Ia tetap dicoba sebagai
+  // cadangan berurutan bila Gemini gagal (gagalnya cepat).
+  const hasOpenRouter = !!DB.settings.ai_openrouter_api_key && openRouterKeyUsable();
   const errors = [];
   const signal = opts && opts.signal;
 
@@ -5882,6 +6045,10 @@ app.get('/api/admin/ai/config', auth, (req, res) => {
     last_error_at: s.ai_last_error_at || null,
     prefer_fast_model: s.ai_prefer_fast_model !== false,
     hedge_openrouter: s.ai_hedge_openrouter !== false,
+    openrouter_free_only: s.ai_openrouter_free_only === true,
+    openrouter_health: openRouterHealth.status,
+    openrouter_health_detail: openRouterHealth.detail,
+    openrouter_free_models_cached: (orModelsCache.models || []).filter((m) => m.free).length,
     max_output_tokens: AI_MAX_OUTPUT_TOKENS,
     history_limit: AI_HISTORY_MAX,
     webhook_url: absoluteWebhookUrl(req)
@@ -5994,7 +6161,16 @@ function aiReadiness() {
   if (!s.ai_gemini_api_key && !s.ai_openrouter_api_key) {
     return { ready: false, reason: 'no_provider', message: 'Kunci AI (Gemini/OpenRouter) belum diisi.' };
   }
-  return { ready: true, reason: 'ok', message: 'AI siap.' };
+  const orFree = s.ai_openrouter_free_only === true || openRouterHealth.status === 'no_credits';
+  return {
+    ready: true,
+    reason: 'ok',
+    message: 'AI siap.',
+    gemini: !!s.ai_gemini_api_key,
+    openrouter: !!s.ai_openrouter_api_key,
+    openrouter_free_mode: !!s.ai_openrouter_api_key && orFree,
+    openrouter_health: openRouterHealth.status
+  };
 }
 let _lastAIErrorSaved = { msg: null, at: 0 };
 function recordAIError(err) {
@@ -6067,10 +6243,19 @@ app.post('/api/admin/ai/test', auth, async (req, res) => {
       const r = await callOpenRouter(prompt, [{ role: 'user', content: 'ping' }]);
       results.openrouter = {
         ok: true, model: r.model, latency_ms: Date.now() - started,
+        free_model: !!r.free,
+        mode: r.free ? 'model gratis' : 'model berbayar',
         sample: String(r.reply || '').slice(0, 120)
       };
     } catch (e) {
-      results.openrouter = { ok: false, error: sanitizeAIError(e), latency_ms: Date.now() - started };
+      results.openrouter = {
+        ok: false, error: sanitizeAIError(e), latency_ms: Date.now() - started,
+        hint: /402|insufficient credits/i.test(sanitizeAIError(e))
+          ? 'Akun OpenRouter belum membeli kredit. Sistem otomatis beralih ke model GRATIS (:free); bila masih gagal, model gratis sedang penuh/kena batas. Tambah kredit di openrouter.ai/credits untuk memakai model terbaik, atau biarkan Gemini sebagai penyedia utama.'
+          : (/401/.test(sanitizeAIError(e))
+            ? 'Kunci OpenRouter ditolak. Buat kunci baru di openrouter.ai/keys lalu tempel ulang di panel ini.'
+            : null)
+      };
     }
   } else {
     results.openrouter = { ok: false, error: 'Kunci OpenRouter belum diisi (opsional)' };
