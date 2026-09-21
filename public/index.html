@@ -671,18 +671,14 @@ fetch(adzkiyaApiUrl('/api/public-settings')).then(r => r.json()).then(s => {
         const div = document.createElement('div');
         div.className = 'ai-msg bot';
         div.style.cssText = 'background:#fff7ed;border:1px solid #fdba74;color:#7c2d12;';
-        div.textContent = 'ℹ️ ' + (st.message || 'AI belum aktif') +
-          ' Sementara ini pesan Bunda bisa langsung dijawab admin lewat WhatsApp: ' + wa;
+        // Pakai linkifyAndEscape supaya tautan WhatsApp BISA DIKLIK
+        // (textContent akan menampilkannya sebagai teks biasa).
+        div.innerHTML = linkifyAndEscape(
+          'ℹ️ ' + (st.message || 'AI belum aktif') +
+          ' Sementara ini pesan Bunda bisa langsung dijawab admin lewat WhatsApp: ' + wa
+        );
         messagesEl.appendChild(div);
         messagesEl.scrollTop = messagesEl.scrollHeight;
-        // Tawarkan tombol WhatsApp supaya sekali klik langsung terhubung.
-        setQuickReplies(['💬 Chat WhatsApp admin', 'Lihat layanan']);
-        const quick = document.getElementById('aiChatQuick');
-        if (quick && quick.firstElementChild) {
-          quick.firstElementChild.addEventListener('click', () => {
-            window.open(wa, '_blank', 'noopener');
-          });
-        }
       })
       .catch(() => { /* status opsional: kegagalan di sini tidak mengganggu chat */ });
   }

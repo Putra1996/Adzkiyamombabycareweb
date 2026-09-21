@@ -5983,10 +5983,17 @@ function aiReadiness() {
   }
   return { ready: true, reason: 'ok', message: 'AI siap.' };
 }
+let _lastAIErrorSaved = { msg: null, at: 0 };
 function recordAIError(err) {
   if (!DB.settings) return;
-  DB.settings.ai_last_error = sanitizeAIError(err).slice(0, 300);
-  DB.settings.ai_last_error_at = new Date().toISOString();
+  const msg = sanitizeAIError(err).slice(0, 300);
+  const now = Date.now();
+  // Throttle: kegagalan yang sama dalam 30 detik tidak ditulis ulang supaya
+  // permintaan yang gagal beruntun tidak membebani database.
+  if (_lastAIErrorSaved.msg === msg && now - _lastAIErrorSaved.at < 30000) return;
+  _lastAIErrorSaved = { msg, at: now };
+  DB.settings.ai_last_error = msg;
+  DB.settings.ai_last_error_at = new Date(now).toISOString();
   save();
 }
 function clearAIError() {
@@ -6004,6 +6011,8 @@ function clearAIError() {
 // menguji) langsung tahu kalau AI memang belum diaktifkan.
 app.get('/api/ai/status', (req, res) => {
   const r = aiReadiness();
+  // Selalu segar (status bisa berubah begitu admin menyimpan konfigurasi)
+  // dan boleh dipanggil lintas-origin oleh cermin GitHub Pages.
   res.setHeader('Cache-Control', 'no-store');
   res.json({
     enabled: !!DB.settings.ai_assistant_enabled,
