@@ -4491,6 +4491,7 @@ async function renderSettings() {
           <button type="button" id="aiAssistantDiagBtn" class="btn btn-outline">🔍 Tes Koneksi WhatsApp</button>
           <button type="button" id="aiAssistantLogsBtn" class="btn btn-outline">📋 Log Percakapan</button>
         </div>
+        <div id="aiReadinessBox" style="margin-top:10px;"></div>
         <div id="aiModelInfo" style="margin-top:10px;font-size:0.82rem;color:var(--text-soft);"></div>
         <div id="aiAssistantDiagnostics" style="margin-top:12px;"></div>
         <div id="aiAssistantFeedback" style="margin-top:10px;font-size:0.84rem;"></div>
@@ -4806,6 +4807,30 @@ async function wireAIAssistantSettings() {
     if (cfg.gemini_model || cfg.openrouter_model) {
       const info = document.getElementById('aiModelInfo');
       if (info) info.textContent = 'Model aktif: ' + [cfg.gemini_model, cfg.openrouter_model].filter(Boolean).join(' · ');
+    }
+    // Kotak kesiapan: langsung menjawab "kenapa bot cuma bilang gangguan?"
+    const rbox = document.getElementById('aiReadinessBox');
+    if (rbox) {
+      const rd = cfg.readiness || {};
+      let html = '';
+      if (rd.ready) {
+        html = '<div style="padding:10px 12px;background:#ecfdf5;border:1.5px solid #6ee7b7;border-radius:10px;color:#065f46;font-size:0.86rem;font-weight:600;">'
+          + '✅ AI siap dipakai lewat ' + esc([cfg.has_gemini ? 'Google Gemini' : null, cfg.has_openrouter ? 'OpenRouter' : null].filter(Boolean).join(' + ')) + '.'
+          + (cfg.gemini_model || cfg.openrouter_model ? '<br><span style="font-weight:500;">Model: ' + esc([cfg.gemini_model, cfg.openrouter_model].filter(Boolean).join(' · ')) + '</span>' : '')
+          + '</div>';
+      } else {
+        html = '<div style="padding:10px 12px;background:#fff7ed;border:1.5px solid #fdba74;border-radius:10px;color:#7c2d12;font-size:0.86rem;">'
+          + '<strong>⚠️ AI belum siap: ' + esc(rd.message || 'belum dikonfigurasi') + '</strong>'
+          + '<br><span style="font-weight:500;">Selama ini pengunjung akan diarahkan ke WhatsApp admin.</span></div>';
+      }
+      if (cfg.last_error) {
+        const kapan = cfg.last_error_at ? new Date(cfg.last_error_at).toLocaleString('id-ID', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : '';
+        html += '<div style="padding:10px 12px;background:#fef2f2;border:1.5px solid #fca5a5;border-radius:10px;color:#7f1d1d;margin-top:8px;font-size:0.84rem;line-height:1.55;">'
+          + '<strong>❌ Kegagalan terakhir' + (kapan ? ' (' + esc(kapan) + ')' : '') + ':</strong><br>'
+          + '<code style="font-size:0.8rem;">' + esc(cfg.last_error) + '</code>'
+          + '<div style="margin-top:6px;font-weight:500;">Klik <strong>🤖 Tes AI</strong> untuk menguji ulang setelah memperbaiki kunci/kuota.</div></div>';
+      }
+      rbox.innerHTML = html;
     }
     // URL webhook diambil dari SERVER (absolut, berdasarkan host yang
     // melayani request). Menebak dari window.location berbahaya: kalau

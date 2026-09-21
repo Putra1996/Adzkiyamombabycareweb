@@ -38,6 +38,8 @@ function makeSandbox(opts) {
   const calls = { list: 0, gemini: [], openrouter: [] };
   const geminiDelay = o.geminiDelay === undefined ? 100 : o.geminiDelay;
   const orDelay = o.orDelay === undefined ? 100 : o.orDelay;
+  const orFails = !!o.openrouterFails;
+  const geminiFails = !!o.geminiFails;
   const wait = (ms, signal) => new Promise((resolve, reject) => {
     const t = setTimeout(resolve, ms);
     if (signal) {
@@ -58,11 +60,19 @@ function makeSandbox(opts) {
       const model = decodeURIComponent((target.match(/\/models\/([^:]+):generateContent/) || [, '?'])[1]);
       calls.gemini.push(model);
       await wait(geminiDelay, options && options.signal);
+      if (geminiFails) {
+        const err = { error: { code: 404, message: 'This model models/' + model + ' is no longer available for new users.' } };
+        return { ok: false, status: 404, headers: { get: () => 'application/json' }, json: async () => err, text: async () => JSON.stringify(err) };
+      }
       return ok({ candidates: [{ content: { parts: [{ text: 'Jawaban Gemini 🌸' }] } }] });
     }
     if (target.includes('openrouter.ai')) {
       calls.openrouter.push(JSON.parse((options && options.body) || '{}'));
       await wait(orDelay, options && options.signal);
+      if (orFails) {
+        const err = { error: { message: 'No auth credentials found' } };
+        return { ok: false, status: 401, headers: { get: () => 'application/json' }, json: async () => err, text: async () => JSON.stringify(err) };
+      }
       return ok({ choices: [{ message: { content: 'Jawaban OpenRouter 🌸' } }] });
     }
     return ok({});
@@ -168,6 +178,37 @@ test('Hedging: Gemini lambat -> OpenRouter menjawab lebih dulu (bukan menunggu 3
   assert.ok(ms < 1500, 'masih menunggu terlalu lama: ' + ms + 'ms');
   assert.equal(r.hedged, true, 'penanda hedged tidak diset');
   assert.equal(calls.openrouter.length, 1, 'OpenRouter tidak dipanggil tepat sekali');
+});
+
+test('BUG PRODUKSI: pelari kedua gagal cepat TIDAK boleh membatalkan pelari pertama', async () => {
+  // Skenario nyata yang dilaporkan pengguna: kunci OpenRouter bermasalah
+  // (401) sementara Gemini lambat menjawab. Sebelum perbaikan, kegagalan
+  // OpenRouter langsung menolak seluruh permintaan sehingga pengunjung
+  // melihat "Maaf, saya sedang gangguan" padahal Gemini masih berjalan.
+  const { sandbox } = makeSandbox({
+    geminiDelay: 900,
+    orDelay: 30,
+    openrouterFails: true,
+    settings: { ai_gemini_model: 'gemini-2.5-flash', ai_hedge_delay_ms: 150 }
+  });
+  const t0 = Date.now();
+  const r = await vm.runInContext('callAIChat("sys", [{role:"user",content:"halo"}])', sandbox);
+  const ms = Date.now() - t0;
+  assert.equal(r.provider, 'gemini', 'permintaan tidak diselesaikan oleh Gemini');
+  assert.match(r.reply, /Gemini/, 'balasan bukan dari Gemini');
+  assert.ok(ms >= 800, 'terlalu cepat — kemungkinan ditolak sebelum Gemini selesai');
+});
+
+test('Hedging: kalau KEDUA provider gagal, barulah dilaporkan gagal', async () => {
+  const { sandbox } = makeSandbox({
+    geminiDelay: 30, orDelay: 30, geminiFails: true, openrouterFails: true,
+    settings: { ai_gemini_model: 'gemini-2.5-flash', ai_hedge_delay_ms: 120 }
+  });
+  await assert.rejects(
+    () => vm.runInContext('callAIChat("sys", [{role:"user",content:"halo"}])', sandbox),
+    (e) => /Tidak ada AI provider yang berhasil/.test(e.message),
+    'kedua provider gagal seharusnya dilaporkan sebagai kegagalan'
+  );
 });
 
 test('Hedging tidak memanggil provider kedua bila yang pertama sudah menjawab', async () => {

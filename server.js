@@ -4869,6 +4869,7 @@ function buildBackupPayload() {
         ai_assistant_app_secret, ai_assistant_verify_token,
         owner_signature_b64, owner_signature_mime,
         ai_assistant_conversations,
+        ai_last_error, ai_last_error_at,
         ...rest
       } = (DB.settings || {});
       return rest;
@@ -5518,6 +5519,8 @@ async function callAIChat(systemPrompt, messages, opts) {
     const hedgeDelay = Math.max(1000, Math.min(10000, parseInt(DB.settings.ai_hedge_delay_ms, 10) || 4000));
     return await new Promise((resolve, reject) => {
       let done = false;
+      let active = 0;          // percobaan yang masih berjalan
+      let canStart = 2;        // maksimal dua percobaan (Gemini lalu OpenRouter)
       const started = [];
       const timerHolder = { id: null };
 
@@ -5526,22 +5529,29 @@ async function callAIChat(systemPrompt, messages, opts) {
         done = true;
         clearTimeout(timerHolder.id);
         // Batalkan permintaan yang belum selesai supaya kuota tidak terbuang.
-        if (abortOthers) abortOthers(provider);
+        abortOthers(provider);
         resolve({ reply: r.reply, provider, model: r.model, hedged: started.length > 1 });
       };
 
       const fail = (provider, err) => {
         if (done) return;
+        active -= 1;
         errors.push(provider + ': ' + sanitizeAIError(err));
         // Gemini gagal lebih dulu -> langsung jalankan OpenRouter tanpa
         // menunggu jadwal hedging.
-        if (provider === 'gemini' && started.indexOf('openrouter') < 0) {
+        if (provider === 'gemini' && started.indexOf('openrouter') < 0 && canStart > 0) {
           startOpenRouter();
           return;
         }
-        done = true;
-        clearTimeout(timerHolder.id);
-        reject(new Error('Tidak ada AI provider yang berhasil: ' + errors.join(' | ')));
+        // Tolak HANYA bila tidak ada percobaan yang masih berjalan dan tidak
+        // ada lagi yang bisa dijalankan. (Sebelumnya: satu kegagalan cepat
+        // dari OpenRouter langsung mematikan permintaan walau Gemini masih
+        // berjalan — itulah sebabnya pengunjung melihat pesan "gangguan".)
+        if (active <= 0 && canStart <= 0) {
+          done = true;
+          clearTimeout(timerHolder.id);
+          reject(new Error('Tidak ada AI provider yang berhasil: ' + errors.join(' | ')));
+        }
       };
 
       const controllers = { gemini: null, openrouter: null };
@@ -5552,7 +5562,9 @@ async function callAIChat(systemPrompt, messages, opts) {
       };
 
       const startOpenRouter = () => {
-        if (started.indexOf('openrouter') >= 0 || done) return;
+        if (started.indexOf('openrouter') >= 0 || done || canStart <= 0) return;
+        canStart -= 1;
+        active += 1;
         started.push('openrouter');
         controllers.openrouter = new AbortController();
         callOpenRouter(systemPrompt, messages, { signal: controllers.openrouter.signal })
@@ -5560,6 +5572,8 @@ async function callAIChat(systemPrompt, messages, opts) {
           .catch((e) => fail('openrouter', e));
       };
 
+      canStart -= 1;
+      active += 1;
       started.push('gemini');
       controllers.gemini = new AbortController();
       callGemini(systemPrompt, messages, { signal: controllers.gemini.signal })
@@ -5635,6 +5649,9 @@ app.post('/api/ai/chat', aiLimiter, async (req, res) => {
     }
     const latencyMs = Date.now() - startedAt;
     console.log(`[ai/chat] ${result.provider}${result.model ? '/' + result.model : ''} ${latencyMs}ms${result.hedged ? ' (hedged)' : ''}`);
+    // Berhasil -> bersihkan catatan kegagalan lama supaya panel tidak
+    // menampilkan peringatan yang sudah tidak relevan.
+    clearAIError();
 
     // Log conversation (max 200 entries, ring buffer)
     if (!Array.isArray(DB.settings.ai_assistant_conversations)) DB.settings.ai_assistant_conversations = [];
@@ -5664,6 +5681,8 @@ app.post('/api/ai/chat', aiLimiter, async (req, res) => {
   } catch (e) {
     const detail = sanitizeAIError(e);
     console.error('[ai/chat] gagal:', detail);
+    // Simpan alasan kegagalan agar bisa dilihat di panel admin.
+    recordAIError(e);
     res.status(500).json({
       error: 'AI chat gagal: ' + (e.message || 'unknown error'),
       // Alasan teknis (tanpa kredensial) — dipakai panel admin & CLI untuk
@@ -5804,7 +5823,8 @@ app.post('/api/webhook/whatsapp', webhookLimiter, async (req, res) => {
       }
     }
   } catch (e) {
-    console.error('[wa-webhook] Error:', e.message);
+    console.error('[wa-webhook] Error:', sanitizeAIError(e));
+    recordAIError(e);
   }
 });
 
@@ -5844,6 +5864,9 @@ app.get('/api/admin/ai/config', auth, (req, res) => {
     conversation_count: (s.ai_assistant_conversations || []).length,
     gemini_model: s.ai_gemini_model || null,
     openrouter_model: s.ai_openrouter_model || null,
+    readiness: aiReadiness(),
+    last_error: s.ai_last_error || null,
+    last_error_at: s.ai_last_error_at || null,
     prefer_fast_model: s.ai_prefer_fast_model !== false,
     hedge_openrouter: s.ai_hedge_openrouter !== false,
     max_output_tokens: AI_MAX_OUTPUT_TOKENS,
@@ -5947,6 +5970,50 @@ app.get('/api/admin/ai/diagnostics', auth, async (req, res) => {
   res.json(result);
 });
 
+// ---- STATUS KESIAPAN AI (dipakai widget, panel, dan diagnosa) ----
+// Alasan kegagalan terakhir disimpan supaya admin tidak perlu menebak:
+// panel menampilkan pesan ini apa adanya (sudah dibersihkan dari kredensial).
+function aiReadiness() {
+  const s = DB.settings || {};
+  if (!s.ai_assistant_enabled) {
+    return { ready: false, reason: 'disabled', message: 'AI Assistant belum diaktifkan oleh admin.' };
+  }
+  if (!s.ai_gemini_api_key && !s.ai_openrouter_api_key) {
+    return { ready: false, reason: 'no_provider', message: 'Kunci AI (Gemini/OpenRouter) belum diisi.' };
+  }
+  return { ready: true, reason: 'ok', message: 'AI siap.' };
+}
+function recordAIError(err) {
+  if (!DB.settings) return;
+  DB.settings.ai_last_error = sanitizeAIError(err).slice(0, 300);
+  DB.settings.ai_last_error_at = new Date().toISOString();
+  save();
+}
+function clearAIError() {
+  if (!DB.settings) return;
+  if (DB.settings.ai_last_error) {
+    DB.settings.ai_last_error = null;
+    DB.settings.ai_last_error_at = null;
+    save();
+  }
+}
+
+// PUBLIK (tanpa login): apakah AI siap dipakai? Hanya mengembalikan flag &
+// pesan ramah — tidak pernah membocorkan kredensial, model, atau galat teknis
+// ke pengunjung. Dipakai widget chat supaya pengunjung (dan admin yang sedang
+// menguji) langsung tahu kalau AI memang belum diaktifkan.
+app.get('/api/ai/status', (req, res) => {
+  const r = aiReadiness();
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({
+    enabled: !!DB.settings.ai_assistant_enabled,
+    ready: r.ready,
+    reason: r.reason,
+    message: r.message,
+    wa_link: waLinkFor(DB.settings.phone, '6285887018194')
+  });
+});
+
 // ADMIN: uji AI langsung ke provider.
 //
 // Menjawab pertanyaan "kenapa bot hanya bilang sedang gangguan?" tanpa
@@ -5988,6 +6055,13 @@ app.post('/api/admin/ai/test', auth, async (req, res) => {
   }
 
   const working = Object.entries(results).filter(([, v]) => v && v.ok).map(([k, v]) => k + ' (' + v.model + ')');
+  // Tes dianggap sumber kebenaran terbaru untuk diagnosa.
+  if (working.length) {
+    clearAIError();
+  } else {
+    const firstError = Object.values(results).map((v) => v && v.error).filter(Boolean)[0];
+    if (firstError) recordAIError(new Error(firstError));
+  }
   res.setHeader('Cache-Control', 'private, no-store');
   res.json({
     ok: working.length > 0,

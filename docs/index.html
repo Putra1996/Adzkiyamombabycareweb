@@ -657,6 +657,36 @@ fetch(adzkiyaApiUrl('/api/public-settings')).then(r => r.json()).then(s => {
     return div;
   }
 
+  // Tanya STATUS AI ke server (endpoint publik, tanpa kredensial). Kalau
+  // belum siap, beri tahu pengunjung lebih awal + arahkan ke WhatsApp.
+  let aiReadyChecked = false;
+  function checkAIReady() {
+    if (aiReadyChecked) return;
+    aiReadyChecked = true;
+    fetch(adzkiyaApiUrl('/api/ai/status'))
+      .then((r) => r.json())
+      .then((st) => {
+        if (!st || st.ready) return; // siap -> tidak perlu pemberitahuan
+        const wa = st.wa_link || 'https://wa.me/6285887018194';
+        const div = document.createElement('div');
+        div.className = 'ai-msg bot';
+        div.style.cssText = 'background:#fff7ed;border:1px solid #fdba74;color:#7c2d12;';
+        div.textContent = 'ℹ️ ' + (st.message || 'AI belum aktif') +
+          ' Sementara ini pesan Bunda bisa langsung dijawab admin lewat WhatsApp: ' + wa;
+        messagesEl.appendChild(div);
+        messagesEl.scrollTop = messagesEl.scrollHeight;
+        // Tawarkan tombol WhatsApp supaya sekali klik langsung terhubung.
+        setQuickReplies(['💬 Chat WhatsApp admin', 'Lihat layanan']);
+        const quick = document.getElementById('aiChatQuick');
+        if (quick && quick.firstElementChild) {
+          quick.firstElementChild.addEventListener('click', () => {
+            window.open(wa, '_blank', 'noopener');
+          });
+        }
+      })
+      .catch(() => { /* status opsional: kegagalan di sini tidak mengganggu chat */ });
+  }
+
   function appendTypingIndicator() {
     const div = document.createElement('div');
     div.className = 'ai-msg typing';
@@ -690,6 +720,7 @@ fetch(adzkiyaApiUrl('/api/public-settings')).then(r => r.json()).then(s => {
       // First-time greeting
       appendMessage(window.t('ai.greeting'), 'bot');
       setQuickReplies(window.t('ai.quick_replies').split('|'));
+      checkAIReady();
     }
     setTimeout(() => inputEl.focus(), 100);
   }
@@ -727,12 +758,27 @@ fetch(adzkiyaApiUrl('/api/public-settings')).then(r => r.json()).then(s => {
     .then(({ status, data }) => {
       typing.remove();
       if (status >= 400 || data.error) {
-        // Friendly fallback to WA when AI is unavailable.
-        // Nomor diambil dari server (fallback_wa); pesan memakai i18n supaya
-        // konsisten ID/EN, dan ditulis sebagai teks biasa (tautan akan
-        // otomatis jadi link oleh linkifyAndEscape).
+        // Pesan dibedakan menurut sebabnya supaya pengunjung tahu apa yang
+        // bisa dilakukan, dan admin yang sedang menguji langsung melihat
+        // akar masalahnya tanpa membuka log server.
         const wa = data.fallback_wa || 'https://wa.me/6285887018194';
-        appendMessage(window.t('ai.wa_fallback_msg') + ' ' + wa, 'bot');
+        let pesan;
+        if (status === 503) {
+          // Belum diaktifkan / kunci belum diisi -> pesan dari server sudah
+          // jelas dan memang ditujukan untuk dibaca.
+          pesan = 'ℹ️ ' + (data.error || window.t('ai.wa_fallback_msg')) + ' ' + wa;
+        } else if (status === 429) {
+          pesan = '⏳ ' + (data.error || 'Terlalu banyak pesan. Coba lagi sebentar lagi.');
+        } else {
+          pesan = window.t('ai.wa_fallback_msg') + ' ' + wa;
+          if (data.detail) {
+            // Alasan teknis (tanpa kredensial) — sangat membantu saat admin
+            // menguji dari panel. Pengunjung umum bisa mengabaikannya.
+            pesan += '\n\n🔧 Detail: ' + String(data.detail).slice(0, 200);
+            try { console.warn('[AI] kegagalan:', data.detail); } catch (e) {}
+          }
+        }
+        appendMessage(pesan, 'bot');
         history.push({ role: 'assistant', content: '[fallback]' });
       } else {
         appendMessage(data.reply, 'bot');
