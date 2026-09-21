@@ -85,19 +85,26 @@ function makeSandbox(options) {
     console,
     fetch: fetchMock,
     setTimeout, clearTimeout, AbortController, URL, encodeURIComponent,
-    DB: { settings: Object.assign({ ai_gemini_api_key: 'AIza-dummy', ai_openrouter_api_key: 'sk-or-dummy' }, opts.settings || {}) },
+    // ai_prefer_fast_model: false -> tes di berkas ini menguji urutan
+    // "kualitas dulu". Perilaku mode cepat diuji di test/ai-speed.test.js.
+    DB: { settings: Object.assign({ ai_gemini_api_key: 'AIza-dummy', ai_openrouter_api_key: 'sk-or-dummy', ai_prefer_fast_model: false }, opts.settings || {}) },
     save: () => {},
     process: { env: {} }
   };
   vm.createContext(sandbox);
   vm.runInContext(block('async function fetchWithTimeout'), sandbox);
   vm.runInContext('function sanitizeDbError(e){ return String((e && e.message) || e); }', sandbox);
+  // fungsi baru yang dipakai jalur AI (redaksi galat + penyegaran daftar model)
+  vm.runInContext(block('function sanitizeAIError'), sandbox);
+  vm.runInContext(block('async function refreshGeminiModelList'), sandbox);
+  vm.runInContext('let geminiListInflight = null;', sandbox);
   vm.runInContext(block('function sanitizeAIReply'), sandbox);
   vm.runInContext(serverSrc.slice(serverSrc.indexOf('const GEMINI_MODEL_CANDIDATES'), serverSrc.indexOf('// Tanya ke Google model apa saja')), sandbox);
   vm.runInContext(block('async function listGeminiModels'), sandbox);
   vm.runInContext(block('async function resolveGeminiModel'), sandbox);
   vm.runInContext(block('function geminiCandidates'), sandbox);
   vm.runInContext(block('function isModelUnavailable'), sandbox);
+  vm.runInContext(serverSrc.slice(serverSrc.indexOf('const AI_GEMINI_TIMEOUT_MS'), serverSrc.indexOf('async function callGemini')), sandbox);
   vm.runInContext(block('async function callGemini'), sandbox);
   vm.runInContext(serverSrc.slice(serverSrc.indexOf('const OPENROUTER_MODEL_CANDIDATES'), serverSrc.indexOf('async function callOpenRouter')), sandbox);
   vm.runInContext(block('async function callOpenRouter'), sandbox);

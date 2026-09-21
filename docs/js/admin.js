@@ -4463,6 +4463,18 @@ async function renderSettings() {
           </div>
         </details>
 
+        <!-- Opsi kecepatan -->
+        <label style="display:flex;align-items:flex-start;gap:10px;padding:12px;background:white;border:1.5px solid var(--border);border-radius:10px;margin:12px 0;cursor:pointer;">
+          <input type="checkbox" id="aiPreferFast" style="width:20px;height:20px;margin-top:2px;cursor:pointer;accent-color:#7c3aed;">
+          <div style="flex:1;">
+            <div style="font-weight:700;color:var(--text);">⚡ Utamakan jawaban cepat</div>
+            <div style="font-size:0.82rem;line-height:1.5;color:var(--text-soft);">
+              Memilih model versi cepat (varian <em>lite</em>) + jawaban dibatasi ~2 kalimat,
+              sehingga balasan biasanya muncul jauh lebih cepat. Matikan bila ingin jawaban lebih panjang.
+            </div>
+          </div>
+        </label>
+
         <!-- Custom persona prompt -->
         <div class="form-group" style="margin-top:8px;">
           <label>🎭 Custom Persona Prompt <span style="color:var(--text-soft);font-weight:500;">(opsional, override default instructions)</span></label>
@@ -4479,6 +4491,7 @@ async function renderSettings() {
           <button type="button" id="aiAssistantDiagBtn" class="btn btn-outline">🔍 Tes Koneksi WhatsApp</button>
           <button type="button" id="aiAssistantLogsBtn" class="btn btn-outline">📋 Log Percakapan</button>
         </div>
+        <div id="aiModelInfo" style="margin-top:10px;font-size:0.82rem;color:var(--text-soft);"></div>
         <div id="aiAssistantDiagnostics" style="margin-top:12px;"></div>
         <div id="aiAssistantFeedback" style="margin-top:10px;font-size:0.84rem;"></div>
       </div>
@@ -4755,6 +4768,7 @@ async function wireAIAssistantSettings() {
   const accessTokenEl = document.getElementById('aiWaAccessToken');
   const verifyTokenEl = document.getElementById('aiWaVerifyToken');
   const appSecretEl = document.getElementById('aiWaAppSecret');
+  const preferFastEl = document.getElementById('aiPreferFast');
   const diagBtn = document.getElementById('aiAssistantDiagBtn');
   const aiTestBtn = document.getElementById('aiAssistantAiTestBtn');
   const diagBox = document.getElementById('aiAssistantDiagnostics');
@@ -4787,6 +4801,12 @@ async function wireAIAssistantSettings() {
     phoneIdEl.placeholder = cfg.has_wa_phone_id ? '•••••••• (set)' : '123456789012345';
     accessTokenEl.placeholder = cfg.has_wa_token ? '•••••••• (set)' : 'EAAxxxxxxx...';
     if (appSecretEl) appSecretEl.placeholder = cfg.has_app_secret ? '•••••••• (set, kosongkan untuk tetap)' : 'App Secret dari Meta';
+    // Pengaturan kecepatan (default aktif) + model yang sedang dipakai.
+    if (preferFastEl) preferFastEl.checked = cfg.prefer_fast_model !== false;
+    if (cfg.gemini_model || cfg.openrouter_model) {
+      const info = document.getElementById('aiModelInfo');
+      if (info) info.textContent = 'Model aktif: ' + [cfg.gemini_model, cfg.openrouter_model].filter(Boolean).join(' · ');
+    }
     // URL webhook diambil dari SERVER (absolut, berdasarkan host yang
     // melayani request). Menebak dari window.location berbahaya: kalau
     // panel dibuka dari cermin GitHub Pages, admin akan menyalin URL
@@ -4808,7 +4828,8 @@ async function wireAIAssistantSettings() {
       const body = {
         ai_assistant_enabled: enabledEl.checked,
         ai_assistant_verify_token: verifyTokenEl.value.trim(),
-        ai_assistant_base_prompt: basePromptEl.value.trim()
+        ai_assistant_base_prompt: basePromptEl.value.trim(),
+        ai_prefer_fast_model: preferFastEl ? preferFastEl.checked : true
       };
       // Only update keys if admin typed something new
       if (geminiEl.value.trim()) body.ai_gemini_api_key = geminiEl.value.trim();
@@ -4860,6 +4881,9 @@ async function wireAIAssistantSettings() {
         + baris('gemini', r.results && r.results.gemini)
         + baris('openrouter', r.results && r.results.openrouter)
         + '<div style="font-size:0.82rem;color:var(--text-soft);margin-top:6px;line-height:1.6;">'
+        + (r.results && r.results.gemini && r.results.gemini.ok
+            ? 'Waktu balasan Gemini: <strong>' + (r.results.gemini.latency_ms || 0) + ' ms</strong>.<br>'
+            : '')
         + (r.ok
             ? 'AI siap dipakai lewat: ' + esc((r.working_providers || []).join(', ')) + '.'
             : 'Belum ada provider yang berhasil. Perbaiki pesan galat di atas, lalu uji lagi. Pesan galat ditampilkan apa adanya dari penyedia.')
@@ -4925,7 +4949,7 @@ async function wireAIAssistantSettings() {
       const text = logs.map((l, i) => {
         const when = new Date(l.ts).toLocaleString('id-ID', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
         const sender = l.sender_name || l.from_phone || l.session_id || 'anon';
-        const provider = l.provider ? ' [' + l.provider + ']' : '';
+        const provider = l.provider ? ' [' + l.provider + (l.model ? '/' + l.model : '') + (l.latency_ms ? ' ' + l.latency_ms + 'ms' : '') + ']' : '';
         return `${i + 1}. [${when}] ${l.channel.toUpperCase()} ${sender}${provider}
    👤 ${l.user.slice(0, 200)}
    🤖 ${l.assistant.slice(0, 200)}

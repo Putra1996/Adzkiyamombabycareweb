@@ -160,6 +160,29 @@ tidak bisa langsung dipakai di API.
 | Balasan WA berhenti setelah 24 jam | Anda masih memakai token sementara → ganti ke token permanen (B5) |
 | Broadcast WA berhenti/tidak jalan | Broadcast memakai `wa.me`, tidak butuh token — pastikan nomor pelanggan benar saja |
 
+## ⚡ Membuat balasan AI lebih cepat
+
+Ada beberapa hal yang memengaruhi cepat/lambatnya balasan, dan semuanya sudah
+diatur otomatis (bisa disesuaikan di panel):
+
+| Pengaturan | Efek |
+|---|---|
+| ☑️ **Utamakan jawaban cepat** (default aktif) | Memilih model varian **lite** yang lebih responsif dan membatasi jawaban ~2 kalimat. Matikan bila ingin jawaban lebih panjang/detail. |
+| Jawaban dibatasi ±2 kalimat | Token keluaran adalah penyumbang waktu tunggu terbesar — jawaban pendek = balasan jauh lebih cepat. |
+| **Hedging** dua provider (default aktif) | Bila Gemini belum menjawab dalam ±4 detik, OpenRouter otomatis ikut berjalan dan **yang menjawab lebih dulu** itulah yang dipakai. Pada kasus Gemini lambat, waktu tunggu turun dari ~10 detik menjadi ~0,5 detik. |
+| Riwayat percakapan dipangkas (6 pesan terakhir, maks 400 karakter) | Mengurangi token masukan pada setiap pesan sehingga pemrosesan lebih cepat. |
+| Timeout 15 detik per model | Model yang menggantung tidak lagi menahan pengunjung sampai 30 detik; kandidat berikutnya langsung dicoba. |
+| Pemilihan model otomatis + cache | Model yang berhasil disimpan dan dipakai langsung pada pesan berikutnya (tanpa panggilan tambahan ke API). |
+| Balasan dibatalkan bila pengunjung pergi | Kuota tidak terbuang untuk jawaban yang tidak akan dibaca. |
+
+Cara mengukur di sistem Anda: buka **🤖 Tes AI** — di situ ditampilkan
+**waktu balasan** (ms) dan model yang dipakai. Nilai wajar: **0,5–2 detik**.
+Kalau konsisten di atas 5 detik: cek kuota/kunci provider, lalu coba matikan
+"Utamakan jawaban cepat" untuk membandingkan.
+
+Setiap jawaban juga dicatat di **📋 Log Percakapan** lengkap dengan
+`provider/model` dan `latensi` (contoh: `[gemini/gemini-flash-lite-latest 850ms]`).
+
 ## Catatan penting soal model AI (agar tidak kena masalah yang sama lagi)
 
 Google **menghentikan model lamanya dari waktu ke waktu**. Kasus nyata:

@@ -34,13 +34,21 @@ async function getPdfParse() {
 // route forever. Without this, one stuck AI provider would tie up an
 // Express worker indefinitely and degrade into the dreaded
 // "Railway 502" after a few minutes.
-async function fetchWithTimeout(url, options, timeoutMs) {
+async function fetchWithTimeout(url, options, timeoutMs, externalSignal) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  // Bila pemanggil ingin membatalkan (mis. provider lain sudah menjawab
+  // lebih dulu), batalkan request ini juga supaya tidak ada kuota terbuang.
+  const onAbort = () => { try { controller.abort(); } catch { /* sudah selesai */ } };
+  if (externalSignal) {
+    if (externalSignal.aborted) onAbort();
+    else externalSignal.addEventListener('abort', onAbort, { once: true });
+  }
   try {
     return await fetch(url, { ...options, signal: controller.signal });
   } finally {
     clearTimeout(timer);
+    if (externalSignal) { try { externalSignal.removeEventListener('abort', onAbort); } catch {} }
   }
 }
 
@@ -850,6 +858,19 @@ function ensureNewSettings() {
     await queueSave();
     server = app.listen(PORT, '0.0.0.0', () => {
       console.log(`Adzkiya Mom Baby Care v2.2 on 0.0.0.0:${PORT} (storage: ${pool ? activeDatabaseKind() : 'file'})`);
+      // Pemanasan AI (tidak memblokir boot): siapkan daftar model & prompt
+      // sistem di latar belakang supaya pesan pertama pengunjung tidak
+      // menanggung biaya tambahan apa pun.
+      if (DB.settings && DB.settings.ai_gemini_api_key) {
+        setTimeout(() => {
+          try {
+            buildAISystemPrompt();
+            resolveGeminiModel(DB.settings.ai_gemini_api_key, { force: true })
+              .then((m) => { if (m) console.log('[ai] Model siap dipakai: ' + m); })
+              .catch((e) => console.warn('[ai] Pemanasan model gagal: ' + sanitizeAIError(e)));
+          } catch (e) { /* pemanasan bersifat opsional */ }
+        }, 2000);
+      }
     });
   } catch (error) {
     console.error('FATAL boot:', error);
@@ -5096,15 +5117,58 @@ function sanitizeAIReply(text) {
 
 const AI_DEFAULT_PERSONA = `Kamu adalah Adzkiya Assistant, customer service AI untuk klinik home-service Adzkiya Mom Baby Care di Cilacap.\n\nTugas kamu:\n1. Menyapa customer dengan hangat dalam Bahasa Indonesia\n2. Membantu memilih layanan yang sesuai dari katalog\n3. Memberi info harga, jam operasional, dan area layanan\n4. Membantu booking: tanyakan tanggal & jam yang diinginkan, lalu arahkan customer untuk konfirmasi via WhatsApp ke admin\n\nAturan penting:\n- Jawab singkat (max 3-4 kalimat per pesan)\n- Gunakan emoji secukupnya (🌸 untuk sapaan, ✅ untuk konfirmasi)\n- SELALU akhiri dengan pertanyaan untuk lanjutkan percakapan\n- JANGAN sebut harga detail kecuali customer tanya\n- JANGAN janjikan booking tanpa admin confirmation\n- Untuk finalisasi booking, arahkan ke WhatsApp admin\n\nFormat jawaban (WAJIB):\n- Tulis TEKS BIASA saja, JANGAN pakai HTML atau tag apa pun\n  (jangan tulis <a href=\"...\">, <br>, <b>, dan sejenisnya)\n- Tulis tautan apa adanya, contoh: https://wa.me/6285887018194\n- JANGAN pakai format markdown seperti [teks](tautan)`;
 
+// Ringkas harga: 80000 -> "80rb" (hemat token, tetap jelas bagi model).
+function shortPrice(v) {
+  const n = Number(v) || 0;
+  if (n >= 1000000) return (n / 1000000).toString().replace('.', ',') + 'jt';
+  if (n >= 1000) return Math.round(n / 1000) + 'rb';
+  return String(n);
+}
+
+// Cache prompt sistem. Dibangun ulang hanya bila data yang dipakai berubah,
+// sehingga permintaan berikutnya tidak perlu menyusun ulang string besar.
+let _aiPromptCache = { sig: null, text: '' };
+function aiPromptSignature(s) {
+  return JSON.stringify([
+    s.ai_assistant_base_prompt || '',
+    s.business_name || '', s.address || '', s.phone || '',
+    Array.isArray(s.hours) ? s.hours : [],
+    SERVICES.length,
+    SERVICES[0] && SERVICES[0].items ? SERVICES[0].items.length : 0
+  ]);
+}
+
+// Riwayat yang dikirim ke model: hanya beberapa pesan terakhir dan
+// dipotong pendek. Semakin sedikit token masuk, semakin cepat jawaban.
+const AI_HISTORY_MAX = 6;
+const AI_HISTORY_CHAR_LIMIT = 400;
+function trimAIHistory(history) {
+  if (!Array.isArray(history)) return [];
+  return history
+    .slice(-AI_HISTORY_MAX)
+    .map(h => ({
+      role: h && h.role === 'assistant' ? 'assistant' : 'user',
+      content: String((h && h.content) || '').slice(0, AI_HISTORY_CHAR_LIMIT)
+    }))
+    .filter(m => m.content);
+}
+
 function buildAISystemPrompt() {
   const s = DB.settings || {};
+  const sig = aiPromptSignature(s);
+  if (_aiPromptCache.sig === sig) return _aiPromptCache.text;
+
+  // Katalog dipadatkan: satu baris per kategori (bukan satu baris per
+  // layanan) supaya prompt lebih pendek tanpa kehilangan info harga.
   const servicesList = SERVICES.map(cat => {
-    const items = cat.items.map(i => `- ${i.name}: Rp${i.price.toLocaleString('id-ID')}`).join('\n');
-    return `${cat.cat}:\n${items}`;
-  }).join('\n\n');
+    const items = cat.items.map(i => `${i.name} ${shortPrice(i.price)}`).join('; ');
+    return `${cat.cat}: ${items}`;
+  }).join('\n');
   const hours = (s.hours || []).map(h => `${h.day}: ${h.closed ? 'Tutup' : `${h.open}-${h.close}`}`).join(', ');
   const userPrompt = (DB.settings.ai_assistant_base_prompt || '').trim();
-  return [
+  const waNumber = waNumberFor(s.phone, '6285887018194');
+
+  const text = [
     userPrompt || AI_DEFAULT_PERSONA,
     `\n\n=== INFO BISNIS ===`,
     `Nama: ${s.business_name || 'Adzkiya Mom Baby Care'}`,
@@ -5115,10 +5179,12 @@ function buildAISystemPrompt() {
     `\n=== KATALOG LAYANAN ===`,
     servicesList,
     `\n=== INSTRUKSI TEKNIS ===`,
-    `- Customer sudah memilih untuk chat dengan AI, jadi layani dengan ramah\n- Jika customer minta booking, kumpulkan: nama layanan, tanggal (YYYY-MM-DD), jam (HH:MM), nama customer, WhatsApp, alamat.\n- Setelah dapat semua info, balas dengan ringkasan + link WhatsApp: https://wa.me/${(s.phone || '6285887018194').replace(/\D/g, '')}?text=<encoded message>\n- JANGAN mengarang harga custom. Pakai harga dari katalog di atas.\n- JANGAN menerima pembayaran. Booking selalu difinalkan via WhatsApp admin.`,
+    `- Jawab SINGKAT: maksimal 2 kalimat (maksimal 40 kata). Jangan bertele-tele.\n- Jika customer minta booking, kumpulkan: nama layanan, tanggal (YYYY-MM-DD), jam (HH:MM), nama customer, WhatsApp, alamat.\n- Setelah lengkap, balas ringkasan singkat + link WhatsApp: https://wa.me/${waNumber}\n- JANGAN mengarang harga. Pakai harga dari katalog di atas (mis. 80rb = Rp80.000).\n- JANGAN menerima pembayaran. Booking selalu difinalkan via WhatsApp admin.`
   ].join('\n');
-}
 
+  _aiPromptCache = { sig, text };
+  return text;
+}
 // --- Provider: Google Gemini ---
 // Kandidat model Gemini, diurutkan dari yang paling diinginkan.
 // Dipakai bila pencarian model otomatis (ListModels) tidak bisa dijalankan.
@@ -5159,7 +5225,10 @@ function scoreGeminiModel(name) {
   else if (/latest/.test(n)) score = 130;      // alias ke model stabil terbaru
   else score = 90;
   if (/flash/.test(n)) score += 5;
-  if (/lite/.test(n)) score -= 4;
+  // Kecepatan: varian "lite" jauh lebih responsif. Default mengutamakan
+  // kecepatan (bisa dimatikan lewat pengaturan ai_prefer_fast_model=false).
+  const preferFast = (DB.settings && DB.settings.ai_prefer_fast_model) !== false;
+  if (/lite/.test(n)) score += preferFast ? 12 : -4;
   if (/preview|exp/.test(n)) score -= 15;
   const explicit = GEMINI_MODEL_CANDIDATES.indexOf(name);
   if (explicit >= 0) score += 8 - explicit;    // hanya penentu seri
@@ -5192,21 +5261,40 @@ async function listGeminiModels(apiKey) {
 }
 
 // Model yang akan dicoba lebih dulu (hasil pencarian otomatis / cache / settings).
-async function resolveGeminiModel(apiKey, force) {
+let geminiListInflight = null;
+async function refreshGeminiModelList(apiKey) {
+  // Satu permintaan ListModels saja walau beberapa chat datang bersamaan.
+  if (geminiListInflight && geminiListInflight.key === apiKey) return geminiListInflight.promise;
+  const promise = listGeminiModels(apiKey)
+    .then((available) => {
+      const model = pickGeminiModel(available);
+      geminiModelCache = { key: apiKey, model, at: Date.now(), available, lastError: null };
+      return model;
+    })
+    .catch((e) => {
+      geminiModelCache = { ...geminiModelCache, key: apiKey, lastError: sanitizeDbError(e) };
+      return null;
+    })
+    .finally(() => { geminiListInflight = null; });
+  geminiListInflight = { key: apiKey, promise };
+  return promise;
+}
+
+// Model pertama yang akan dicoba. JALUR CEPAT: kalau kita sudah tahu model
+// yang berhasil sebelumnya (memori atau pengaturan), langsung pakai itu —
+// tanpa panggilan ListModels, sehingga tidak ada latensi tambahan.
+async function resolveGeminiModel(apiKey, opts) {
   const now = Date.now();
-  if (!force && geminiModelCache.key === apiKey && geminiModelCache.model && (now - geminiModelCache.at) < GEMINI_LIST_TTL_MS) {
-    return geminiModelCache.model;
+  const force = !!(opts && opts.force);
+  if (!force) {
+    if (geminiModelCache.key === apiKey && geminiModelCache.model && (now - geminiModelCache.at) < GEMINI_LIST_TTL_MS) {
+      return geminiModelCache.model;
+    }
+    const saved = DB.settings && DB.settings.ai_gemini_model;
+    if (saved) return saved;
   }
-  const saved = DB.settings && DB.settings.ai_gemini_model;
-  let discovered = null;
-  try {
-    const available = await listGeminiModels(apiKey);
-    discovered = pickGeminiModel(available);
-    geminiModelCache = { key: apiKey, model: discovered, at: now, available, lastError: null };
-  } catch (e) {
-    geminiModelCache.lastError = sanitizeDbError(e);
-  }
-  return discovered || saved || GEMINI_MODEL_CANDIDATES[0];
+  const discovered = await refreshGeminiModelList(apiKey);
+  return discovered || (DB.settings && DB.settings.ai_gemini_model) || GEMINI_MODEL_CANDIDATES[0];
 }
 
 // Daftar model yang akan dicoba berurutan (tanpa duplikat).
@@ -5225,15 +5313,39 @@ function geminiCandidates(primary) {
   return list;
 }
 
+// Redaksi khusus pesan galat provider AI: buang kredensial (parameter key,
+// Bearer token, connection string) TANPA mengubah nama model. sanitizeDbError
+// terlalu agresif untuk teks ini — nama seperti "gemini-flash-lite-latest"
+// (24 karakter) ikut berubah jadi "***" sehingga pesan galat tidak informatif.
+function sanitizeAIError(err) {
+  return String((err && err.message) || err || 'unknown')
+    .replace(/([?&]key=)[^&\s]+/gi, '$1***')
+    .replace(/Bearer\s+[A-Za-z0-9._-]{8,}/gi, 'Bearer ***')
+    .replace(/\/\/[^@\s/]+@/g, '//***@')
+    .replace(/\bAIza[A-Za-z0-9_-]{10,}\b/g, 'AIza***')
+    .replace(/\bsk-or-v1-[A-Za-z0-9-]{8,}\b/g, 'sk-or-v1-***')
+    .replace(/\bEAA[A-Za-z0-9]{20,}\b/g, 'EAA***')
+    .slice(0, 240);
+}
+
 function isModelUnavailable(status, message) {
   const text = String(message || '').toLowerCase();
   if (status === 404) return true;
   return /not found|no longer available|is not supported|does not exist|deprecat|retire|unsupported model/.test(text);
 }
 
-async function callGemini(systemPrompt, messages) {
+// Timeout per percobaan model. Lebih pendek dari sebelumnya (30s) karena
+// permintaan chat yang menggantung lama membuat pengunjung mengira bot mati;
+// kalau model pertama lambat, kandidat berikutnya diambil alih.
+const AI_GEMINI_TIMEOUT_MS = 15000;
+// Batas token keluaran. Jawaban CS cukup pendek; token keluaran adalah
+// penyumbang terbesar waktu tunggu (model menulis token satu per satu).
+const AI_MAX_OUTPUT_TOKENS = 320;
+
+async function callGemini(systemPrompt, messages, opts) {
   const apiKey = DB.settings.ai_gemini_api_key;
   if (!apiKey) throw new Error('Gemini API key not configured');
+  const signal = opts && opts.signal;
   const contents = messages.map(m => ({
     role: m.role === 'assistant' ? 'model' : 'user',
     parts: [{ text: m.content }]
@@ -5245,6 +5357,7 @@ async function callGemini(systemPrompt, messages) {
   const primary = await resolveGeminiModel(apiKey);
   const candidates = geminiCandidates(primary).slice(0, 6);
   const errors = [];
+  let sawUnavailable = false;
 
   for (const model of candidates) {
     const url = 'https://generativelanguage.googleapis.com/v1beta/models/' +
@@ -5256,16 +5369,22 @@ async function callGemini(systemPrompt, messages) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           contents,
-          generationConfig: { temperature: 0.7, maxOutputTokens: 500 }
+          generationConfig: {
+            temperature: 0.55,
+            topP: 0.9,
+            maxOutputTokens: AI_MAX_OUTPUT_TOKENS
+          }
         })
-      }, 30000);
+      }, AI_GEMINI_TIMEOUT_MS, signal);
     } catch (e) {
-      errors.push(model + ': ' + sanitizeDbError(e));
+      if (signal && signal.aborted) throw new Error('dibatalkan (provider lain sudah menjawab)');
+      errors.push(model + ': ' + sanitizeAIError(e));
       continue;
     }
     if (!r.ok) {
       text = await r.text().catch(() => '');
       errors.push(model + ' (' + r.status + '): ' + text.slice(0, 120));
+      if (isModelUnavailable(r.status, text)) sawUnavailable = true;
       // Model dihentikan / tidak dikenal -> coba kandidat berikutnya.
       // Kuota/layanan penuh (429/503) juga dicoba ke model lain.
       if (isModelUnavailable(r.status, text) || r.status === 429 || r.status === 503) continue;
@@ -5284,6 +5403,38 @@ async function callGemini(systemPrompt, messages) {
     }
     return { reply: sanitizeAIReply(reply), model };
   }
+
+  // Semua kandidat 404 (model lama dihentikan, katalog berubah?): ambil
+  // daftar terbaru dari API SEKALI, lalu coba model teratasnya.
+  if (sawUnavailable) {
+    const fresh = await refreshGeminiModelList(apiKey);
+    if (fresh && candidates.indexOf(fresh) < 0) {
+      try {
+        const url2 = 'https://generativelanguage.googleapis.com/v1beta/models/' +
+          encodeURIComponent(fresh) + ':generateContent?key=' + encodeURIComponent(apiKey);
+        const r2 = await fetchWithTimeout(url2, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents,
+            generationConfig: { temperature: 0.55, topP: 0.9, maxOutputTokens: AI_MAX_OUTPUT_TOKENS }
+          })
+        }, AI_GEMINI_TIMEOUT_MS, signal);
+        if (r2.ok) {
+          const d2 = await r2.json();
+          const reply2 = d2.candidates?.[0]?.content?.parts?.[0]?.text;
+          if (reply2) {
+            if (DB.settings.ai_gemini_model !== fresh) { DB.settings.ai_gemini_model = fresh; save(); }
+            return { reply: sanitizeAIReply(reply2), model: fresh };
+          }
+        } else {
+          errors.push(fresh + ' (' + r2.status + ', daftar terbaru)');
+        }
+      } catch (e) {
+        errors.push(fresh + ': ' + sanitizeAIError(e));
+      }
+    }
+  }
   throw new Error('Semua model Gemini gagal — ' + errors.join(' | '));
 }
 
@@ -5298,7 +5449,7 @@ const OPENROUTER_MODEL_CANDIDATES = [
   'openrouter/auto'
 ];
 
-async function callOpenRouter(systemPrompt, messages) {
+async function callOpenRouter(systemPrompt, messages, opts) {
   const apiKey = DB.settings.ai_openrouter_api_key;
   if (!apiKey) throw new Error('OpenRouter API key not configured');
   const oaMessages = [
@@ -5324,12 +5475,15 @@ async function callOpenRouter(systemPrompt, messages) {
         body: JSON.stringify({
           model,
           messages: oaMessages,
-          max_tokens: 500,
-          temperature: 0.7
+          max_tokens: AI_MAX_OUTPUT_TOKENS,
+          temperature: 0.55,
+          // Minta OpenRouter memilih penyedia dengan throughput tertinggi
+          // (token/detik) supaya jawaban datang lebih cepat.
+          provider: { sort: 'throughput' }
         })
-      }, 30000);
+      }, AI_GEMINI_TIMEOUT_MS, opts && opts.signal);
     } catch (e) {
-      errors.push(model + ': ' + sanitizeDbError(e));
+      errors.push(model + ': ' + sanitizeAIError(e));
       continue;
     }
     if (!r.ok) {
@@ -5350,25 +5504,87 @@ async function callOpenRouter(systemPrompt, messages) {
 }
 
 // Try Gemini first, fall back to OpenRouter. Returns { reply, provider }.
-async function callAIChat(systemPrompt, messages) {
+async function callAIChat(systemPrompt, messages, opts) {
+  const hasGemini = !!DB.settings.ai_gemini_api_key;
+  const hasOpenRouter = !!DB.settings.ai_openrouter_api_key;
   const errors = [];
-  // Try Gemini if key is set
-  if (DB.settings.ai_gemini_api_key) {
-    try {
-      const r = await callGemini(systemPrompt, messages);
-      return { reply: r.reply, provider: 'gemini', model: r.model };
-    } catch (e) { errors.push('Gemini: ' + sanitizeDbError(e)); }
+  const signal = opts && opts.signal;
+
+  // Hedging: jalankan OpenRouter sebagai pelari kedua kalau Gemini belum
+  // menjawab setelah `ai_hedge_delay_ms` (default 4 detik). Ini memotong
+  // waktu tunggu pada kasus Gemini lambat/kuota hampir penuh, tanpa
+  // mengorbankan jawaban Gemini yang memang lebih dulu siap.
+  if (hasGemini && hasOpenRouter && DB.settings.ai_hedge_openrouter !== false) {
+    const hedgeDelay = Math.max(1000, Math.min(10000, parseInt(DB.settings.ai_hedge_delay_ms, 10) || 4000));
+    return await new Promise((resolve, reject) => {
+      let done = false;
+      const started = [];
+      const timerHolder = { id: null };
+
+      const finish = (provider, r) => {
+        if (done) return;
+        done = true;
+        clearTimeout(timerHolder.id);
+        // Batalkan permintaan yang belum selesai supaya kuota tidak terbuang.
+        if (abortOthers) abortOthers(provider);
+        resolve({ reply: r.reply, provider, model: r.model, hedged: started.length > 1 });
+      };
+
+      const fail = (provider, err) => {
+        if (done) return;
+        errors.push(provider + ': ' + sanitizeAIError(err));
+        // Gemini gagal lebih dulu -> langsung jalankan OpenRouter tanpa
+        // menunggu jadwal hedging.
+        if (provider === 'gemini' && started.indexOf('openrouter') < 0) {
+          startOpenRouter();
+          return;
+        }
+        done = true;
+        clearTimeout(timerHolder.id);
+        reject(new Error('Tidak ada AI provider yang berhasil: ' + errors.join(' | ')));
+      };
+
+      const controllers = { gemini: null, openrouter: null };
+      const abortOthers = (winner) => {
+        Object.keys(controllers).forEach((k) => {
+          if (k !== winner && controllers[k]) { try { controllers[k].abort(); } catch {} }
+        });
+      };
+
+      const startOpenRouter = () => {
+        if (started.indexOf('openrouter') >= 0 || done) return;
+        started.push('openrouter');
+        controllers.openrouter = new AbortController();
+        callOpenRouter(systemPrompt, messages, { signal: controllers.openrouter.signal })
+          .then((r) => finish('openrouter', r))
+          .catch((e) => fail('openrouter', e));
+      };
+
+      started.push('gemini');
+      controllers.gemini = new AbortController();
+      callGemini(systemPrompt, messages, { signal: controllers.gemini.signal })
+        .then((r) => finish('gemini', r))
+        .catch((e) => fail('gemini', e));
+
+      timerHolder.id = setTimeout(startOpenRouter, hedgeDelay);
+    });
   }
-  // Fallback to OpenRouter if key is set
-  if (DB.settings.ai_openrouter_api_key) {
+
+  // Hanya satu provider tersedia (atau hedging dimatikan): urutan biasa.
+  if (hasGemini) {
     try {
-      const r = await callOpenRouter(systemPrompt, messages);
+      const r = await callGemini(systemPrompt, messages, { signal });
+      return { reply: r.reply, provider: 'gemini', model: r.model };
+    } catch (e) { errors.push('Gemini: ' + sanitizeAIError(e)); }
+  }
+  if (hasOpenRouter) {
+    try {
+      const r = await callOpenRouter(systemPrompt, messages, { signal });
       return { reply: r.reply, provider: 'openrouter', model: r.model };
-    } catch (e) { errors.push('OpenRouter: ' + sanitizeDbError(e)); }
+    } catch (e) { errors.push('OpenRouter: ' + sanitizeAIError(e)); }
   }
   throw new Error('Tidak ada AI provider yang berhasil: ' + errors.join(' | '));
 }
-
 // PUBLIC chat endpoint — used by the chat widget on the landing page
 // and (optionally) by the WA webhook handler.
 app.post('/api/ai/chat', aiLimiter, async (req, res) => {
@@ -5391,12 +5607,34 @@ app.post('/api/ai/chat', aiLimiter, async (req, res) => {
       });
     }
 
+    const startedAt = Date.now();
     const systemPrompt = buildAISystemPrompt();
     const messages = [
-      ...history.slice(-10).map(h => ({ role: h.role === 'assistant' ? 'assistant' : 'user', content: String(h.content || '').slice(0, 1000) })),
+      ...trimAIHistory(history),
       { role: 'user', content: trimmed }
     ];
-    const result = await callAIChat(systemPrompt, messages);
+    // Batalkan permintaan ke provider bila pengunjung benar-benar pergi.
+    //
+    // PENTING (pernah salah): jangan memakai `req.on('close')`. Pada Node,
+    // event 'close' milik REQUEST menyala segera setelah body dibaca habis
+    // (diukur: +0 ms, saat respons belum dikirim), sehingga pembatalan akan
+    // mematikan setiap panggilan AI dan bot tidak pernah menjawab.
+    // Yang benar: pantau 'close' pada RESPONSE, dan hanya batalkan bila
+    // respons belum selesai dikirim (res.writableEnded === false) —
+    // itulah tanda pengunjung menutup halaman di tengah proses.
+    const clientSignal = new AbortController();
+    const onClose = () => {
+      if (!res.writableEnded) { try { clientSignal.abort(); } catch {} }
+    };
+    if (typeof res.on === 'function') res.on('close', onClose);
+    let result;
+    try {
+      result = await callAIChat(systemPrompt, messages, { signal: clientSignal.signal });
+    } finally {
+      if (typeof res.off === 'function') res.off('close', onClose);
+    }
+    const latencyMs = Date.now() - startedAt;
+    console.log(`[ai/chat] ${result.provider}${result.model ? '/' + result.model : ''} ${latencyMs}ms${result.hedged ? ' (hedged)' : ''}`);
 
     // Log conversation (max 200 entries, ring buffer)
     if (!Array.isArray(DB.settings.ai_assistant_conversations)) DB.settings.ai_assistant_conversations = [];
@@ -5406,7 +5644,9 @@ app.post('/api/ai/chat', aiLimiter, async (req, res) => {
       ts: new Date().toISOString(),
       user: trimmed,
       assistant: result.reply,
-      provider: result.provider
+      provider: result.provider,
+      model: result.model || null,
+      latency_ms: latencyMs
     });
     if (DB.settings.ai_assistant_conversations.length > 200) {
       DB.settings.ai_assistant_conversations = DB.settings.ai_assistant_conversations.slice(-200);
@@ -5417,10 +5657,12 @@ app.post('/api/ai/chat', aiLimiter, async (req, res) => {
       reply: result.reply,
       provider: result.provider,
       model: result.model || null,
+      latency_ms: latencyMs,
+      hedged: !!result.hedged,
       session_id
     });
   } catch (e) {
-    const detail = sanitizeDbError(e);
+    const detail = sanitizeAIError(e);
     console.error('[ai/chat] gagal:', detail);
     res.status(500).json({
       error: 'AI chat gagal: ' + (e.message || 'unknown error'),
@@ -5534,7 +5776,7 @@ app.post('/api/webhook/whatsapp', webhookLimiter, async (req, res) => {
               { role: 'user', content: c.user },
               { role: 'assistant', content: c.assistant }
             ]);
-          const messages = [...priorHistory, { role: 'user', content: userText.slice(0, 1000) }];
+          const messages = [...trimAIHistory(priorHistory), { role: 'user', content: userText.slice(0, 1000) }];
           const systemPrompt = buildAISystemPrompt() +
             (senderName ? `\n\nCustomer ini bernama: ${senderName}` : '');
           const result = await callAIChat(systemPrompt, messages);
@@ -5602,6 +5844,10 @@ app.get('/api/admin/ai/config', auth, (req, res) => {
     conversation_count: (s.ai_assistant_conversations || []).length,
     gemini_model: s.ai_gemini_model || null,
     openrouter_model: s.ai_openrouter_model || null,
+    prefer_fast_model: s.ai_prefer_fast_model !== false,
+    hedge_openrouter: s.ai_hedge_openrouter !== false,
+    max_output_tokens: AI_MAX_OUTPUT_TOKENS,
+    history_limit: AI_HISTORY_MAX,
     webhook_url: absoluteWebhookUrl(req)
   });
 });
@@ -5720,7 +5966,7 @@ app.post('/api/admin/ai/test', auth, async (req, res) => {
         sample: String(r.reply || '').slice(0, 120)
       };
     } catch (e) {
-      results.gemini = { ok: false, error: sanitizeDbError(e), latency_ms: Date.now() - started };
+      results.gemini = { ok: false, error: sanitizeAIError(e), latency_ms: Date.now() - started };
     }
   } else {
     results.gemini = { ok: false, error: 'Kunci Gemini belum diisi' };
@@ -5735,7 +5981,7 @@ app.post('/api/admin/ai/test', auth, async (req, res) => {
         sample: String(r.reply || '').slice(0, 120)
       };
     } catch (e) {
-      results.openrouter = { ok: false, error: sanitizeDbError(e), latency_ms: Date.now() - started };
+      results.openrouter = { ok: false, error: sanitizeAIError(e), latency_ms: Date.now() - started };
     }
   } else {
     results.openrouter = { ok: false, error: 'Kunci OpenRouter belum diisi (opsional)' };
