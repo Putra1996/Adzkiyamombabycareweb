@@ -98,7 +98,7 @@ function makeSandbox(opts) {
   vm.runInContext(block('async function callGemini'), sandbox);
   vm.runInContext(serverSrc.slice(serverSrc.indexOf('const OPENROUTER_MODEL_CANDIDATES'), serverSrc.indexOf('async function callOpenRouter')), sandbox);
   vm.runInContext(block('async function callOpenRouter'), sandbox);
-  vm.runInContext(block('async function callAIChat'), sandbox);
+  vm.runInContext(block('async function callAIChat') + '\n' + block('async function callAIChatInner'), sandbox);
   return { sandbox, calls };
 }
 
@@ -246,6 +246,19 @@ test('Galat provider tetap informatif: nama model tidak diredaksi', () => {
   const msg = vm.runInContext('sanitizeAIError(new Error("model gemini-flash-lite-latest tidak tersedia, key=AIzaRAHASIA123456"))', sandbox);
   assert.match(msg, /gemini-flash-lite-latest/, 'nama model hilang dari pesan galat');
   assert.ok(!/AIzaRAHASIA/.test(msg), 'kunci API bocor di pesan galat');
+});
+
+test('Balasan kosong tidak pernah diteruskan ke pengunjung', () => {
+  // Kasus nyata: model membalas hanya berisi tag HTML -> setelah dibersihkan
+  // menjadi string kosong. Tanpa penjagaan, pengunjung melihat gelembung chat
+  // kosong dan mengira bot rusak.
+  assert.match(serverSrc, /const cleanReply = sanitizeAIReply/, 'hubungan balasan bersih tidak dihitung');
+  assert.match(serverSrc, /if \(!cleanReply\) \{ errors\.push\(model \+ ': balasan kosong'\); continue; \}/, 'balasan kosong tidak diperlakukan sebagai kegagalan');
+  assert.match(serverSrc, /async function callAIChatInner/, 'penjaga terakhir callAIChat tidak ada');
+  assert.match(serverSrc, /Provider AI mengembalikan balasan kosong/, 'penjaga balasan kosong hilang');
+  // Klien: jangan menampilkan balasan kosong
+  const indexHtml = fs.readFileSync(path.join(ROOT, 'public/index.html'), 'utf8');
+  assert.match(indexHtml, /else if \(!data\.reply \|\| !String\(data\.reply\)\.trim\(\)\)/, 'klien tidak menangani balasan kosong');
 });
 
 test('Server mengirim info latensi & provider ke klien', () => {

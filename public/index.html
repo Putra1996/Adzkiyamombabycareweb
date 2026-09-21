@@ -776,6 +776,12 @@ fetch(adzkiyaApiUrl('/api/public-settings')).then(r => r.json()).then(s => {
         }
         appendMessage(pesan, 'bot');
         history.push({ role: 'assistant', content: '[fallback]' });
+      } else if (!data.reply || !String(data.reply).trim()) {
+        // Balasan kosong (mis. model hanya mengirim tag HTML) -> tampilkan
+        // pesan gangguan + tautan WhatsApp, jangan gelembung kosong.
+        const wa = data.fallback_wa || 'https://wa.me/6285887018194';
+        appendMessage(window.t('ai.wa_fallback_msg') + ' ' + wa, 'bot');
+        history.push({ role: 'assistant', content: '[fallback]' });
       } else {
         appendMessage(data.reply, 'bot');
         history.push({ role: 'assistant', content: data.reply });

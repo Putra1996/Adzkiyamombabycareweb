@@ -5393,7 +5393,11 @@ async function callGemini(systemPrompt, messages, opts) {
     }
     const data = await r.json();
     const reply = data.candidates?.[0]?.content?.parts?.[0]?.text;
-    if (!reply) { errors.push(model + ': balasan kosong'); continue; }
+    // Balasan kosong / hanya berisi tag HTML setelah dibersihkan diperlakukan
+    // sebagai kegagalan: kalau diteruskan, pengunjung melihat gelembung chat
+    // kosong (dan di WhatsApp, pesan kosong) tanpa penjelasan.
+    const cleanReply = sanitizeAIReply(reply);
+    if (!cleanReply) { errors.push(model + ': balasan kosong'); continue; }
     // Ingat model yang berhasil supaya permintaan berikutnya langsung tepat.
     if (geminiModelCache.model !== model) {
       geminiModelCache = { ...geminiModelCache, key: apiKey, model, at: Date.now() };
@@ -5402,7 +5406,7 @@ async function callGemini(systemPrompt, messages, opts) {
       DB.settings.ai_gemini_model = model;
       save();
     }
-    return { reply: sanitizeAIReply(reply), model };
+    return { reply: cleanReply, model };
   }
 
   // Semua kandidat 404 (model lama dihentikan, katalog berubah?): ambil
@@ -5423,10 +5427,10 @@ async function callGemini(systemPrompt, messages, opts) {
         }, AI_GEMINI_TIMEOUT_MS, signal);
         if (r2.ok) {
           const d2 = await r2.json();
-          const reply2 = d2.candidates?.[0]?.content?.parts?.[0]?.text;
+          const reply2 = sanitizeAIReply(d2.candidates?.[0]?.content?.parts?.[0]?.text);
           if (reply2) {
             if (DB.settings.ai_gemini_model !== fresh) { DB.settings.ai_gemini_model = fresh; save(); }
-            return { reply: sanitizeAIReply(reply2), model: fresh };
+            return { reply: reply2, model: fresh };
           }
         } else {
           errors.push(fresh + ' (' + r2.status + ', daftar terbaru)');
@@ -5493,19 +5497,28 @@ async function callOpenRouter(systemPrompt, messages, opts) {
       continue;
     }
     const data = await r.json();
-    const reply = data.choices?.[0]?.message?.content;
-    if (!reply) { errors.push(model + ': balasan kosong'); continue; }
+    const cleanReply = sanitizeAIReply(data.choices?.[0]?.message?.content);
+    if (!cleanReply) { errors.push(model + ': balasan kosong'); continue; }
     if (DB.settings.ai_openrouter_model !== model) {
       DB.settings.ai_openrouter_model = model;
       save();
     }
-    return { reply: sanitizeAIReply(reply), model };
+    return { reply: cleanReply, model };
   }
   throw new Error('Semua model OpenRouter gagal — ' + errors.join(' | '));
 }
 
 // Try Gemini first, fall back to OpenRouter. Returns { reply, provider }.
 async function callAIChat(systemPrompt, messages, opts) {
+  const result = await callAIChatInner(systemPrompt, messages, opts);
+  // Penjaga terakhir: jangan pernah mengirim balasan kosong ke pengunjung.
+  if (!result || !String(result.reply || '').trim()) {
+    throw new Error('Provider AI mengembalikan balasan kosong');
+  }
+  return result;
+}
+
+async function callAIChatInner(systemPrompt, messages, opts) {
   const hasGemini = !!DB.settings.ai_gemini_api_key;
   const hasOpenRouter = !!DB.settings.ai_openrouter_api_key;
   const errors = [];

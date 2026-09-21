@@ -136,9 +136,13 @@ test('Server: persona melarang HTML/markdown agar model tidak mengirim tag', () 
 test('Kedua provider AI memakai sanitizer (Gemini & OpenRouter)', () => {
   const gemini = serverSrc.slice(serverSrc.indexOf('async function callGemini'), serverSrc.indexOf('async function callOpenRouter'));
   const router = serverSrc.slice(serverSrc.indexOf('async function callOpenRouter'), serverSrc.indexOf('async function callAIChat'));
-  // Kedua provider kini mengembalikan { reply: sanitizeAIReply(...), model }.
-  assert.match(gemini, /reply:\s*sanitizeAIReply\(reply\)/, 'Gemini tidak membersihkan balasan');
-  assert.match(router, /reply:\s*sanitizeAIReply\(reply\)/, 'OpenRouter tidak membersihkan balasan');
+  // Kedua provider membersihkan balasan sebelum dikembalikan
+  // (bentuknya kini: const cleanReply = sanitizeAIReply(...) lalu
+  //  return { reply: cleanReply, model } — sekaligus menolak balasan kosong).
+  assert.match(gemini, /sanitizeAIReply\(reply\)/, 'Gemini tidak membersihkan balasan');
+  assert.match(gemini, /return \{ reply: cleanReply, model \}/, 'Gemini tidak mengembalikan balasan bersih');
+  assert.match(router, /sanitizeAIReply\(data\.choices/, 'OpenRouter tidak membersihkan balasan');
+  assert.match(router, /return \{ reply: cleanReply, model \}/, 'OpenRouter tidak mengembalikan balasan bersih');
   // Hanya dua provider ini yang boleh dipakai.
   assert.ok(!/anthropic|claude|openai\.com|groq\.com|cohere/i.test(serverSrc),
     'ada provider AI lain yang tidak seharusnya dipakai');
