@@ -15,7 +15,8 @@ PostgreSQL/MySQL (atau file untuk mode darurat).
 | **[PANDUAN-AI-WA.md](PANDUAN-AI-WA.md)** | Cara setting AI (Gemini/OpenRouter) & mendapatkan token WhatsApp Business API |
 | [SECURITY.md](SECURITY.md) | Perlindungan data pasien + checklist wajib admin |
 | [DEPLOYMENT.md](DEPLOYMENT.md) | Deploy Railway + GitHub Pages, penanganan penyimpanan |
-| [FITUR-DAN-BUG.md](FITUR-DAN-BUG.md) | Catatan fitur & riwayat perbaikan |
+| [FITUR-DAN-BUG.md](FITUR-DAN-BUG.md) | Catatan fitur, bug, & hasil audit |
+| [tools/README.md](tools/README.md) | Skrip audit menyeluruh (122 pemeriksaan) untuk dijalankan sebelum rilis |
 
 ## ✨ Fitur
 

@@ -166,6 +166,9 @@ function normalizeStateObject(state) {
   const out = state && typeof state === 'object' ? state : {};
   out._seq = out._seq || { admins: 0, reservations: 0, receipts: 0, broadcasts: 0, expenses: 0 };
   ['admins', 'reservations', 'receipts', 'broadcasts', 'expenses'].forEach((key) => { out[key] = Array.isArray(out[key]) ? out[key] : []; });
+  // Penghitung nomor kwitansi per hari (INV-YYYYMMDD-NNN). File data lama
+  // tidak punya kunci ini — mulai dari objek kosong.
+  out.invoice_counters = out.invoice_counters && typeof out.invoice_counters === 'object' ? out.invoice_counters : {};
   // share_tokens is the persistent mirror of shareTokenMap. Older
   // data.json files won't have this key — initialize to {}.
   out.share_tokens = out.share_tokens && typeof out.share_tokens === 'object' ? out.share_tokens : {};
@@ -2348,6 +2351,44 @@ function buildMonthSheet(wb, sheetName, month, monthRows) {
 }
 
 // ===== ADMIN — RECEIPTS =====
+
+// Penomoran kwitansi: INV-YYYYMMDD-NNN.
+//
+// BUG yang diperbaiki: sebelumnya nomor dihitung dari JUMLAH kwitansi hari itu
+// (`count + 1`). Begitu satu kwitansi dihapus, nomor berikutnya dipakai ulang
+// — mis. INV-20260922-002 dihapus, kwitansi berikutnya mendapat nomor yang
+// sama. Akibatnya: dua dokumen berbeda pernah beredar dengan nomor identik,
+// dan impor/restore yang mendeteksi duplikat lewat invoice_no bisa salah
+// melewati data sah.
+//
+// Sekarang ada penghitung per hari (DB.invoice_counters) yang hanya NAIK.
+// Nilai yang sudah terpakai juga dihindari walau penghitung hilang.
+function nextInvoiceNumber(dayKey) {
+  const key = String(dayKey || todayJakarta().replace(/-/g, ''));
+  DB.invoice_counters = DB.invoice_counters || {};
+  const used = new Set(DB.receipts.map((r) => r.invoice_no).filter(Boolean));
+  let n = parseInt(DB.invoice_counters[key], 10) || 0;
+  let candidate = '';
+  for (let guard = 0; guard < 100000; guard++) {
+    n += 1;
+    candidate = `INV-${key}-${String(n).padStart(3, '0')}`;
+    if (!used.has(candidate)) break;
+  }
+  DB.invoice_counters[key] = n;
+  return candidate;
+}
+
+// Catat nomor yang datang dari luar (impor / restore) supaya penomoran
+// berikutnya tidak menabraknya.
+function noteInvoiceNumber(invoice_no) {
+  const m = /^INV-(\d{8})-(\d+)$/.exec(String(invoice_no || ''));
+  if (!m) return;
+  DB.invoice_counters = DB.invoice_counters || {};
+  const seq = parseInt(m[2], 10) || 0;
+  if (seq > (parseInt(DB.invoice_counters[m[1]], 10) || 0)) DB.invoice_counters[m[1]] = seq;
+}
+
+
 app.post('/api/admin/receipts', auth, (req, res) => {
   const { patient_name, whatsapp, address, service_date, service_time, service_times, service_slots, items, transport_fee, discount } = req.body;
   if (!items || !items.length) return res.status(400).json({ error: 'Items kosong' });
@@ -2399,9 +2440,7 @@ app.post('/api/admin/receipts', auth, (req, res) => {
   // Nomor invoice memakai tanggal WIB — bukan UTC. Kalau pakai UTC,
   // kwitansi yang dibuat pagi hari (00:00–06:59 WIB) akan bernomor
   // tanggal kemarin.
-  const today = todayJakarta().replace(/-/g, '');
-  const count = DB.receipts.filter((k) => (k.invoice_no || '').slice(4, 12) === today).length;
-  const invoice_no = `INV-${today}-${String(count + 1).padStart(3, '0')}`;
+  const invoice_no = nextInvoiceNumber(todayJakarta().replace(/-/g, ''));
   const id = nextId('receipts');
   DB.receipts.push({
     id, invoice_no, patient_name, whatsapp, address,
@@ -2973,6 +3012,8 @@ app.delete('/api/admin/receipts', auth, (req, res) => {
   const n = DB.receipts.length;
   DB.receipts = [];
   DB._seq.receipts = 0;
+  // DB.invoice_counters SENGAJA tidak direset: nomor kwitansi yang pernah
+  // dipakai/dicetak tidak boleh muncul lagi pada dokumen baru.
   save();
   res.json({ ok: true, deleted: n });
 });
@@ -3513,9 +3554,9 @@ app.post('/api/admin/receipts/import', auth, restoreJsonParser, (req, res) => {
       );
       if (dupe) { skipped.push({ invoice_no: dupe.invoice_no, patient_name, reason: 'duplicate' }); continue; }
       if (!invoice_no) {
-        const tag = service_date.replace(/-/g, '');
-        const sameDay = DB.receipts.filter((x) => (x.invoice_no || '').slice(4, 12) === tag).length + imported.filter((x) => x.invoice_no.slice(4, 12) === tag).length;
-        invoice_no = `INV-${tag}-${String(sameDay + 1).padStart(3, '0')}`;
+        invoice_no = nextInvoiceNumber(service_date.replace(/-/g, ''));
+      } else {
+        noteInvoiceNumber(invoice_no);
       }
 
       const id = nextId('receipts');
@@ -4954,6 +4995,7 @@ app.post('/api/admin/restore', auth, restoreJsonParser, (req, res) => {
         continue;
       }
       DB.receipts.push({ ...k, id: nextId('receipts') });
+      noteInvoiceNumber(k.invoice_no);
       receiptsImported++;
       // Auto-sync restored receipts to reservations so the Rekap
       // Bulanan page picks them up. Default ON. Pass
@@ -6245,27 +6287,39 @@ app.post('/api/webhook/whatsapp', webhookLimiter, async (req, res) => {
           const messages = [...trimAIHistory(priorHistory), { role: 'user', content: userText.slice(0, 1000) }];
           const systemPrompt = buildAISystemPrompt() +
             (senderName ? `\n\nCustomer ini bernama: ${senderName}` : '');
-          const result = await callAIChat(systemPrompt, messages);
+          // Kredensial pengiriman WA. Kalau belum lengkap, pesan tetap
+          // DICATAT (supaya admin tahu ada pelanggan bertanya) tetapi balasan
+          // tidak dikirim dan kuota AI tidak dibuang sia-sia.
+          const waCanReply = !!(DB.settings.ai_assistant_phone_id && DB.settings.ai_assistant_access_token);
 
-          // Reservasi otomatis dari percakapan WhatsApp (data kunci divalidasi
-          // sama seperti chat web).
-          const waBooking = processAISBooking(result.reply, {
-            ip: 'wa:' + fromPhone,
-            sessionId,
-            channel: 'ai_chat_wa'
-          });
-          let waReply = waBooking.clean;
-          if (waBooking.booking && waBooking.booking.created) {
-            waReply += '\n\n✅ Reservasi #' + waBooking.booking.id + ' sudah masuk ke sistem kami. Admin akan mengonfirmasi via WhatsApp ini. Terima kasih 🌸';
-          } else if (waBooking.booking && !waBooking.booking.created && waBooking.booking.reason === 'duplicate') {
-            waReply += '\n\nℹ️ Reservasi dengan jadwal yang sama sudah tercatat sebelumnya.';
+          let result = { reply: '', provider: null };
+          let waBooking = { clean: '', booking: null };
+          if (waCanReply) {
+            result = await callAIChat(systemPrompt, messages);
+
+            // Reservasi otomatis dari percakapan WhatsApp (data kunci divalidasi
+            // sama seperti chat web).
+            waBooking = processAISBooking(result.reply, {
+              ip: 'wa:' + fromPhone,
+              sessionId,
+              channel: 'ai_chat_wa'
+            });
+            let waReply = waBooking.clean;
+            if (waBooking.booking && waBooking.booking.created) {
+              waReply += '\n\n✅ Reservasi #' + waBooking.booking.id + ' sudah masuk ke sistem kami. Admin akan mengonfirmasi via WhatsApp ini. Terima kasih 🌸';
+            } else if (waBooking.booking && !waBooking.booking.created && waBooking.booking.reason === 'duplicate') {
+              waReply += '\n\nℹ️ Reservasi dengan jadwal yang sama sudah tercatat sebelumnya.';
+            }
+            result.reply = waReply;
           }
-          result.reply = waReply;
 
-          // Reply via WA
-          await sendWAReply(fromPhone, result.reply);
-
-          // Log
+          // CATAT PERCAKAPAN DULU (selalu), baru coba kirim.
+          //
+          // BUG yang diperbaiki: sebelumnya pencatatan dilakukan SETELAH
+          // sendWAReply(). Kalau pengiriman gagal (token kedaluwarsa/kuota
+          // habis/kredensial belum diisi), fungsi melempar error dan
+          // percakapan pelanggan HILANG dari log — admin tidak tahu ada
+          // pelanggan yang bertanya.
           if (!Array.isArray(DB.settings.ai_assistant_conversations)) DB.settings.ai_assistant_conversations = [];
           DB.settings.ai_assistant_conversations.push({
             session_id: sessionId,
@@ -6274,13 +6328,28 @@ app.post('/api/webhook/whatsapp', webhookLimiter, async (req, res) => {
             from_phone: fromPhone,
             ts: new Date().toISOString(),
             user: userText,
-            assistant: result.reply,
-            provider: result.provider
+            assistant: result.reply || '[tidak dibalas: kredensial WhatsApp Business API belum lengkap]',
+            provider: result.provider,
+            booking_id: waBooking.booking && waBooking.booking.created ? waBooking.booking.id : null
           });
           if (DB.settings.ai_assistant_conversations.length > 200) {
             DB.settings.ai_assistant_conversations = DB.settings.ai_assistant_conversations.slice(-200);
           }
           save();
+
+          if (!waCanReply) {
+            console.warn('[wa-webhook] Kredensial WA belum lengkap — pesan dicatat, balasan tidak dikirim.');
+            recordAIError(new Error('Kredensial WhatsApp Business API belum lengkap (Phone Number ID / Access Token). Pesan masuk dicatat tetapi tidak dibalas.'));
+            continue;
+          }
+
+          // Baru kirim balasan. Kegagalan kirim tidak menghapus catatan di atas.
+          try {
+            await sendWAReply(fromPhone, result.reply);
+          } catch (sendErr) {
+            console.error('[wa-webhook] gagal mengirim balasan:', sanitizeAIError(sendErr));
+            recordAIError(sendErr);
+          }
         }
       }
     }

@@ -122,3 +122,30 @@ Kalau user mau salah satu fitur di atas atau punya ide lain, tinggal bilang saja
 ---
 
 **File:** `FITUR-DAN-BUG.md` (root repo, bukan di public/ jadi tidak ter-deploy)
+
+## Audit menyeluruh semua fitur (ronde terakhir)
+
+Dijalankan dengan `tools/audit-integration.js` (86 pemeriksaan) dan
+`tools/audit-features.js` (36 pemeriksaan) terhadap server yang berjalan —
+lihat `tools/README.md`. Hasil akhir: **122 pemeriksaan lulus, 0 masalah**.
+
+### Bug yang ditemukan & diperbaiki
+1. **Nomor kwitansi dipakai ulang.** Dulu nomor dihitung dari jumlah kwitansi
+   hari itu, jadi setelah satu kwitansi dihapus, kwitansi berikutnya mendapat
+   nomor yang sama (mis. `INV-20260922-002` dipakai dua dokumen berbeda).
+   Impor/restore yang mendeteksi duplikat lewat `invoice_no` bisa salah
+   melewati data sah. Sekarang ada penghitung per hari (`DB.invoice_counters`)
+   yang hanya naik, juga menghormati nomor hasil impor/restore, dan tidak
+   direset saat "Hapus Semua".
+2. **Pesan WhatsApp masuk hilang dari log.** Pencatatan percakapan dilakukan
+   setelah pengiriman balasan; kalau pengiriman gagal (token kedaluwarsa atau
+   kredensial belum diisi), percakapan pelanggan tidak tercatat sama sekali.
+   Sekarang percakapan dicatat lebih dulu, pengiriman dibungkus try/catch,
+   kegagalannya dilaporkan ke panel, dan saat kredensial belum lengkap kuota
+   AI tidak dibuang (pesan tetap tercatat dengan penanda).
+
+### Bukan bug (sempat dicurigai)
+- Pengeluaran bulan lalu tidak muncul di ringkasan P&L 3 bulan — memang
+  di luar rentang; pengeluaran bulan berjalan sudah benar mengurangi profit.
+- Nomor `INV-...-003` setelah impor `INV-...-010` — berbeda tanggal, jadi
+  urutan per hari sudah benar.
