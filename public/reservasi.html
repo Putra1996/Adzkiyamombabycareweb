@@ -23,6 +23,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
 <link rel="stylesheet" href="css/style.css">
 <link rel="icon" href="img/logo.png">
+<link rel="manifest" href="/manifest.webmanifest">
 </head>
 <body>
 
@@ -427,6 +428,13 @@ document.addEventListener('DOMContentLoaded', () => {
     document.addEventListener('i18n:applied', () => { renderCart(); renderSlots(); });
   }
 });
+</script>
+<script>
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', function () {
+    navigator.serviceWorker.register('/sw.js').catch(function () { /* opsional */ });
+  });
+}
 </script>
 </body>
 </html>

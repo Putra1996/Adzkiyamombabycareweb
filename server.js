@@ -164,8 +164,10 @@ let saveChain = Promise.resolve();
 
 function normalizeStateObject(state) {
   const out = state && typeof state === 'object' ? state : {};
-  out._seq = out._seq || { admins: 0, reservations: 0, receipts: 0, broadcasts: 0, expenses: 0 };
-  ['admins', 'reservations', 'receipts', 'broadcasts', 'expenses'].forEach((key) => { out[key] = Array.isArray(out[key]) ? out[key] : []; });
+  out._seq = out._seq || { admins: 0, reservations: 0, receipts: 0, broadcasts: 0, expenses: 0, packages: 0 };
+  ['admins', 'reservations', 'receipts', 'broadcasts', 'expenses', 'packages'].forEach((key) => { out[key] = Array.isArray(out[key]) ? out[key] : []; });
+  out._seq.packages = out._seq.packages || 0;
+  // Sisa sesi paket disimpan di out.packages (lihat bagian PAKET SESI).
   // Penghitung nomor kwitansi per hari (INV-YYYYMMDD-NNN). File data lama
   // tidak punya kunci ini — mulai dari objek kosong.
   out.invoice_counters = out.invoice_counters && typeof out.invoice_counters === 'object' ? out.invoice_counters : {};
@@ -723,6 +725,19 @@ function seedSettings() {
       { platform: 'YouTube',   url: '', icon: '▶️' }
     ],
     reminder_hours_before: 2,
+    // ---- Penjadwalan (fitur "jadwal bentrok & jarak antar-jadwal") ----
+    // Durasi satu sesi layanan (menit) + jeda perjalanan antar rumah.
+    session_duration_minutes: 60,
+    travel_buffer_minutes: 30,
+    // 'warn' = tetap boleh tapi diberi peringatan; 'block' = ditolak.
+    scheduling_mode: 'warn',
+    // Batas sesi per hari (dipakai kalender & validasi).
+    max_sessions_per_day: 4,
+    // ---- Pengingat otomatis ----
+    reminder_enabled: true,
+    // Kirim lewat WhatsApp Cloud API bila kredensial ada; kalau tidak,
+    // pengingat masuk antrean "kirim sekali klik" di panel.
+    reminder_auto_wa: true,
     notif_sound: true,
     gmaps_url: 'https://maps.app.goo.gl/V5RcUDQbep3T5ryp7',
     gmaps_embed: '',
@@ -861,6 +876,35 @@ function ensureNewSettings() {
     await queueSave();
     server = app.listen(PORT, '0.0.0.0', () => {
       console.log(`Adzkiya Mom Baby Care v2.2 on 0.0.0.0:${PORT} (storage: ${pool ? activeDatabaseKind() : 'file'})`);
+      // PENGINGAT OTOMATIS: periksa tiap 5 menit. Pengingat yang jatuh tempo
+      // dikirim sendiri lewat WhatsApp Cloud API (bila kredensial ada dan
+      // reminder_auto_wa aktif); kalau tidak, ia muncul sebagai antrean
+      // "kirim sekali klik" di panel admin.
+      if (DB.settings && DB.settings.reminder_enabled !== false) {
+        const autoSend = async () => {
+          try {
+            if (DB.settings.reminder_auto_wa === false) return;
+            if (!(DB.settings.ai_assistant_phone_id && DB.settings.ai_assistant_access_token)) return;
+            const pending = dueReminders().filter((x) => !x.already_sent);
+            for (const item of pending) {
+              // Hanya kirim otomatis untuk pengingat yang sudah masuk jendela
+              // (maks 24 jam ke depan) agar tidak mengirim terlalu dini.
+              if (item.mins_left > 24 * 60) continue;
+              try {
+                await sendWAReply(item.whatsapp, item.text);
+                markReminderSent(item.key);
+                console.log(`[reminder] terkirim ke ${item.patient_name} (${item.lead_hours} jam sebelum ${item.date} ${item.time})`);
+              } catch (e) {
+                console.warn('[reminder] gagal kirim:', sanitizeAIError(e));
+                recordAIError(e);
+                break; // kemungkinan kredensial/limit bermasalah: berhenti dulu
+              }
+            }
+          } catch (e) { console.error('[reminder] error:', sanitizeAIError(e)); }
+        };
+        setTimeout(autoSend, 25000);
+        setInterval(autoSend, 5 * 60 * 1000);
+      }
       // Pemanasan AI (tidak memblokir boot): siapkan daftar model & prompt
       // sistem di latar belakang supaya pesan pertama pengunjung tidak
       // menanggung biaya tambahan apa pun.
@@ -1509,6 +1553,20 @@ app.post('/api/reservations', reservationLimiter, upload.single('proof'), (req, 
       return res.status(400).json({ error: 'Jadwal tidak valid' });
     }
 
+    // Bentrok jadwal: bidan tidak bisa di dua rumah pada jam yang sama dan
+    // butuh waktu perjalanan. Mode 'block' menolak, 'warn' tetap menerima
+    // tetapi menandai reservasi (admin melihat peringatan di panel).
+    const conflicts = findScheduleConflicts(slots);
+    const sched = schedConf();
+    if (conflicts.length && sched.mode === 'block') {
+      return res.status(409).json({
+        error: 'Jadwal bentrok: ' + describeConflicts(conflicts) + '. Silakan pilih jam lain.',
+        field: 'slot.time',
+        conflicts: conflicts
+      });
+    }
+    const scheduleNote = conflicts.length ? 'Perlu dicek: ' + describeConflicts(conflicts) : '';
+
     // Reject reservations that fall on a blackout date. Defense-in-depth:
     // the form already disables these dates, but if a request bypasses
     // the form (custom script, replayed payload) we still want to
@@ -1545,14 +1603,24 @@ app.post('/api/reservations', reservationLimiter, upload.single('proof'), (req, 
       payment_method: b.payment_method,
       proof_mime: req.file ? req.file.mimetype : null,
       proof_b64: req.file ? req.file.buffer.toString('base64') : null,
-      notes: String(b.notes || '').trim().slice(0, 2000),
+      // Catatan pelanggan + (bila ada) peringatan jadwal bentrok.
+      notes: [String(b.notes || '').trim().slice(0, 2000), scheduleNote].filter(Boolean).join(' | '),
       status: 'pending',
       payment_status: 'unpaid',
-      created_at: new Date().toISOString()
+      created_at: new Date().toISOString(),
+      schedule_conflicts: conflicts.length ? conflicts : undefined
     };
     DB.reservations.push(rec);
+    // Paket multi-sesi: bila layanan yang dipesan berbentuk paket, buat
+    // catatan paket supaya sisa sesinya terpantau.
+    if (items.some((it) => packageSizeFor(it.name) > 1)) {
+      createPackageFromReceipt({ id: null, patient_name: rec.patient_name, whatsapp: rec.whatsapp, items }, { source: 'reservasi', reservation_id: id });
+    }
     save();
-    res.status(201).json({ ok: true, id, total });
+    res.status(201).json({
+      ok: true, id, total,
+      schedule_warning: conflicts.length ? describeConflicts(conflicts) : null
+    });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: 'Gagal menyimpan reservasi' });
@@ -1659,6 +1727,435 @@ app.post('/api/auth/login', authLimiter, (req, res) => {
       password_changed_at: admin.password_changed_at || null
     }
   });
+});
+
+// ===== PENJADWALAN: DETEKSI BENTROK & JARAK ANTAR-JADWAL =====
+//
+// Masalah nyata layanan home-service: bidan tidak bisa hadir di dua rumah
+// pada jam yang sama, dan butuh waktu perjalanan antar lokasi. Tanpa
+// pemeriksaan ini, dua pasien bisa memesan slot yang sama persis.
+//
+// Aturan:
+//   • satu sesi memakai `session_duration_minutes` (default 60 menit)
+//   • antar sesi disediakan `travel_buffer_minutes` (default 30 menit)
+//   • mode 'warn' (default) = tetap dibuat tetapi ditandai; 'block' = ditolak
+function schedConf() {
+  const s = DB.settings || {};
+  // PENTING: `parseInt(x) || default` akan mengubah nilai 0 menjadi default,
+  // sehingga admin tidak bisa menyetel "jeda perjalanan 0 menit" (mis. semua
+  // layanan di satu rumah / sesi berurutan tanpa perjalanan). Pakai
+  // Number.isFinite agar 0 dihormati.
+  const num = (v, def, min, max) => {
+    const n = parseInt(v, 10);
+    return Number.isFinite(n) ? Math.max(min, Math.min(max, n)) : def;
+  };
+  const dur = num(s.session_duration_minutes, 60, 15, 480);
+  const buf = num(s.travel_buffer_minutes, 30, 0, 240);
+  const mode = s.scheduling_mode === 'block' ? 'block' : 'warn';
+  const maxPerDay = num(s.max_sessions_per_day, 4, 1, 50);
+  return { dur, buf, mode, maxPerDay };
+}
+
+// Ubah 'YYYY-MM-DD' + 'HH:MM' menjadi menit sejak tengah malam.
+function slotStartMinutes(date, time) {
+  const m = /^(\d{1,2}):(\d{2})/.exec(String(time || ''));
+  if (!m) return null;
+  return parseInt(m[1], 10) * 60 + parseInt(m[2], 10);
+}
+function minutesToTime(mins) {
+  const h = Math.floor(mins / 60) % 24;
+  const mi = mins % 60;
+  return String(h).padStart(2, '0') + ':' + String(mi).padStart(2, '0');
+}
+
+// Semua slot yang sudah terpakai (status bukan rejected).
+function busySlots(range) {
+  const out = [];
+  DB.reservations.forEach((r) => {
+    if (r.status === 'rejected') return;
+    const slots = Array.isArray(r.slots) && r.slots.length
+      ? r.slots
+      : [{ date: r.reservation_date, time: r.reservation_time }];
+    slots.forEach((sl) => {
+      if (!sl || !sl.date || !sl.time) return;
+      if (range && (sl.date < range.from || sl.date > range.to)) return;
+      const start = slotStartMinutes(sl.date, sl.time);
+      if (start === null) return;
+      out.push({ date: sl.date, time: slotTime(sl.time), start, id: r.id, patient_name: r.patient_name, status: r.status });
+    });
+  });
+  return out;
+}
+function slotTime(t) {
+  const m = /^(\d{1,2}):(\d{2})/.exec(String(t || ''));
+  return m ? String(parseInt(m[1], 10)).padStart(2, '0') + ':' + m[2] : '';
+}
+
+// Cari bentrok untuk daftar slot baru. Mengembalikan array konflik.
+// opts.ignoreReservationId dipakai saat admin mengedit reservasi yang sama.
+function findScheduleConflicts(slots, opts) {
+  const o = opts || {};
+  const { dur, buf, maxPerDay } = schedConf();
+  const ignoreId = o.ignoreReservationId || null;
+  const conflicts = [];
+  const existing = busySlots().filter((b) => b.id !== ignoreId);
+  const requested = (slots || [])
+    .map((sl) => ({ date: String(sl.date || ''), start: slotStartMinutes(sl.date, sl.time), time: slotTime(sl.time) }))
+    .filter((sl) => sl.date && sl.start !== null);
+
+  // Jumlah sesi per hari setelah penambahan (untuk cek batas harian)
+  const perDay = {};
+  existing.forEach((b) => { perDay[b.date] = (perDay[b.date] || 0) + 1; });
+
+  requested.forEach((req) => {
+    const reqEnd = req.start + dur;
+    existing.forEach((b) => {
+      if (b.date !== req.date) return;
+      const busyStart = b.start - buf;      // perlu jeda sebelum
+      const busyEnd = b.start + dur + buf;  // dan sesudah
+      if (req.start < busyEnd && reqEnd > busyStart) {
+        conflicts.push({
+          type: 'overlap',
+          date: req.date,
+          request_time: req.time,
+          with_time: b.time,
+          with_id: b.id,
+          patient_name: b.patient_name,
+          needs_minutes: Math.max(buf, Math.ceil((busyEnd - req.start) / 5) * 5)
+        });
+      }
+    });
+    // bentrok antar slot yang dikirim bersamaan
+    requested.forEach((other) => {
+      if (other === req) return;
+      if (other.date !== req.date) return;
+      if (req.start < other.start + dur + buf && other.start < req.start + dur + buf) {
+        const sudah = conflicts.some((c) => c.type === 'self' && c.request_time === req.time);
+        if (!sudah) conflicts.push({ type: 'self', date: req.date, request_time: req.time, with_time: other.time });
+      }
+    });
+    const totalHariItu = (perDay[req.date] || 0) + requested.filter((x) => x.date === req.date).length;
+    if (totalHariItu > maxPerDay) {
+      conflicts.push({ type: 'daily_limit', date: req.date, request_time: req.time, limit: maxPerDay, total: totalHariItu });
+    }
+  });
+
+  // Ringkas agar tidak berulang untuk slot yang sama
+  const seen = new Set();
+  return conflicts.filter((c) => {
+    const key = [c.type, c.date, c.request_time, c.with_time, c.with_id].join('|');
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+// Pesan ramah untuk pelanggan/admin.
+function describeConflicts(conflicts) {
+  return conflicts.map((c) => {
+    if (c.type === 'overlap') {
+      return `${c.date} ${c.request_time} bertabrakan dengan jadwal ${c.with_time}${c.patient_name ? ' (' + c.patient_name + ')' : ''} — butuh jeda ±${c.needs_minutes} menit perjalanan`;
+    }
+    if (c.type === 'self') {
+      return `dua sesi pada ${c.date} (${c.request_time} & ${c.with_time}) terlalu berdekatan`;
+    }
+    if (c.type === 'daily_limit') {
+      return `${c.date} sudah ada ${c.total - 1} sesi, batas harian ${c.limit}`;
+    }
+    return 'jadwal bertabrakan';
+  }).join('; ');
+}
+
+// ===== PAKET SESI (multi-sesi) & SISA SESI =====
+//
+// Banyak layanan Adzkiya berbentuk paket (Newborn Care 5/7/14 hari,
+// Massage Laktasi 3x/5x/7x). Tanpa pencatatan, sisa sesi dihitung manual.
+//
+// Jumlah sesi ditentukan dari nama layanan (pola "5 Days", "(3x)", "7x",
+// "Hari") dan bisa diatur admin lewat settings.package_sizes.
+function packageSizeFor(serviceName) {
+  const name = String(serviceName || '');
+  const custom = (DB.settings && DB.settings.package_sizes) || {};
+  if (custom[name]) return Math.max(1, parseInt(custom[name], 10) || 1);
+  let m = /(\d+)\s*(?:x|X|×)\b/.exec(name);
+  if (m) return parseInt(m[1], 10);
+  m = /(\d+)\s*(?:days?|hari)\b/i.exec(name);
+  if (m) return parseInt(m[1], 10);
+  if (/\bpackage\b|paket/i.test(name)) return 3;   // paket tanpa angka -> anggap 3 sesi
+  return 1;
+}
+
+// Bangun paket dari sebuah kwitansi/reservasi (kalau layanannya multi-sesi).
+function createPackageFromReceipt(receipt, opts) {
+  if (!receipt) return null;
+  const o = opts || {};
+  const items = Array.isArray(receipt.items) ? receipt.items : [];
+  // Paket = layanan pertama yang jumlah sesinya > 1.
+  let picked = null;
+  for (const it of items) {
+    const size = packageSizeFor(it.name);
+    if (size > 1) { picked = { name: it.name, size: size * (it.qty || 1) }; break; }
+  }
+  if (!picked) return null;
+  const id = nextId('packages');
+  const pkg = {
+    id,
+    patient_name: receipt.patient_name || o.patient_name || '-',
+    whatsapp: receipt.whatsapp || o.whatsapp || '',
+    service_name: picked.name,
+    total_sessions: picked.size,
+    used_sessions: [],
+    note: o.note || '',
+    source: o.source || 'kwitansi',
+    receipt_id: receipt.id || null,
+    reservation_id: o.reservation_id || null,
+    created_at: new Date().toISOString()
+  };
+  DB.packages.push(pkg);
+  return pkg;
+}
+function packageRemaining(pkg) {
+  return Math.max(0, (pkg.total_sessions || 0) - ((pkg.used_sessions || []).length));
+}
+
+// ===== KETERSEDIAAN JADWAL (publik) =====
+// Dipakai form reservasi & kalender untuk menampilkan jam yang masih kosong.
+app.get('/api/availability', (req, res) => {
+  const date = String(req.query.date || '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    return res.status(400).json({ error: 'Parameter date wajib format YYYY-MM-DD' });
+  }
+  const { dur, buf, maxPerDay, mode } = schedConf();
+  const busy = busySlots({ from: date, to: date }).sort((a, b) => a.start - b.start);
+  const totalSessions = busy.length;
+  // Jam yang masih bisa diambil: 07:00–20:00, dibulatkan per 30 menit.
+  const dayStart = 7 * 60, dayEnd = 20 * 60;
+  const free = [];
+  for (let t = dayStart; t + dur <= dayEnd; t += 30) {
+    if (totalSessions >= maxPerDay) break;
+    const clash = busy.some((b) => t < b.start + dur + buf && b.start - buf < t + dur);
+    if (!clash) free.push(minutesToTime(t));
+  }
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({
+    date,
+    duration_minutes: dur,
+    travel_buffer_minutes: buf,
+    max_sessions_per_day: maxPerDay,
+    scheduling_mode: mode,
+    sessions_today: totalSessions,
+    full: totalSessions >= maxPerDay,
+    busy: busy.map((b) => ({ time: b.time, status: b.status })),
+    free_slots: free
+  });
+});
+
+// ===== PAKET SESI (admin) =====
+// Ringkasan paket aktif + sisa sesi per pelanggan.
+app.get('/api/admin/packages', auth, (req, res) => {
+  const q = String(req.query.q || '').trim().toLowerCase();
+  const status = String(req.query.status || 'active');
+  let rows = (DB.packages || []).slice();
+  if (q) {
+    rows = rows.filter((p) => String(p.patient_name || '').toLowerCase().includes(q) ||
+      String(p.service_name || '').toLowerCase().includes(q) ||
+      String(p.whatsapp || '').includes(q));
+  }
+  const withRemaining = rows.map((p) => ({
+    ...p,
+    remaining_sessions: packageRemaining(p),
+    used_count: (p.used_sessions || []).length
+  }));
+  let out = withRemaining;
+  if (status === 'active') out = withRemaining.filter((p) => p.remaining_sessions > 0);
+  else if (status === 'done') out = withRemaining.filter((p) => p.remaining_sessions === 0);
+  out.sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
+  res.json({
+    count: out.length,
+    active_count: withRemaining.filter((p) => p.remaining_sessions > 0).length,
+    total_remaining_sessions: withRemaining.reduce((n, p) => n + p.remaining_sessions, 0),
+    packages: out.slice(0, 500)
+  });
+});
+
+// Buat paket manual (mis. pelanggan beli paket di luar sistem).
+app.post('/api/admin/packages', auth, (req, res) => {
+  const b = req.body || {};
+  const patient_name = String(b.patient_name || '').trim().slice(0, 150);
+  const service_name = String(b.service_name || '').trim().slice(0, 200);
+  const total = parseInt(b.total_sessions, 10);
+  if (!patient_name) return res.status(400).json({ error: 'Nama pasien wajib diisi' });
+  if (!service_name) return res.status(400).json({ error: 'Nama layanan wajib diisi' });
+  if (!Number.isFinite(total) || total < 1 || total > 100) {
+    return res.status(400).json({ error: 'Jumlah sesi harus 1-100' });
+  }
+  const pkg = {
+    id: nextId('packages'),
+    patient_name,
+    whatsapp: String(b.whatsapp || '').trim().slice(0, 30),
+    service_name,
+    total_sessions: total,
+    used_sessions: [],
+    note: String(b.note || '').slice(0, 300),
+    source: 'manual',
+    created_at: new Date().toISOString()
+  };
+  DB.packages.push(pkg);
+  save();
+  res.json({ ok: true, package: { ...pkg, remaining_sessions: packageRemaining(pkg) } });
+});
+
+// Pakai 1 sesi paket (dipanggil admin saat kunjungan selesai).
+app.post('/api/admin/packages/:id/use', auth, (req, res) => {
+  const pkg = (DB.packages || []).find((p) => p.id === parseInt(req.params.id, 10));
+  if (!pkg) return res.status(404).json({ error: 'Paket tidak ditemukan' });
+  if (packageRemaining(pkg) <= 0) return res.status(400).json({ error: 'Sisa sesi paket sudah habis' });
+  pkg.used_sessions = pkg.used_sessions || [];
+  pkg.used_sessions.push({
+    date: String((req.body && req.body.date) || todayJakarta()).slice(0, 10),
+    time: String((req.body && req.body.time) || '').slice(0, 5),
+    note: String((req.body && req.body.note) || '').slice(0, 200),
+    at: new Date().toISOString()
+  });
+  save();
+  res.json({ ok: true, remaining_sessions: packageRemaining(pkg), used_count: pkg.used_sessions.length });
+});
+
+// Batalkan pemakaian sesi terakhir (salah klik).
+app.post('/api/admin/packages/:id/undo', auth, (req, res) => {
+  const pkg = (DB.packages || []).find((p) => p.id === parseInt(req.params.id, 10));
+  if (!pkg) return res.status(404).json({ error: 'Paket tidak ditemukan' });
+  if (!(pkg.used_sessions || []).length) return res.status(400).json({ error: 'Belum ada sesi yang tercatat' });
+  pkg.used_sessions.pop();
+  save();
+  res.json({ ok: true, remaining_sessions: packageRemaining(pkg) });
+});
+
+app.delete('/api/admin/packages/:id', auth, (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const before = (DB.packages || []).length;
+  DB.packages = (DB.packages || []).filter((p) => p.id !== id);
+  save();
+  res.json({ ok: true, deleted: before - DB.packages.length });
+});
+
+// ===== PENGINGAT OTOMATIS =====
+// Menyusun daftar pengingat yang JATUH TEMPO (mis. H-2 jam / H-1 hari),
+// mengirimnya otomatis lewat WhatsApp Cloud API bila kredensial tersedia,
+// atau menyimpannya sebagai antrean "kirim sekali klik" (wa.me) di panel.
+function reminderLeadHours() {
+  const s = DB.settings || {};
+  const raw = s.reminder_lead_hours;
+  // Default: 24 jam (H-1) dan 2 jam sebelum jadwal.
+  const list = Array.isArray(raw) && raw.length ? raw : [24, 2];
+  return list.map((h) => Math.max(0, Math.min(168, parseInt(h, 10) || 0)))
+    .filter((h, i, arr) => arr.indexOf(h) === i)
+    .sort((a, b) => b - a);
+}
+function reminderTemplate() {
+  const s = DB.settings || {};
+  return String(s.reminder_message ||
+    'Halo Bunda {nama} 🌸 Mengingatkan jadwal {layanan} pada {tanggal} pukul {jam} WIB. Balas pesan ini bila perlu diubah. Terima kasih!')
+    .slice(0, 600);
+}
+function renderReminderText(r, slot) {
+  return reminderTemplate()
+    .replace(/\{nama\}/g, r.patient_name || 'Bunda')
+    .replace(/\{layanan\}/g, (r.items && r.items.length) ? r.items.map((i) => i.name).join(', ') : (r.service_name || ''))
+    .replace(/\{tanggal\}/g, slot.date)
+    .replace(/\{jam\}/g, slot.time)
+    .replace(/\{total\}/g, 'Rp' + (r.total || 0).toLocaleString('id-ID'));
+}
+// Bangun daftar pengingat jatuh tempo (tidak mengubah data).
+function dueReminders() {
+  const s = DB.settings || {};
+  if (s.reminder_enabled === false) return [];
+  const leads = reminderLeadHours();
+  const maxLead = Math.max(...leads);
+  const now = Date.now();
+  const out = [];
+  const sentAt = (s.reminder_sent_keys && typeof s.reminder_sent_keys === 'object') ? s.reminder_sent_keys : {};
+  DB.reservations.forEach((r) => {
+    if (r.status === 'rejected') return;
+    const slots = Array.isArray(r.slots) && r.slots.length ? r.slots : [{ date: r.reservation_date, time: r.reservation_time }];
+    slots.forEach((sl) => {
+      if (!sl || !sl.date || !sl.time) return;
+      const when = new Date(`${sl.date}T${sl.time}:00+07:00`).getTime();
+      if (Number.isNaN(when)) return;
+      const minsLeft = Math.round((when - now) / 60000);
+      if (minsLeft < 0) return;            // sudah lewat
+      const lead = leads.find((h) => minsLeft <= h * 60);
+      if (lead === undefined) return;      // belum masuk jendela pengingat
+      const key = `${r.id}|${sl.date}|${sl.time}|${lead}`;
+      out.push({
+        key,
+        reservation_id: r.id,
+        patient_name: r.patient_name,
+        whatsapp: r.whatsapp,
+        service_name: (r.items && r.items.length) ? r.items.map((i) => i.name).join(', ') : r.service_name,
+        date: sl.date,
+        time: sl.time,
+        lead_hours: lead,
+        mins_left: minsLeft,
+        text: renderReminderText(r, sl),
+        wa_link: buildWaLink(r.whatsapp, renderReminderText(r, sl)),
+        already_sent: !!sentAt[key]
+      });
+    });
+  });
+  out.sort((a, b) => a.mins_left - b.mins_left);
+  return out;
+}
+function markReminderSent(key) {
+  if (!DB.settings) return;
+  DB.settings.reminder_sent_keys = DB.settings.reminder_sent_keys || {};
+  DB.settings.reminder_sent_keys[key] = new Date().toISOString();
+  // Jaga ukuran: simpan hanya 500 kunci terbaru.
+  const keys = Object.keys(DB.settings.reminder_sent_keys);
+  if (keys.length > 500) {
+    keys.sort((a, b) => String(DB.settings.reminder_sent_keys[a]).localeCompare(String(DB.settings.reminder_sent_keys[b])));
+    keys.slice(0, keys.length - 500).forEach((k) => delete DB.settings.reminder_sent_keys[k]);
+  }
+  save();
+}
+
+app.get('/api/admin/reminders', auth, (req, res) => {
+  const all = dueReminders();
+  const pending = all.filter((x) => !x.already_sent);
+  res.setHeader('Cache-Control', 'private, no-store');
+  res.json({
+    auto_wa: (DB.settings.reminder_auto_wa !== false) && !!(DB.settings.ai_assistant_phone_id && DB.settings.ai_assistant_access_token),
+    leads: reminderLeadHours(),
+    template: reminderTemplate(),
+    pending_count: pending.length,
+    reminders: (req.query.all === '1' ? all : pending).slice(0, 100)
+  });
+});
+
+// Tandai pengingat sudah dikirim (dipakai tombol "sudah saya kirim").
+app.post('/api/admin/reminders/sent', auth, (req, res) => {
+  const key = String((req.body && req.body.key) || '');
+  if (!key) return res.status(400).json({ error: 'key wajib diisi' });
+  markReminderSent(key);
+  res.json({ ok: true });
+});
+
+// Kirim pengingat sekarang lewat WhatsApp Cloud API (bila kredensial ada).
+app.post('/api/admin/reminders/send', auth, async (req, res) => {
+  const key = String((req.body && req.body.key) || '');
+  const item = dueReminders().find((x) => x.key === key);
+  if (!item) return res.status(404).json({ error: 'Pengingat tidak ditemukan atau sudah lewat' });
+  if (!(DB.settings.ai_assistant_phone_id && DB.settings.ai_assistant_access_token)) {
+    return res.status(400).json({ error: 'Kredensial WhatsApp Business API belum diisi — pakai tombol WA (sekali klik) sebagai gantinya.' });
+  }
+  try {
+    await sendWAReply(item.whatsapp, item.text);
+    markReminderSent(key);
+    res.json({ ok: true, sent_to: item.whatsapp });
+  } catch (e) {
+    recordAIError(e);
+    res.status(500).json({ error: 'Gagal mengirim pengingat: ' + sanitizeAIError(e) });
+  }
 });
 
 // ===== ADMIN — RESERVATIONS =====
@@ -2440,6 +2937,10 @@ app.post('/api/admin/receipts', auth, (req, res) => {
   // Nomor invoice memakai tanggal WIB — bukan UTC. Kalau pakai UTC,
   // kwitansi yang dibuat pagi hari (00:00–06:59 WIB) akan bernomor
   // tanggal kemarin.
+  // Peringatan bentrok untuk admin (tidak memblokir: admin tahu kondisi
+  // lapangan lebih baik, mis. sesi digabung di satu rumah).
+  const kwConflicts = findScheduleConflicts(slots);
+  const kwScheduleNote = kwConflicts.length ? 'Perlu dicek: ' + describeConflicts(kwConflicts) : '';
   const invoice_no = nextInvoiceNumber(todayJakarta().replace(/-/g, ''));
   const id = nextId('receipts');
   DB.receipts.push({
@@ -2450,8 +2951,15 @@ app.post('/api/admin/receipts', auth, (req, res) => {
     service_slots: slots,
     items, transport_fee: parseInt(transport_fee) || 0,
     discount: parseInt(discount) || 0, subtotal, total,
-    created_at: new Date().toISOString()
+    created_at: new Date().toISOString(),
+    notes: kwScheduleNote
   });
+  // Paket multi-sesi otomatis: kwitansi untuk layanan paket membuat catatan
+  // sisa sesi (bisa dilihat & dipakai dari panel admin).
+  const newPkg = createPackageFromReceipt(DB.receipts[DB.receipts.length - 1], { source: 'kwitansi' });
+  if (newPkg) {
+    newPkg.receipt_id = DB.receipts[DB.receipts.length - 1].id;
+  }
   // Mirror into a reservation so multi-waktu kwitansi otomatis muncul
   // di Rekap Bulanan dengan jumlah sesi yang sesuai. Skip when the
   // caller explicitly opts out via ?sync_reservations=0.
@@ -2460,7 +2968,11 @@ app.post('/api/admin/receipts', auth, (req, res) => {
     syncReceiptToReservation(lastReceipt);
   }
   save();
-  res.json({ ok: true, invoice_no, subtotal, total, slot_count: slotCount });
+  res.json({
+    ok: true, invoice_no, subtotal, total, slot_count: slotCount,
+    package_created: newPkg ? { id: newPkg.id, service_name: newPkg.service_name, total_sessions: newPkg.total_sessions } : null,
+    schedule_warning: kwConflicts.length ? describeConflicts(kwConflicts) : null
+  });
 });
 
 app.get('/api/admin/receipts', auth, (req, res) => {
@@ -4914,6 +5426,7 @@ function buildBackupPayload() {
         owner_signature_b64, owner_signature_mime,
         ai_assistant_conversations,
         ai_last_error, ai_last_error_at, ai_openrouter_free_only, ai_openrouter_free_only_at,
+        reminder_sent_keys,
         ...rest
       } = (DB.settings || {});
       return rest;
@@ -5123,6 +5636,44 @@ app.put('/api/admin/profile', auth, (req, res) => {
 
 app.get('/admin', (req, res) => res.sendFile(path.join(__dirname, 'public', 'admin.html')));
 
+// ===== PWA =====
+// manifest + service worker di root supaya cakupannya (scope) mencakup
+// seluruh situs: pelanggan bisa "Install"/"Tambah ke layar utama" dan
+// menerima notifikasi pengingat dari panel admin.
+app.get('/manifest.webmanifest', (req, res) => {
+  const s = DB.settings || {};
+  res.setHeader('Content-Type', 'application/manifest+json; charset=utf-8');
+  res.setHeader('Cache-Control', 'public, max-age=3600');
+  res.json({
+    name: (s.business_name || 'Adzkiya Mom Baby Care') + ' — Reservasi & Layanan',
+    short_name: 'Adzkiya',
+    description: s.tagline || 'Layanan kesehatan ibu & anak, home service Cilacap.',
+    start_url: '/?pwa=1',
+    scope: '/',
+    display: 'standalone',
+    background_color: '#fffafc',
+    theme_color: s.primary_color || '#ee5a8a',
+    lang: 'id',
+    icons: [
+      { src: '/api/logo', sizes: '192x192', type: 'image/png', purpose: 'any' },
+      { src: '/api/logo', sizes: '512x512', type: 'image/png', purpose: 'any' },
+      { src: '/api/logo', sizes: '512x512', type: 'image/png', purpose: 'maskable' }
+    ],
+    shortcuts: [
+      { name: 'Reservasi', url: '/reservasi.html' },
+      { name: 'Kalender', url: '/kalender.html' },
+      { name: 'Chat AI', url: '/?chat=1' }
+    ]
+  });
+});
+app.get('/sw.js', (req, res) => {
+  const file = path.join(__dirname, 'public', 'sw.js');
+  if (!fs.existsSync(file)) return res.status(404).end();
+  res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.sendFile(file);
+});
+
 
 
 // ===== AI BOOKING ASSISTANT =====
@@ -5331,6 +5882,13 @@ function buildReservationFromAIData(data) {
   const todayJak = todayJakarta();
   if (slots.some((sl) => sl.date < todayJak)) {
     return { ok: false, error: 'tanggal sudah lewat, minta pelanggan memilih tanggal berikutnya' };
+  }
+  // Bentrok jadwal dari percakapan AI: pada mode 'block' reservasi tidak
+  // dibuat supaya pelanggan memilih jam lain (AI akan menanyakannya lagi).
+  const aiConflicts = findScheduleConflicts(slots);
+  const aiSched = schedConf();
+  if (aiConflicts.length && aiSched.mode === 'block') {
+    return { ok: false, error: 'jadwal bentrok: ' + describeConflicts(aiConflicts) };
   }
   const blackoutSet = new Set((DB.settings && DB.settings.blackout_dates) || []);
   const blackout = slots.find((sl) => blackoutSet.has(sl.date));

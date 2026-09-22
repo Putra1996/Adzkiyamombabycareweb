@@ -162,6 +162,57 @@ tidak bisa langsung dipakai di API.
 | Balasan WA berhenti setelah 24 jam | Anda masih memakai token sementara → ganti ke token permanen (B5) |
 | Broadcast WA berhenti/tidak jalan | Broadcast memakai `wa.me`, tidak butuh token — pastikan nomor pelanggan benar saja |
 
+## 🗓️ Jadwal bentrok, 🎟️ paket sesi, ⏰ pengingat otomatis, 📲 PWA
+
+### Jadwal bentrok & jarak antar-jadwal
+Bidan tidak bisa hadir di dua rumah pada jam yang sama dan butuh waktu
+perjalanan. Sistem kini memeriksanya otomatis saat reservasi dibuat
+(form publik, kwitansi, maupun lewat AI).
+
+Atur di **Pengaturan → 🗓️ Penjadwalan & Pengingat**:
+- **Durasi 1 sesi (menit)** — default 60
+- **Jeda perjalanan antar rumah (menit)** — default 30 (boleh 0 bila sesi
+  berurutan di satu rumah)
+- **Batas sesi per hari** — default 4 (dipakai juga oleh kalender)
+- **Bila jadwal bentrok** → *Izinkan + beri peringatan* (default) atau
+  *Tolak* (pelanggan diminta pilih jam lain)
+
+Form reservasi mengambil **jam yang masih kosong** dari `/api/availability`
+sehingga pelanggan diarahkan ke slot yang aman. Reservasi yang diberi
+peringatan ditandai ⚠️ di panel agar admin mengeceknya.
+
+### Paket sesi & sisa sesi
+Layanan paket (mis. *Newborn Care 5 Days*, *Gentle Flow Package (5x)*)
+otomatis dibuatkan **catatan paket** saat kwitansi/reservasi dibuat —
+termasuk menghitung jumlah sesi dari nama layanan (5 Days → 5 sesi, (7x) → 7).
+
+Buka menu **🎟️ Paket Sesi**: daftar paket aktif, sisa sesi, tombol
+**✅ Pakai 1 Sesi** (dengan tanggal & jam), **↩️ Batalkan** bila salah klik,
+serta **➕ Tambah Paket Manual** untuk paket yang dibeli di luar sistem.
+Jumlah sesi bisa diatur khusus per layanan lewat `settings.package_sizes`.
+
+### Pengingat otomatis
+Menu **⏰ Pengingat** menampilkan pengingat yang **jatuh tempo** (default
+**24 jam** dan **2 jam** sebelum jadwal; bisa diubah).
+
+- Jika **WhatsApp Business API** sudah dikonfigurasi → pengingat
+  **dikirim otomatis** oleh server (dicek tiap 5 menit), dan tidak dikirim
+  dua kali untuk jadwal yang sama.
+- Jika belum → kirim manual **sekali klik** lewat tombol 💬 (wa.me), lalu
+  tandai ✔️ *Sudah dikirim*.
+
+Teks pengingat bisa diubah di Pengaturan, mendukung placeholder
+`{nama}`, `{layanan}`, `{tanggal}`, `{jam}`, `{total}`.
+
+### 📲 PWA: bisa dipasang seperti aplikasi + notifikasi
+- Pelanggan melihat tombol **⬇️ Pasang App** di beranda (muncul bila browser
+  mendukung). Setelah dipasang, situs terbuka seperti aplikasi.
+- Panel admin meminta izin notifikasi, lalu **reservasi baru** dan
+  **pengingat jatuh tempo** muncul sebagai **notifikasi HP/desktop** walau tab
+  tidak sedang dibuka (selama panel pernah dibuka).
+- Data API (reservasi, kwitansi, pengaturan) **tidak pernah di-cache** oleh
+  service worker — hanya aset statis seperti CSS/JS.
+
 ## 📝 Reservasi otomatis dari chat AI
 
 Fitur ini membuat AI **langsung membuat reservasi** setelah percakapan

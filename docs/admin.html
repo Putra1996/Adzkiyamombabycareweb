@@ -90,6 +90,8 @@
       <button data-page="broadcast" aria-label="Broadcast WhatsApp">📢 Broadcast WA</button>
       <button data-page="customers" aria-label="CRM Mini Pelanggan">👥 Pelanggan</button>
       <button data-page="accounting" aria-label="Akunting P&L">💰 Akunting</button>
+      <button data-page="packages" aria-label="Paket Sesi">🎟️ Paket Sesi</button>
+      <button data-page="reminders" aria-label="Pengingat">⏰ Pengingat</button>
       <button data-page="backup" aria-label="Backup dan Restore">💾 Backup/Restore</button>
       <button data-page="settings" aria-label="Pengaturan">⚙️ Pengaturan</button>
     </nav>
@@ -119,5 +121,16 @@
 <script defer src="js/api-config.js"></script>
 <script defer src="js/main.js"></script>
 <script defer src="js/admin.js"></script>
+<script>
+// PWA: daftarkan service worker supaya panel bisa menampilkan notifikasi OS
+// (reservasi baru & pengingat jadwal) dan bisa dipasang seperti aplikasi.
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', function () {
+    navigator.serviceWorker.register('/sw.js').catch(function (e) {
+      console.warn('Service worker gagal didaftarkan:', e.message);
+    });
+  });
+}
+</script>
 </body>
 </html>

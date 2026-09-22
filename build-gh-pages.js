@@ -192,7 +192,7 @@ console.log('[build] main.js updated with embedded data');
 // lalu commit folder docs/.
 const PAGES_COPY = [
   'index.html', 'kalender.html', 'reservasi.html', 'admin.html', '404.html', 'robots.txt',
-  'css/style.css',
+  'css/style.css', 'sw.js',
   'js/api-config.js', 'js/i18n.js', 'js/main.js', 'js/kalender.js', 'js/admin.js',
 ];
 

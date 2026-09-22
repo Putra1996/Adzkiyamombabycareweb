@@ -10,6 +10,8 @@
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Playfair+Display:wght@600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="css/style.css">
 <link rel="icon" href="img/logo.png">
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#ee5a8a">
 </head>
 <body>
 
@@ -33,6 +35,7 @@
       <a href="kalender.html" data-i18n="nav.kalender">Kalender</a>
       <a href="#kontak" data-i18n="nav.kontak">Kontak</a>
       <button class="theme-toggle" id="themeToggle" title="Toggle theme">🌙</button>
+      <button class="lang-toggle" id="pwaInstallBtn" type="button" title="Pasang aplikasi Adzkiya di layar utama" style="display:none;">⬇️ Pasang App</button>
       <button class="theme-toggle" id="langToggle" type="button" data-i18n-attr="aria-label:nav.language_toggle">🌐 EN</button>
       
       <a href="reservasi.html" class="btn-nav" data-i18n="nav.reservasi">Reservasi</a>
@@ -868,5 +871,29 @@ fetch(adzkiyaApiUrl('/api/public-settings')).then(r => r.json()).then(s => {
 })();
 </script>
 
+<script>
+// PWA: pelanggan bisa memasang situs ini ke layar utama.
+(function () {
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', function () {
+      navigator.serviceWorker.register('/sw.js').catch(function () { /* opsional */ });
+    });
+  }
+  var deferred = null;
+  var btn = document.getElementById('pwaInstallBtn');
+  window.addEventListener('beforeinstallprompt', function (e) {
+    e.preventDefault();
+    deferred = e;
+    if (btn) btn.style.display = 'inline-flex';
+  });
+  if (btn) {
+    btn.addEventListener('click', function () {
+      if (!deferred) return;
+      deferred.prompt();
+      deferred.userChoice.then(function () { deferred = null; btn.style.display = 'none'; });
+    });
+  }
+})();
+</script>
 </body>
 </html>

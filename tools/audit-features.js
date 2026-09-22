@@ -14,6 +14,7 @@ const PNG_1x1 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8D
   const login = await api('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: 'a@b.id', password: 'password12345' }) });
   const H = { 'Content-Type': 'application/json', Authorization: 'Bearer ' + login.json.token };
   const svc = (await api('/api/services')).json;
+  const svc2 = svc;
   const layanan = svc[0].items[0].name;
   const harga = svc[0].items[0].price;
   const bulanIni = '2026-09';
@@ -129,6 +130,42 @@ const PNG_1x1 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8D
   const kwKe2 = await api('/api/admin/receipts', { method: 'POST', headers: H, body: JSON.stringify({ patient_name: 'Audit Mirror', whatsapp: '081200007777', address: 'Alamat mirror', service_date: '2026-09-18', service_time: '15:00', items: [{ name: layanan, price: harga, qty: 1 }] }) });
   const daftarRes2 = (await api('/api/admin/reservations', { headers: H })).json;
   check('kwitansi kembar tidak menggandakan reservasi', daftarRes2.filter((x) => x.patient_name === 'Audit Mirror').length === 1);
+
+  console.log('\n[22] Jadwal bentrok, paket sesi, pengingat, PWA (fitur baru)');
+  await api('/api/admin/settings', { method: 'PUT', headers: H, body: JSON.stringify({ session_duration_minutes: 60, travel_buffer_minutes: 30, scheduling_mode: 'warn', max_sessions_per_day: 4 }) });
+  const av = (await api('/api/availability?date=2026-10-20')).json;
+  check('endpoint ketersediaan jadwal', av && Array.isArray(av.free_slots) && typeof av.sessions_today === 'number', 'kosong=' + (av && av.free_slots.length));
+  const fd2 = (f) => { const x = new FormData(); Object.entries(f).forEach(([k, v]) => x.set(k, v)); return x; };
+  let rb = await api('/api/reservations', { method: 'POST', body: fd2({ patient_name: 'Audit Slot A', whatsapp: '081299900001', address: 'Alamat audit', payment_method: 'COD', items: JSON.stringify([{ name: layanan, qty: 1 }]), slots: JSON.stringify([{ date: '2026-10-20', time: '09:00' }]) }) });
+  check('slot pertama diterima', rb.status === 201, 'status ' + rb.status);
+  rb = await api('/api/reservations', { method: 'POST', body: fd2({ patient_name: 'Audit Slot B', whatsapp: '081299900002', address: 'Alamat audit', payment_method: 'COD', items: JSON.stringify([{ name: layanan, qty: 1 }]), slots: JSON.stringify([{ date: '2026-10-20', time: '09:15' }]) }) });
+  check('slot bentrok diberi peringatan (mode warn)', rb.status === 201 && !!rb.json.schedule_warning, (rb.json && rb.json.schedule_warning || '').slice(0, 60));
+  await api('/api/admin/settings', { method: 'PUT', headers: H, body: JSON.stringify({ scheduling_mode: 'block' }) });
+  rb = await api('/api/reservations', { method: 'POST', body: fd2({ patient_name: 'Audit Slot C', whatsapp: '081299900003', address: 'Alamat audit', payment_method: 'COD', items: JSON.stringify([{ name: layanan, qty: 1 }]), slots: JSON.stringify([{ date: '2026-10-20', time: '09:20' }]) }) });
+  check('mode block menolak slot bentrok (409)', rb.status === 409, 'status ' + rb.status);
+  await api('/api/admin/settings', { method: 'PUT', headers: H, body: JSON.stringify({ scheduling_mode: 'warn' }) });
+
+  const paket2 = (svc2.flatMap((c) => c.items).find((i) => /(\d+)\s*(Days?|x)\b/i.test(i.name)) || {}).name || layanan;
+  const kwPkg = await api('/api/admin/receipts', { method: 'POST', headers: H, body: JSON.stringify({ patient_name: 'Audit Paket', whatsapp: '081299900004', address: 'Alamat audit', service_date: '2026-10-21', service_time: '09:00', items: [{ name: paket2, price: 100000, qty: 1 }] }) });
+  check('kwitansi paket membuat catatan sisa sesi', !!(kwPkg.json && kwPkg.json.package_created), JSON.stringify(kwPkg.json && kwPkg.json.package_created));
+  const pk = (await api('/api/admin/packages?status=active', { headers: H })).json;
+  const myPkg = (pk.packages || []).find((p) => p.patient_name === 'Audit Paket');
+  check('paket tampil dengan sisa sesi', !!myPkg, myPkg ? ('sisa ' + myPkg.remaining_sessions + '/' + myPkg.total_sessions) : '-');
+  if (myPkg) {
+    const use = await api('/api/admin/packages/' + myPkg.id + '/use', { method: 'POST', headers: H, body: JSON.stringify({ date: '2026-10-22' }) });
+    check('pakai 1 sesi mengurangi sisa', use.status === 200 && use.json.remaining_sessions === myPkg.remaining_sessions - 1, 'sisa=' + use.json.remaining_sessions);
+    const undo = await api('/api/admin/packages/' + myPkg.id + '/undo', { method: 'POST', headers: H, body: '{}' });
+    check('batalkan sesi mengembalikan sisa', undo.json.remaining_sessions === myPkg.remaining_sessions);
+  }
+  const pkgNoAuth = await api('/api/admin/packages');
+  check('daftar paket wajib token', pkgNoAuth.status === 401);
+  const rem = (await api('/api/admin/reminders', { headers: H })).json;
+  check('endpoint pengingat berjalan', Array.isArray(rem.reminders) && Array.isArray(rem.leads), 'lead=' + JSON.stringify(rem.leads));
+  check('pengingat wajib token', (await api('/api/admin/reminders')).status === 401);
+  const mf = await api('/manifest.webmanifest');
+  check('manifest PWA tersedia', mf.status === 200 && !!mf.json.name);
+  const swRes = await api('/sw.js');
+  check('service worker tersedia', swRes.status === 200 && /STALE|stale/i.test(swRes.text));
 
   console.log('\n================ RINGKASAN AUDIT BAGIAN 2 ================');
   console.log('Lulus: ' + pass + ' | Masalah: ' + fail);

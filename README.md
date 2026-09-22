@@ -24,6 +24,10 @@ PostgreSQL/MySQL (atau file untuk mode darurat).
 - **Panel admin**: dashboard & grafik, reservasi, notifikasi pengingat, kalender, kwitansi (PDF/cetak), rekap bulanan + export Excel, broadcast WhatsApp, CRM mini (RFM), akunting P&L, pengaturan situs.
 - **Kwitansi**: nomor otomatis, multi-sesi, TTD bidan tersimpan, PDF A4/A5/F4/thermal, link kwitansi publik bertoken (30 hari).
 - **AI Booking Assistant**: chat widget di beranda + auto-reply WhatsApp (Gemini primary, OpenRouter fallback) lengkap dengan tes koneksi dari panel — lihat [PANDUAN-AI-WA.md](PANDUAN-AI-WA.md).
+- **Penjadwalan pintar**: deteksi jadwal bentrok + jeda perjalanan antar rumah, jam kosong otomatis di form.
+- **Paket sesi**: pelacakan sisa sesi otomatis untuk layanan 5/7/14 hari dan paket laktasi 3x/5x/7x.
+- **Pengingat otomatis**: H-24 jam & H-2 jam via WhatsApp API (atau kirim sekali klik) + notifikasi HP.
+- **PWA**: bisa dipasang di layar utama & menerima notifikasi reservasi.
 - **Keamanan**: token admin, rate limit, backup terenkripsi (AES-256-GCM + scrypt), tanda tangan webhook, dan pemulihan penyimpanan — lihat [SECURITY.md](SECURITY.md).
 
 ## 🧰 Teknologi

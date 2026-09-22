@@ -166,6 +166,7 @@ async function showApp() {
   navigate('dashboard');
   startNotifPolling();
   checkStorageHealth();
+  ensureNotifyPermission();
   // Re-layout every Chart.js instance when the viewport changes — without
   // this charts can render at 0×0 inside their .chart-canvas-wrap after
   // the device rotates or Chrome's "Situs desktop" toggle inflates the
@@ -353,6 +354,8 @@ async function navigate(page) {
     receipts: renderReceipts,
     recap: renderRecap,
     backup: renderBackup,
+    packages: renderPackages,
+    reminders: renderReminders,
     settings: renderSettings,
     broadcast: renderBroadcast,
     customers: renderCustomers,
@@ -4132,6 +4135,197 @@ async function doRestore() {
   }
 }
 
+// ---------- PAKET SESI (sisa sesi multi-sesi) ----------
+async function renderPackages() {
+  const c = document.getElementById('pageContent');
+  const tk = renderToken('packages');
+  let data;
+  try {
+    data = await api('/api/admin/packages?status=' + (PKG_FILTER || 'active'));
+  } catch (e) {
+    c.innerHTML = `<div class="alert alert-error">${esc(e.message)}</div>`;
+    return;
+  }
+  if (!isLatestRender('packages', tk)) return;
+  const rows = data.packages || [];
+  c.innerHTML = `
+    <div class="admin-header">
+      <h1>🎟️ Paket Sesi & Sisa Sesi</h1>
+      <button onclick="renderPackages()" class="btn btn-outline">🔄 Refresh</button>
+    </div>
+    <div class="stat-grid" style="margin-bottom:16px;">
+      <div class="stat-card"><div class="label">Paket Aktif</div><div class="value">${data.active_count || 0}</div></div>
+      <div class="stat-card pink"><div class="label">Total Sisa Sesi</div><div class="value">${data.total_remaining_sessions || 0}</div></div>
+    </div>
+    <div class="setting-card" style="margin-bottom:16px;">
+      <h3>➕ Tambah Paket Manual</h3>
+      <p style="color:var(--text-soft);font-size:0.85rem;margin:6px 0 12px;">
+        Paket otomatis dibuat saat Anda membuat kwitansi/reservasi untuk layanan multi-sesi
+        (mis. <em>Newborn Care 5 Days</em>, <em>Gentle Flow Package (5x)</em>). Form ini untuk yang di luar sistem.
+      </p>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;">
+        <div class="form-group"><label>Nama Pasien</label><input id="pkgName" placeholder="Bunda ..."></div>
+        <div class="form-group"><label>WhatsApp</label><input id="pkgWa" placeholder="0812..."></div>
+        <div class="form-group"><label>Layanan</label><input id="pkgService" placeholder="Newborn Care 5 Days"></div>
+        <div class="form-group"><label>Jumlah Sesi</label><input id="pkgTotal" type="number" min="1" max="100" value="5"></div>
+      </div>
+      <div class="btn-row" style="margin-top:10px;">
+        <button class="btn btn-primary" onclick="addPackage()">💾 Simpan Paket</button>
+      </div>
+      <div id="pkgFeedback" style="margin-top:10px;font-size:0.85rem;"></div>
+    </div>
+    <div class="setting-card">
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px;">
+        <h3 style="margin:0;">📋 Daftar Paket</h3>
+        <span style="flex:1;"></span>
+        <input type="search" class="kw-search" placeholder="Cari nama / layanan..." oninput="PKG_QUERY=this.value;PKG_DEBOUNCE=setTimeout(renderPackages,300)">
+        <select onchange="PKG_FILTER=this.value;renderPackages()" style="padding:8px 12px;border-radius:10px;border:1px solid var(--border);background:var(--card);color:var(--text);font-weight:600;">
+          <option value="active" ${PKG_FILTER === 'active' ? 'selected' : ''}>Masih ada sisa</option>
+          <option value="all" ${PKG_FILTER === 'all' ? 'selected' : ''}>Semua paket</option>
+          <option value="done" ${PKG_FILTER === 'done' ? 'selected' : ''}>Sudah habis</option>
+        </select>
+      </div>
+      ${rows.length ? rows.map((p) => {
+        const sisa = p.remaining_sessions || 0;
+        const total = p.total_sessions || 0;
+        const persen = total ? Math.round(((total - sisa) / total) * 100) : 0;
+        const warna = sisa === 0 ? '#c43050' : (sisa <= 1 ? '#b45309' : '#1e8957');
+        return `<div class="card-list-item" style="margin-bottom:10px;">
+          <div class="cli-head">${esc(p.patient_name || '-')} <small style="color:var(--text-soft);font-weight:500;">· #${p.id}</small></div>
+          <div class="cli-meta">${esc(p.service_name || '')}</div>
+          <div class="cli-row"><span class="cli-label">Sisa sesi</span>
+            <span class="cli-value" style="color:${warna};font-weight:800;">${sisa} / ${total}</span></div>
+          <div style="height:8px;background:var(--bg);border-radius:999px;overflow:hidden;margin:6px 0 8px;">
+            <div style="height:100%;width:${persen}%;background:${warna};"></div>
+          </div>
+          <div class="cli-meta">📱 ${esc(p.whatsapp || '-')} · dibuat ${fmtDateTime(p.created_at)}${p.source ? ' · dari ' + esc(p.source) : ''}</div>
+          ${(p.used_sessions || []).length ? `<div style="font-size:0.8rem;color:var(--text-soft);margin-top:4px;">Terakhir dipakai: ${esc((p.used_sessions[p.used_sessions.length - 1].date) || '')} ${esc((p.used_sessions[p.used_sessions.length - 1].time) || '')}</div>` : ''}
+          <div class="cli-actions">
+            <button class="btn-sm btn-approve" onclick="usePackageSession(${p.id})" ${sisa === 0 ? 'disabled style="opacity:0.5;"' : ''}>✅ Pakai 1 Sesi</button>
+            <button class="btn-sm btn-view" onclick="undoPackageSession(${p.id})" ${(p.used_sessions || []).length ? '' : 'disabled style="opacity:0.5;"'}>↩️ Batalkan</button>
+            <button class="btn-sm btn-del" onclick="deletePackage(${p.id})">🗑️</button>
+          </div>
+        </div>`;
+      }).join('') : '<p style="color:var(--text-soft);padding:16px;text-align:center;">Belum ada paket sesi.</p>'}
+    </div>`;
+}
+let PKG_FILTER = 'active';
+let PKG_QUERY = '';
+let PKG_DEBOUNCE = null;
+
+async function addPackage() {
+  const fb = document.getElementById('pkgFeedback');
+  const body = {
+    patient_name: document.getElementById('pkgName').value.trim(),
+    whatsapp: document.getElementById('pkgWa').value.trim(),
+    service_name: document.getElementById('pkgService').value.trim(),
+    total_sessions: parseInt(document.getElementById('pkgTotal').value, 10)
+  };
+  fb.textContent = '⏳ Menyimpan...';
+  try {
+    const r = await api('/api/admin/packages', { method: 'POST', body: JSON.stringify(body) });
+    fb.style.color = 'var(--success, #1e8957)';
+    fb.textContent = '✅ Paket dibuat: ' + r.package.service_name + ' (' + r.package.total_sessions + ' sesi)';
+    renderPackages();
+  } catch (e) {
+    fb.style.color = '#c43050';
+    fb.textContent = '❌ ' + e.message;
+  }
+}
+
+async function usePackageSession(id) {
+  const date = prompt('Tanggal sesi dipakai (YYYY-MM-DD):', localTodayStr());
+  if (date === null) return;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date.trim())) return alert('Format tanggal harus YYYY-MM-DD');
+  const time = prompt('Jam sesi (HH:MM, opsional):', '') || '';
+  try {
+    const r = await api('/api/admin/packages/' + id + '/use', { method: 'POST', body: JSON.stringify({ date: date.trim(), time: time.trim() }) });
+    alert('✅ Sesi dicatat. Sisa: ' + r.remaining_sessions + ' sesi');
+    renderPackages();
+  } catch (e) { alert('Gagal: ' + e.message); }
+}
+
+async function undoPackageSession(id) {
+  if (!confirm('Batalkan pemakaian sesi terakhir paket ini?')) return;
+  try {
+    const r = await api('/api/admin/packages/' + id + '/undo', { method: 'POST', body: '{}' });
+    alert('↩️ Dibatalkan. Sisa: ' + r.remaining_sessions + ' sesi');
+    renderPackages();
+  } catch (e) { alert('Gagal: ' + e.message); }
+}
+
+async function deletePackage(id) {
+  if (!confirm('Hapus catatan paket ini? (riwayat sesi akan hilang)')) return;
+  try {
+    await api('/api/admin/packages/' + id, { method: 'DELETE' });
+    renderPackages();
+  } catch (e) { alert('Gagal: ' + e.message); }
+}
+
+// ---------- PENGINGAT OTOMATIS ----------
+async function renderReminders() {
+  const c = document.getElementById('pageContent');
+  const tk = renderToken('reminders');
+  let d;
+  try {
+    d = await api('/api/admin/reminders');
+  } catch (e) {
+    c.innerHTML = `<div class="alert alert-error">${esc(e.message)}</div>`;
+    return;
+  }
+  if (!isLatestRender('reminders', tk)) return;
+  const rows = d.reminders || [];
+  c.innerHTML = `
+    <div class="admin-header">
+      <h1>⏰ Pengingat Otomatis</h1>
+      <button onclick="renderReminders()" class="btn btn-outline">🔄 Refresh</button>
+    </div>
+    <div class="setting-card" style="margin-bottom:16px;">
+      <h3>ℹ️ Cara kerja</h3>
+      <p style="color:var(--text-soft);font-size:0.88rem;line-height:1.6;margin:6px 0 0;">
+        Pengingat disiapkan otomatis <strong>${(d.leads || []).map((h) => h + ' jam').join(' & ')}</strong> sebelum jadwal.
+        ${d.auto_wa
+          ? 'Kredensial WhatsApp Business API terdeteksi → pengingat <strong>dikirim otomatis</strong> oleh server (dicek tiap 5 menit).'
+          : 'WhatsApp Business API belum dikonfigurasi → kirim manual sekali klik lewat tombol WhatsApp di bawah, lalu tandai "Sudah dikirim".'}
+      </p>
+      <p style="color:var(--text-soft);font-size:0.84rem;margin:8px 0 0;">
+        Teks pengingat bisa diubah di <strong>Pengaturan → Pengingat</strong>.
+      </p>
+    </div>
+    <div class="setting-card">
+      <h3>📤 Jatuh tempo (${d.pending_count || 0})</h3>
+      ${rows.length ? rows.map((r) => `
+        <div class="notif-card reminder" style="margin-bottom:10px;">
+          <div class="notif-icon">⏰</div>
+          <div class="notif-body">
+            <div class="notif-title">${esc(r.patient_name || '-')} · ${esc(r.service_name || '-')}</div>
+            <div class="notif-meta">📅 ${esc(r.date)} ${esc(r.time)} · ${r.mins_left} menit lagi · 📞 ${esc(r.whatsapp || '-')}</div>
+            <div style="font-size:0.84rem;background:var(--bg);padding:8px 10px;border-radius:8px;margin:8px 0;">${esc(r.text)}</div>
+            <div class="btn-row">
+              ${r.wa_link ? `<a class="btn-sm btn-pay" href="${esc(r.wa_link)}" target="_blank" rel="noopener" style="text-decoration:none;">💬 Kirim via WA</a>` : ''}
+              <button class="btn-sm btn-approve" onclick="sendReminderNow('${escJs(r.key)}')">📨 Kirim otomatis (API)</button>
+              <button class="btn-sm btn-view" onclick="markReminderSentByKey('${escJs(r.key)}')">✔️ Sudah dikirim</button>
+            </div>
+          </div>
+        </div>`).join('') : '<p style="color:var(--text-soft);padding:16px;text-align:center;">Tidak ada pengingat yang jatuh tempo saat ini.</p>'}
+    </div>`;
+}
+
+async function sendReminderNow(key) {
+  try {
+    const r = await api('/api/admin/reminders/send', { method: 'POST', body: JSON.stringify({ key }) });
+    alert('✅ Pengingat terkirim ke ' + r.sent_to);
+    renderReminders();
+  } catch (e) { alert('Gagal: ' + e.message); }
+}
+
+async function markReminderSentByKey(key) {
+  try {
+    await api('/api/admin/reminders/sent', { method: 'POST', body: JSON.stringify({ key }) });
+    renderReminders();
+  } catch (e) { alert('Gagal: ' + e.message); }
+}
+
 // ---------- SETTINGS ----------
 async function renderSettings() {
   const _token73 = renderToken('settings');
@@ -4379,6 +4573,54 @@ async function renderSettings() {
         </div>
       </div>
 
+      <div class="setting-card" id="schedCard">
+        <h3>🗓️ Penjadwalan &amp; Pengingat</h3>
+        <p style="color:var(--text-soft);font-size:0.85rem;margin:6px 0 12px;line-height:1.6;">
+          Mengatur deteksi <strong>jadwal bentrok</strong> (bidan tidak bisa di dua rumah pada jam yang sama)
+          dan <strong>pengingat otomatis</strong> ke pelanggan.
+        </p>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;">
+          <div class="form-group">
+            <label>Durasi 1 sesi (menit)</label>
+            <input type="number" id="stDuration" min="15" max="480" value="${s.session_duration_minutes || 60}" style="width:100%;padding:8px 12px;border:1.5px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);">
+          </div>
+          <div class="form-group">
+            <label>Jeda perjalanan antar rumah (menit)</label>
+            <input type="number" id="stBuffer" min="0" max="240" value="${s.travel_buffer_minutes || 30}" style="width:100%;padding:8px 12px;border:1.5px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);">
+          </div>
+          <div class="form-group">
+            <label>Batas sesi per hari</label>
+            <input type="number" id="stMaxDay" min="1" max="50" value="${s.max_sessions_per_day || 4}" style="width:100%;padding:8px 12px;border:1.5px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);">
+          </div>
+          <div class="form-group">
+            <label>Bila jadwal bentrok</label>
+            <select id="stSchedMode" style="width:100%;padding:8px 12px;border:1.5px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-weight:600;">
+              <option value="warn" ${s.scheduling_mode !== 'block' ? 'selected' : ''}>Izinkan + beri peringatan</option>
+              <option value="block" ${s.scheduling_mode === 'block' ? 'selected' : ''}>Tolak (minta pilih jam lain)</option>
+            </select>
+          </div>
+        </div>
+        <label style="display:flex;align-items:center;gap:8px;margin-top:10px;font-size:0.88rem;cursor:pointer;">
+          <input type="checkbox" id="stReminderEnabled" ${s.reminder_enabled !== false ? 'checked' : ''} style="width:18px;height:18px;accent-color:var(--primary);"> Aktifkan pengingat otomatis
+        </label>
+        <div class="form-group" style="margin-top:10px;">
+          <label>Waktu pengingat (jam sebelum jadwal, pisahkan koma)</label>
+          <input type="text" id="stReminderLeads" value="${esc(((s.reminder_lead_hours && s.reminder_lead_hours.length) ? s.reminder_lead_hours : [24, 2]).join(', '))}" placeholder="24, 2" style="width:100%;padding:8px 12px;border:1.5px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);">
+        </div>
+        <div class="form-group" style="margin-top:10px;">
+          <label>Teks pengingat <span style="color:var(--text-soft);font-weight:500;">(boleh pakai {nama} {layanan} {tanggal} {jam} {total})</span></label>
+          <textarea id="stReminderMsg" rows="3" style="width:100%;padding:10px 12px;border:1.5px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-family:inherit;font-size:0.88rem;">${esc(s.reminder_message || 'Halo Bunda {nama} 🌸 Mengingatkan jadwal {layanan} pada {tanggal} pukul {jam} WIB. Balas pesan ini bila perlu diubah. Terima kasih!')}</textarea>
+        </div>
+        <label style="display:flex;align-items:center;gap:8px;margin-top:6px;font-size:0.88rem;cursor:pointer;">
+          <input type="checkbox" id="stReminderAutoWa" ${s.reminder_auto_wa !== false ? 'checked' : ''} style="width:18px;height:18px;accent-color:var(--primary);"> Kirim pengingat otomatis via WhatsApp Business API (bila kredensial terisi)
+        </label>
+        <div class="btn-row" style="margin-top:12px;">
+          <button type="button" class="btn btn-primary" onclick="saveSchedSettings()">💾 Simpan Penjadwalan &amp; Pengingat</button>
+          <button type="button" class="btn btn-outline" onclick="navigate('reminders')">⏰ Lihat Pengingat Jatuh Tempo</button>
+        </div>
+        <div id="schedFeedback" style="margin-top:10px;font-size:0.85rem;"></div>
+      </div>
+
       <div class="setting-card" id="storageStatusCard">
         <h3 style="display:flex;align-items:center;gap:8px;">🗄️ Status Penyimpanan Data</h3>
         <div id="storageStatusBody" style="font-size:0.88rem;color:var(--text-soft);line-height:1.6;">Memuat status…</div>
@@ -4548,6 +4790,36 @@ async function renderSettings() {
 // Kalau server tidak bisa menghubungi database, semua tulisan hanya masuk
 // file container dan akan hilang pada deploy berikutnya — admin harus
 // melihat itu di depan mata, bukan menemukannya setelah data lenyap.
+// Simpan pengaturan penjadwalan & pengingat.
+async function saveSchedSettings() {
+  const fb = document.getElementById('schedFeedback');
+  const leads = String(document.getElementById('stReminderLeads').value || '')
+    .split(/[,\s]+/).map((x) => parseInt(x, 10)).filter((n) => Number.isFinite(n) && n >= 0 && n <= 168);
+  fb.textContent = '⏳ Menyimpan...';
+  fb.style.color = 'var(--text-soft)';
+  try {
+    await api('/api/admin/settings', {
+      method: 'PUT',
+      body: JSON.stringify({
+        session_duration_minutes: parseInt(document.getElementById('stDuration').value, 10) || 60,
+        travel_buffer_minutes: parseInt(document.getElementById('stBuffer').value, 10) || 0,
+        max_sessions_per_day: parseInt(document.getElementById('stMaxDay').value, 10) || 4,
+        scheduling_mode: document.getElementById('stSchedMode').value,
+        reminder_enabled: document.getElementById('stReminderEnabled').checked,
+        reminder_lead_hours: leads.length ? leads : [24, 2],
+        reminder_message: document.getElementById('stReminderMsg').value.trim(),
+        reminder_auto_wa: document.getElementById('stReminderAutoWa').checked
+      })
+    });
+    await loadCache();
+    fb.style.color = 'var(--success, #1e8957)';
+    fb.textContent = '✅ Tersimpan. Pengingat: ' + (leads.length ? leads.join(', ') + ' jam sebelum jadwal' : '24, 2 jam') + '.';
+  } catch (e) {
+    fb.style.color = '#c43050';
+    fb.textContent = '❌ ' + e.message;
+  }
+}
+
 async function loadStorageStatus(showAlert) {
   const _token666 = renderToken('storage-status');
   const body = document.getElementById('storageStatusBody');
@@ -5257,6 +5529,15 @@ async function pollNotifications() {
         desc: `${r.service_name || '-'} · ${r.reservation_date} ${r.reservation_time} · ${fmtRp(r.total)}`
       }));
       if (SETTINGS.notif_sound !== false) playBeep();
+      // Notifikasi OS untuk reservasi pertama di batch (hindari spam).
+      const first = d.new[0];
+      if (first) {
+        osNotify(
+          '🎉 Reservasi baru #' + first.id + ' — ' + (first.patient_name || ''),
+          (first.service_name || '-') + ' · ' + (first.reservation_date || '') + ' ' + (first.reservation_time || '') + ' · ' + fmtRp(first.total),
+          'adzkiya-reservasi'
+        );
+      }
     }
     NOTIF_LAST_ID = d.last_id || NOTIF_LAST_ID;
     localStorage.setItem('adm_notif_last_id', NOTIF_LAST_ID);
@@ -5273,6 +5554,15 @@ async function pollNotifications() {
       });
       if (SETTINGS.notif_sound !== false) playBeep(true);
     });
+    // Pengingat jadwal juga munculkan notifikasi OS (satu per batch).
+    const rem = (d.reminders || [])[0];
+    if (rem) {
+      osNotify(
+        '⏰ Pengingat: ' + (rem.patient_name || 'Pasien'),
+        (rem.service_name || '-') + ' · ' + rem.date + ' ' + rem.time + ' · ' + rem.mins_left + ' menit lagi',
+        'adzkiya-pengingat'
+      );
+    }
     localStorage.setItem('adm_notif_seen_rem', JSON.stringify([...NOTIF_SEEN_REMINDERS].slice(-200)));
     updateNavBadge();
 
@@ -5293,6 +5583,36 @@ function updateNavBadge() {
   } else {
     b.style.display = 'none';
   }
+}
+
+// Notifikasi OS lewat service worker (PWA). Berfungsi saat panel terbuka
+// (termasuk saat tab tidak fokus), tanpa biaya layanan pihak ketiga.
+function osNotify(title, body, tag) {
+  try {
+    if (typeof Notification === 'undefined') return;
+    if (Notification.permission !== 'granted') return;
+    if (!('serviceWorker' in navigator)) {
+      // Fallback: Notification API langsung.
+      try { new Notification(title, { body, icon: '/api/logo', tag }); } catch (e) {}
+      return;
+    }
+    navigator.serviceWorker.ready
+      .then((reg) => {
+        if (reg && reg.active) reg.active.postMessage({ type: 'notify', title, body, tag, url: '/admin' });
+      })
+      .catch(() => {});
+  } catch (e) { /* notifikasi bersifat opsional */ }
+}
+
+// Minta izin notifikasi (dipanggil sekali saat panel dibuka).
+function ensureNotifyPermission() {
+  try {
+    if (typeof Notification === 'undefined') return;
+    localStorage.removeItem('adm_notif_denied_seen');
+    if (Notification.permission === 'default' && Notification.permission !== 'denied') {
+      Notification.requestPermission().catch(() => {});
+    }
+  } catch (e) { /* opsional */ }
 }
 
 function showToast({ kind, icon, title, desc, timeoutMs = 8000 }) {

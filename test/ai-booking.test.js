@@ -44,6 +44,14 @@ function makeSandbox(opts) {
   vm.runInContext(block('function extractAISBooking'), sandbox);
   vm.runInContext(serverSrc.slice(serverSrc.indexOf('const AI_BOOKING_PLACEHOLDER_RE'), serverSrc.indexOf('function looksLikePlaceholderBooking')), sandbox);
   vm.runInContext(block('function looksLikePlaceholderBooking'), sandbox);
+  // Fungsi penjadwalan dipakai validasi AI booking (mode 'block').
+  vm.runInContext(serverSrc.slice(serverSrc.indexOf('function schedConf'), serverSrc.indexOf('function busySlots')), sandbox);
+  vm.runInContext(block('function slotStartMinutes'), sandbox);
+  vm.runInContext(block('function slotTime'), sandbox);
+  vm.runInContext(block('function busySlots'), sandbox);
+  vm.runInContext(block('function findScheduleConflicts'), sandbox);
+  vm.runInContext(block('function describeConflicts'), sandbox);
+  vm.runInContext(block('function minutesToTime'), sandbox);
   vm.runInContext(block('function buildReservationFromAIData'), sandbox);
   vm.runInContext(block('function processAISBooking'), sandbox);
   return sandbox;

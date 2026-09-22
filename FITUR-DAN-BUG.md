@@ -149,3 +149,24 @@ lihat `tools/README.md`. Hasil akhir: **122 pemeriksaan lulus, 0 masalah**.
   di luar rentang; pengeluaran bulan berjalan sudah benar mengurangi profit.
 - Nomor `INV-...-003` setelah impor `INV-...-010` — berbeda tanggal, jadi
   urutan per hari sudah benar.
+
+## Fitur baru: penjadwalan, paket sesi, pengingat, PWA
+
+Ditambahkan tiga fitur beserta auditnya (`test/scheduling.test.js` 14 tes +
+`tools/audit-features.js` bagian [22]).
+
+### Bug yang ditemukan saat pengembangan fitur
+1. **Jeda perjalanan tidak bisa diset 0 menit.** `parseInt(nilai) || default`
+   mengubah 0 menjadi nilai default (30 menit), sehingga layanan yang
+   sesinya berurutan di satu rumah tetap dianggap butuh perjalanan.
+   → `schedConf()` memakai `Number.isFinite()` agar 0 dihormati.
+2. **Key `notes` duplikat** pada objek reservasi publik (yang kedua menimpa
+   yang pertama) → digabung menjadi satu catatan (catatan pelanggan +
+   peringatan jadwal bentrok).
+3. **False positive di skrip audit:** pengecekan "pengeluaran mengurangi
+   profit" memakai tanggal bulan tetap (Desember) sehingga di luar rentang
+   P&L. Skrip diperbaiki memakai bulan berjalan (WIB).
+
+### Hasil audit
+- Audit menyeluruh: **86 + 49 = 135 pemeriksaan, 0 masalah**.
+- `npm test`: 88 lulus (3 dilewati karena jsdom tidak terpasang).

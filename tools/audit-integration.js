@@ -112,10 +112,14 @@ const api = async (path, opts) => {
   check('rekap menghitung kwitansi', recap.totalKwitansi >= 1);
   const xlsx = await api('/api/admin/recap.xlsx?month=2026-12', { headers: H });
   check('export Excel terunduh', xlsx.status === 200 && xlsx.text.length > 1000, xlsx.text.length + ' byte');
-  r = await api('/api/admin/expenses', { method: 'POST', headers: H, body: JSON.stringify({ date: '2026-12-06', category: 'Bensin', amount: 25000, description: 'Audit' }) });
+  // Tanggal pengeluaran memakai BULAN BERJALAN (WIB) agar benar-benar masuk
+  // rentang ringkasan P&L — sebelumnya memakai bulan tetap sehingga cek
+  // "pengeluaran mengurangi profit" selalu gagal (false positive).
+  const bulanWib = new Date(Date.now() + 7 * 3600 * 1000).toISOString().slice(0, 7);
+  r = await api('/api/admin/expenses', { method: 'POST', headers: H, body: JSON.stringify({ date: bulanWib + '-06', category: 'Bensin', amount: 25000, description: 'Audit' }) });
   check('catat pengeluaran', r.status === 200 && r.json.id);
   const expId = r.json.id;
-  r = await api('/api/admin/expenses', { method: 'POST', headers: H, body: JSON.stringify({ date: '2026-12-06', category: 'Bensin', amount: -5 }) });
+  r = await api('/api/admin/expenses', { method: 'POST', headers: H, body: JSON.stringify({ date: bulanWib + '-06', category: 'Bensin', amount: -5 }) });
   check('pengeluaran negatif ditolak', r.status === 400);
   const acct = (await api('/api/admin/accounting/summary?months=3', { headers: H })).json;
   check('ringkasan P&L menghitung profit', typeof acct.totals.profit === 'number');
