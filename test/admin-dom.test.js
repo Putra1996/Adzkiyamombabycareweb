@@ -88,6 +88,36 @@ const API_FIXTURES = {
     has_app_secret: false, wa_verify_token: '', base_prompt: '', conversation_count: 0,
     webhook_url: 'https://contoh.up.railway.app/api/webhook/whatsapp'
   },
+  // Buku stok: halaman baru harus render penuh walau data kosong/terisi.
+  '/api/admin/supplies': {
+    count: 2, total_items: 2, low_count: 1, stock_value: 250000, used_cost_this_month: 9000,
+    purchased_cost_this_month: 200000,
+    categories: ['🧴 Bahan perawatan (minyak, lotion)'], units: ['pcs', 'botol'],
+    low_stock: [{ id: 2, name: 'Lotion', unit: 'botol', stock: 1, min_stock: 2, cost: 30000, category: '🧴', supplier: 'Toko A', supplier_wa: '0812', suggested_qty: 3, estimated_cost: 90000 }],
+    supplies: [
+      { id: 1, name: 'Minyak Pijat', unit: 'botol', stock: 4, min_stock: 2, cost: 45000, value: 180000, low: false, category: '🧴', supplier: 'Toko A', suggested_qty: 1, used_30d: 0.2, sessions_30d: 2, cost_used_30d: 9000, per_session: 0.1, used_in_services: ['Massage Ibu Hamil'] },
+      { id: 2, name: 'Lotion', unit: 'botol', stock: 1, min_stock: 2, cost: 30000, value: 30000, low: true, category: '🧴', supplier: 'Toko A', supplier_wa: '0812', suggested_qty: 3, used_30d: 0, sessions_30d: 0, cost_used_30d: 0, per_session: null, used_in_services: [] }
+    ]
+  },
+  '/api/admin/supplies/pending-uses': {
+    count: 1, days: 14,
+    pending: [{ reservation_id: 1, patient_name: 'Bunda Uji', date: '2026-09-20', status: 'approved', payment_status: 'lunas', service_name: 'Massage Ibu Hamil', sessions: 1, total_cost: 9000, stock_ok: true, missing: [] }]
+  },
+  '/api/admin/supply-recipes': {
+    count: 1,
+    recipes: [{ id: 1, service_name: 'Massage Ibu Hamil', note: '1 sesi', cost_per_session: 9000, created_at: '2026-09-01T00:00:00.000Z', updated_at: '2026-09-01T00:00:00.000Z', items: [{ supply_id: 1, name: 'Minyak Pijat', unit: 'botol', qty: 0.2, stock: 4, cost_per_unit: 45000, cost: 9000 }] }],
+    services: ['Massage Ibu Hamil'], supplies: [{ id: 1, name: 'Minyak Pijat', unit: 'botol', cost: 45000, stock: 4 }]
+  },
+  '/api/admin/supplies/report': {
+    months: 6, monthList: ['2026-09'],
+    byMonth: [{ month: '2026-09', purchase: 200000, material_used: 9000 }],
+    purchase_total: 200000, material_total: 9000, stock_value: 210000, items_count: 2, low_count: 1, recipes_count: 1,
+    services: [{ service_name: 'Massage Ibu Hamil', sessions: 2, sessions_with_material: 2, omzet: 160000, material_cost: 9000, material_per_session: 4500, margin: 151000, margin_percent: 94, has_recipe: true }],
+    items: [{ id: 1, name: 'Minyak Pijat', unit: 'botol', stock: 4, min_stock: 2, low: false, cost: 45000, value: 180000, purchased_30d: 5, used_30d: 0.2, sessions_30d: 2, per_session: 0.1, cost_used_30d: 9000 }]
+  },
+  '/api/admin/supplies/moves': { count: 1, moves: [{ id: 1, supply_id: 1, supply_name: 'Minyak Pijat', type: 'in', type_label: 'Masuk', qty: 5, before: 0, after: 5, unit: 'botol', unit_cost: 45000, total_cost: 225000, date: '2026-09-20', note: 'Stok awal', at: '2026-09-20T00:00:00.000Z' }] },
+  '/api/admin/supplies/shopping-list': { count: 1, total_estimate: 90000, items: [], by_supplier: [{ supplier: 'Toko A', phone: '0812', count: 1, total_estimate: 90000, text: 'pesanan', wa_link: 'https://wa.me/62812?text=x', items: [] }], text: 'Halo, saya mau pesan bahan', wa_link: null, whatsapp_ready: false },
+  '/api/admin/supplies/alerts': { enabled: true, auto_wa: true, whatsapp_ready: false, recipient: '0858', interval_hours: 24, last_sent_at: null, due: true, count: 1, items: [], text: 'Stok menipis', wa_link: 'https://wa.me/62858?text=x' },
   '/api/admin/settings/owner-signature': { ok: true, has_signature: false, data_url: null },
   '/health': {
     ok: true, storage: 'file', configured_storage: 'postgres', db_connected: false, db_reachable: false,
@@ -147,6 +177,7 @@ test('Panel admin: semua halaman render tanpa error di DOM sungguhan', { skip: J
     dashboard: 'renderDashboard', reservations: 'renderReservations', notifications: 'renderNotifications',
     calendar: 'renderCalendarAdmin', receipts: 'renderReceipts', recap: 'renderRecap',
     broadcast: 'renderBroadcast', customers: 'renderCustomers', accounting: 'renderAccounting',
+    stock: 'renderStock', packages: 'renderPackages', reminders: 'renderReminders',
     backup: 'renderBackup', settings: 'renderSettings'
   };
   // PENTING: panggil handler-nya LANGSUNG, bukan lewat navigate(). navigate()
@@ -177,7 +208,10 @@ test('Panel admin: elemen penting halaman Pengaturan ada', { skip: JSDOM ? false
     'tombol Tes Koneksi DB': 'testStorageConnection()',
     'panel AI': 'aiAssistantSaveBtn',
     'tombol diagnosa WhatsApp': 'aiAssistantDiagBtn',
-    'alert database belum terhubung': 'Database belum terhubung'
+    'alert database belum terhubung': 'Database belum terhubung',
+    'kartu pengaturan Buku Stok': 'stockSettingsCard',
+    'tombol simpan pengaturan stok': 'saveStokSettings()',
+    'kategori pengeluaran restok': 'stkSetCategory'
   };
   for (const [label, needle] of Object.entries(wajib)) {
     assert.ok(html.includes(needle), `elemen hilang: ${label} (${needle})`);

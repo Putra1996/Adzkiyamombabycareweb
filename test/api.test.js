@@ -200,10 +200,43 @@ test('API menyimpan reservasi, menghitung harga server, dan melindungi admin', {
     assert.equal(receiptResponse.status, 200);
     const receipt = await receiptResponse.json();
 
+    // Kwitansi untuk reservasi yang SUDAH ADA (pelanggan booking lewat web,
+    // lalu dibayar & dibuatkan kwitansi) harus menandai reservasi itu lunas —
+    // bukan membuat dokumen kedua sekaligus membuang pendapatannya dari
+    // Rekap Bulanan / P&L (kwitansi tidak dihitung terpisah karena dianggap
+    // sudah diwakili reservasi mirror).
+    const beforePaid = await (await fetch(`${baseUrl}/api/admin/reservations`, {
+      headers: { Authorization: `Bearer ${login.token}` }
+    })).json();
+    const paidResponse = await fetch(`${baseUrl}/api/admin/receipts`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${login.token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        patient_name: 'Bunda Test',
+        whatsapp: '08123456789',
+        address: 'Alamat pengujian',
+        service_date: '2026-09-01',
+        service_time: '09:00',
+        items: [{ name: 'Massage Ibu Hamil', price: 80000, qty: 1 }]
+      })
+    });
+    assert.equal(paidResponse.status, 200);
+    const afterPaid = await (await fetch(`${baseUrl}/api/admin/reservations`, {
+      headers: { Authorization: `Bearer ${login.token}` }
+    })).json();
+    assert.equal(afterPaid.length, beforePaid.length, 'kwitansi membuat reservasi duplikat untuk booking yang sudah ada');
+    const paidReservation = afterPaid.find((r) => r.patient_name === 'Bunda Test');
+    assert.ok(paidReservation, 'reservasi pelanggan hilang');
+    assert.equal(paidReservation.payment_status, 'lunas', 'reservasi yang sudah dibayar tidak ditandai lunas oleh kwitansi');
+    assert.equal(paidReservation.status, 'approved');
+    assert.match(String(paidReservation.notes || ''), /kwitansi/i, 'jejak pembayaran tidak dicatat di catatan reservasi');
+
     const receipts = await (await fetch(`${baseUrl}/api/admin/receipts`, {
       headers: { Authorization: `Bearer ${login.token}` }
     })).json();
-    const receiptId = receipts[0].id;
+    // Daftar kwitansi urut terbaru dulu & sekarang ada >1 kwitansi (uji
+    // pembayaran di atas), jadi cari berdasarkan nomor invoice.
+    const receiptId = (receipts.find((r) => r.invoice_no === receipt.invoice_no) || receipts[0]).id;
     const share = await (await fetch(`${baseUrl}/api/admin/receipts/${receiptId}/share`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${login.token}` }

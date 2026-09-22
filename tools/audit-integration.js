@@ -236,6 +236,27 @@ const api = async (path, opts) => {
   const badConn = await api('/api/admin/storage/test-connection', { method: 'POST', headers: H, body: JSON.stringify({ url: 'postgresql://u:p@127.0.0.1:1/db' }) });
   check('tes koneksi DB mati dilaporkan gagal + saran', badConn.status === 400 && badConn.json.hint, (badConn.json.hint || '').slice(0, 60));
 
+  // ---------- 14. BUKU STOK (integrasi lintas fitur) ----------
+  console.log('\n[14] Buku stok terhubung ke akunting, backup & panel');
+  const stokList = (await api('/api/admin/supplies', { headers: H })).json;
+  check('daftar stok dapat diakses admin', typeof stokList.stock_value === 'number' && Array.isArray(stokList.supplies));
+  const stokStats = (await api('/api/admin/stats', { headers: H })).json;
+  check('dasbor memuat peringatan stok menipis', 'low_stock' in stokStats && 'stock_value' in stokStats);
+  const stokAcct = (await api('/api/admin/accounting/summary?months=2', { headers: H })).json;
+  check('ringkasan P&L memuat blok buku stok', !!(stokAcct.supply && Array.isArray(stokAcct.supply.by_month)));
+  const stokBackup = await api('/api/admin/backup', { headers: H });
+  check('backup memuat supplies & supply_recipes', Array.isArray(stokBackup.json.supplies) && Array.isArray(stokBackup.json.supply_recipes));
+  check('backup tidak memuat timestamp peringatan stok', !('supply_alert_last_at' in (stokBackup.json.settings || {})));
+  const stokAlerts = (await api('/api/admin/supplies/alerts', { headers: H })).json;
+  check('endpoint peringatan stok berjalan', typeof stokAlerts.count === 'number' && typeof stokAlerts.interval_hours === 'number', 'jeda=' + stokAlerts.interval_hours + ' jam');
+  check('no-auth: /api/admin/supplies → 401', (await api('/api/admin/supplies')).status === 401);
+  check('no-auth: /api/admin/supplies/report → 401', (await api('/api/admin/supplies/report')).status === 401);
+  // Panel admin: halaman & menu stok tersedia
+  const adminPage = await api('/admin');
+  check('panel admin memuat menu Buku Stok', adminPage.status === 200 && /data-page="stock"/.test(adminPage.text));
+  const adminJs = await api('/js/admin.js');
+  check('panel admin memuat fungsi halaman stok', adminJs.status === 200 && /function renderStock\(/.test(adminJs.text) && /function renderStockReport\(/.test(adminJs.text));
+
   // ---------- RINGKASAN ----------
   console.log('\n================ RINGKASAN AUDIT ================');
   console.log('Lulus: ' + pass + ' | Masalah: ' + fail);
