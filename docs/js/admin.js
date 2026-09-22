@@ -356,6 +356,7 @@ async function navigate(page) {
     backup: renderBackup,
     packages: renderPackages,
     reminders: renderReminders,
+    stock: renderStock,
     settings: renderSettings,
     broadcast: renderBroadcast,
     customers: renderCustomers,
@@ -432,7 +433,25 @@ async function renderDashboard() {
       <div class="stat-card peach"><div class="label">Lunas</div><div class="value">${stats.lunas}</div></div>
       <div class="stat-card pink"><div class="label">Total Omzet</div><div class="value">${fmtRp(stats.omzet)}</div></div>
       <div class="stat-card"><div class="label">Total Reservasi</div><div class="value">${stats.total}</div></div>
+      ${stats.low_stock ? `<div class="stat-card" style="border:2px solid #c43050;cursor:pointer;" onclick="navigate('stock')">
+        <div class="label">⚠️ Stok Menipis</div>
+        <div class="value" style="color:#c43050;">${stats.low_stock}</div>
+        <div style="font-size:0.78rem;color:var(--text-soft);margin-top:2px;">${esc((stats.low_stock_items || []).join(', '))}</div>
+      </div>` : ''}
     `;
+    // Peringatan stok menipis juga ditampilkan sebagai banner supaya tidak
+    // terlewat di HP (kartu statistik bisa tergulir ke bawah).
+    if (stats.low_stock) {
+      const banner = document.createElement('div');
+      banner.className = 'alert alert-error';
+      banner.style.cssText = 'border-radius:12px;padding:12px 16px;margin-bottom:14px;';
+      banner.innerHTML = `⚠️ <strong>${stats.low_stock} barang menipis:</strong> ${esc((stats.low_stock_items || []).join(', '))}
+        <div class="btn-row" style="margin-top:8px;">
+          <button class="btn-sm btn-pay" onclick="navigate('stock')">📦 Buka Buku Stok</button>
+        </div>`;
+      const grid = document.getElementById('statGrid');
+      if (grid && grid.parentNode) grid.parentNode.insertBefore(banner, grid);
+    }
     drawCharts(charts);
   } catch (e) { document.getElementById('statGrid').innerHTML = `<div class="alert alert-error">${e.message}</div>`; }
 }
@@ -3747,6 +3766,18 @@ function renderAcctPnl() {
         <h4 style="margin:0 0 8px;">📈 Income vs Expense per Bulan</h4>
         <div class="chart-canvas-wrap" style="height:280px;"><canvas id="acctIncomeChart"></canvas></div>
       </div>
+      ${d.supply && (d.supply.items_count || d.supply.material_total) ? `
+        <div style="margin-top:12px;padding:12px 14px;border:1px dashed var(--border);border-radius:12px;background:var(--bg);font-size:0.86rem;line-height:1.6;">
+          📦 <strong>Buku Stok:</strong> nilai persediaan <strong>${fmtRp(d.supply.stock_value)}</strong> ·
+          pembelian bahan ${d.months} bulan <strong>${fmtRp(d.supply.purchase_total)}</strong>
+          ${d.supply.low_count ? `· <span style="color:#c43050;font-weight:700;">${d.supply.low_count} barang menipis</span>` : ''}
+          <br>
+          🧪 Biaya bahan terpakai (HPP) ${d.months} bulan: <strong>${fmtRp(d.supply.material_total)}</strong> —
+          <em>tidak dihitung dua kali</em> di Total Beban, karena pembeliannya sudah tercatat sebagai pengeluaran saat restok.
+          <div class="btn-row" style="margin-top:8px;">
+            <button class="btn-sm btn-view" onclick="navigate('stock')">📦 Buka Buku Stok</button>
+          </div>
+        </div>` : ''}
       ${d.expenses_by_category && Object.keys(d.expenses_by_category).length ? `
         <div class="chart-card" style="background:transparent;border:1px solid var(--border);border-radius:12px;padding:14px;margin-top:12px;">
           <h4 style="margin:0 0 8px;">🍩 Beban per Kategori (${d.months} bulan)</h4>
@@ -3805,8 +3836,13 @@ function drawAcctCharts(d) {
   const expenseCtx = document.getElementById('acctExpenseChart');
   if (ACCT_EXPENSE_CHART) { try { ACCT_EXPENSE_CHART.destroy(); } catch {} }
   if (expenseCtx && d.expenses_by_category) {
-    const labels = Object.keys(d.expenses_by_category);
-    const data = labels.map((k) => d.expenses_by_category[k]);
+    // Kunci `expenses_by_category` adalah ID kategori (mis. "cat_supplies").
+    // Tampilkan namanya supaya legenda chart bisa dibaca manusia; kalau
+    // kategorinya sudah dihapus, tampilkan ID apa adanya.
+    const catName = Object.fromEntries((ACCT_CATEGORIES || []).map((c) => [c.id, c.name]));
+    const keys = Object.keys(d.expenses_by_category);
+    const labels = keys.map((k) => catName[k] || k);
+    const data = keys.map((k) => d.expenses_by_category[k]);
     ACCT_EXPENSE_CHART = new Chart(expenseCtx, {
       type: 'doughnut',
       data: {
@@ -4326,10 +4362,818 @@ async function markReminderSentByKey(key) {
   } catch (e) { alert('Gagal: ' + e.message); }
 }
 
+// ---------- BUKU STOK & BAHAN ----------
+// Halaman rumah fitur "buku stok" (endpoint di server.js bagian BUKU STOK):
+// sisa stok + peringatan menipis, riwayat masuk/keluar, resep bahan per
+// layanan (HPP), daftar belanja ke supplier, dan laporan margin per layanan.
+let STOCK_DATA = null;
+let STOCK_REPORT = null;
+let STOCK_RECIPES = null;
+let STOCK_PENDING = null;
+let STOCK_QUERY = '';
+let STOCK_FILTER = 'all';
+let STOCK_DEBOUNCE = null;
+// Token render halaman stok. Tiga kartu pelengkap (menunggu, resep, laporan)
+// dimuat bersamaan; kalau masing-masing memanggil renderToken() sendiri,
+// hanya yang terakhir dianggap "render terbaru" (RENDER_SEQ global) sehingga
+// kartu lain tertinggal di tulisan "Memuat…". Jadi mereka memakai token
+// halaman ini — dan otomatis batal kalau admin pindah halaman.
+let STOCK_TOKEN = 0;
+// Kategori pengeluaran (dipakai kartu pengaturan Buku Stok: restok → kategori).
+let EXPENSE_CATEGORIES = [];
+
+async function renderStock() {
+  const c = document.getElementById('pageContent');
+  const tk = renderToken('stock');
+  let d;
+  try {
+    d = await api('/api/admin/supplies');
+  } catch (e) {
+    c.innerHTML = `<div class="alert alert-error">${esc(e.message)}</div>`;
+    return;
+  }
+  if (!isLatestRender('stock', tk)) return;
+  STOCK_DATA = d;
+  STOCK_TOKEN = tk;
+  renderStockPage();
+  // Bagian pelengkap dimuat terpisah (dan bersamaan) supaya daftar barang
+  // langsung tampil walau resep/laporan masih dihitung server.
+  renderStockPending(tk);
+  renderStockRecipes(tk);
+  renderStockReport(null, tk);
+}
+
+function stockFiltered() {
+  const d = STOCK_DATA || { supplies: [] };
+  const q = String(STOCK_QUERY || '').trim().toLowerCase();
+  return (d.supplies || []).filter((s) => {
+    if (STOCK_FILTER === 'low' && !s.low) return false;
+    if (!q) return true;
+    return String(s.name || '').toLowerCase().includes(q) ||
+      String(s.supplier || '').toLowerCase().includes(q) ||
+      String(s.category || '').toLowerCase().includes(q) ||
+      (s.used_in_services || []).some((x) => String(x).toLowerCase().includes(q));
+  });
+}
+
+function renderStockPage() {
+  const c = document.getElementById('pageContent');
+  if (!c) return;
+  const d = STOCK_DATA || {};
+  const rows = stockFiltered();
+  const low = d.low_stock || [];
+  c.innerHTML = `
+    <div class="admin-header">
+      <div>
+        <h1>📦 Buku Stok &amp; Bahan</h1>
+        <p style="color:var(--text-soft);margin:4px 0 0;">Sisa stok, pemakaian per sesi, HPP bahan, dan daftar belanja.</p>
+      </div>
+      <div class="btn-row">
+        <button onclick="openStockUseForm()" class="btn btn-outline">🧪 Pakai Bahan</button>
+        <button onclick="openShoppingList()" class="btn btn-outline">🛒 Daftar Belanja</button>
+        <button onclick="renderStock()" class="btn btn-outline">🔄 Refresh</button>
+      </div>
+    </div>
+
+    <div class="stat-grid" style="margin-bottom:16px;">
+      <div class="stat-card"><div class="label">Jenis Barang</div><div class="value">${d.total_items || 0}</div></div>
+      <div class="stat-card pink"><div class="label">Stok Menipis</div><div class="value">${d.low_count || 0}</div></div>
+      <div class="stat-card peach"><div class="label">Nilai Persediaan</div><div class="value">${fmtRp(d.stock_value || 0)}</div></div>
+      <div class="stat-card"><div class="label">Bahan Terpakai (bulan ini)</div><div class="value">${fmtRp(d.used_cost_this_month || 0)}</div></div>
+    </div>
+
+    ${low.length ? `
+      <div class="alert alert-error" style="border-radius:12px;padding:14px 16px;margin-bottom:16px;">
+        <strong>⚠️ ${low.length} barang menipis:</strong>
+        ${low.slice(0, 6).map((s) => `${esc(s.name)} (sisa ${s.stock} ${esc(s.unit)}, min ${s.min_stock})`).join(' · ')}
+        ${low.length > 6 ? ` · +${low.length - 6} lagi` : ''}
+        <div class="btn-row" style="margin-top:10px;">
+          <button class="btn-sm btn-pay" onclick="sendStockAlert()">📨 Kirim Peringatan WA</button>
+          <button class="btn-sm btn-view" onclick="openShoppingList()">🛒 Daftar Belanja</button>
+        </div>
+      </div>` : `
+      <div class="alert alert-success" style="border-radius:12px;padding:12px 16px;margin-bottom:16px;">
+        ✅ Semua stok di atas batas minimum.
+      </div>`}
+
+    <div class="setting-card" style="margin-bottom:16px;">
+      <h3>➕ Tambah Barang</h3>
+      <p style="color:var(--text-soft);font-size:0.85rem;margin:6px 0 12px;">
+        Isi barang yang Anda pakai sehari-hari. Sisa stok bisa diperbarui nanti lewat tombol
+        ➕ Masuk (belanja) / ➖ Keluar (dipakai) / ⚖️ Sesuaikan (stok opname).
+      </p>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;">
+        <div class="form-group"><label>Nama barang</label><input id="stkAddName" placeholder="Minyak pijat bayi"></div>
+        <div class="form-group"><label>Kategori</label>
+          <select id="stkAddCategory">${(d.categories || []).map((k) => `<option value="${esc(k)}">${esc(k)}</option>`).join('')}</select>
+        </div>
+        <div class="form-group"><label>Satuan</label>
+          <select id="stkAddUnit">${(d.units || ['pcs']).map((u) => `<option value="${esc(u)}">${esc(u)}</option>`).join('')}</select>
+        </div>
+        <div class="form-group"><label>Stok awal</label><input id="stkAddStock" type="number" min="0" step="0.01" value="0"></div>
+        <div class="form-group"><label>Batas minimum</label><input id="stkAddMin" type="number" min="0" step="0.01" value="1"></div>
+        <div class="form-group"><label>Harga beli / satuan</label><input id="stkAddCost" type="number" min="0" value="0"></div>
+        <div class="form-group"><label>Supplier</label><input id="stkAddSupplier" placeholder="Toko / apotek"></div>
+        <div class="form-group"><label>WA supplier</label><input id="stkAddSupplierWa" placeholder="0812..."></div>
+      </div>
+      <label style="display:flex;align-items:center;gap:8px;margin-top:4px;font-size:0.85rem;cursor:pointer;">
+        <input type="checkbox" id="stkAddExpense" style="width:18px;height:18px;accent-color:var(--primary);">
+        Catat stok awal ini sebagai pengeluaran (P&amp;L)
+      </label>
+      <div class="btn-row" style="margin-top:12px;">
+        <button class="btn btn-primary" onclick="addSupply()">💾 Tambah Barang</button>
+      </div>
+      <div id="stkAddFeedback" style="margin-top:10px;font-size:0.85rem;"></div>
+    </div>
+
+    <div class="setting-card" style="margin-bottom:16px;">
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px;">
+        <h3 style="margin:0;">📋 Daftar Barang (${rows.length}/${d.total_items || 0})</h3>
+        <span style="flex:1;"></span>
+        <input type="search" class="kw-search" placeholder="Cari barang / supplier / layanan..." value="${esc(STOCK_QUERY)}"
+               oninput="STOCK_QUERY=this.value;clearTimeout(STOCK_DEBOUNCE);STOCK_DEBOUNCE=setTimeout(renderStockPage,250)">
+        <select onchange="STOCK_FILTER=this.value;renderStockPage()" style="padding:8px 12px;border-radius:10px;border:1px solid var(--border);background:var(--card);color:var(--text);font-weight:600;">
+          <option value="all" ${STOCK_FILTER === 'all' ? 'selected' : ''}>Semua barang</option>
+          <option value="low" ${STOCK_FILTER === 'low' ? 'selected' : ''}>Hanya yang menipis</option>
+        </select>
+      </div>
+      ${rows.length ? rows.map(stockItemCard).join('') : `
+        <p style="color:var(--text-soft);padding:16px;text-align:center;">
+          ${(d.total_items || 0) ? 'Tidak ada barang yang cocok dengan pencarian/filter.' : 'Belum ada barang. Tambahkan bahan pertama Anda di form atas.'}
+        </p>`}
+    </div>
+
+    <div id="stockPendingCard" class="setting-card" style="margin-bottom:16px;">
+      <h3>⏳ Menunggu Pencatatan Bahan</h3>
+      <p style="color:var(--text-soft);font-size:0.85rem;margin:6px 0 0;">Memuat…</p>
+    </div>
+
+    <div id="stockRecipeCard" class="setting-card" style="margin-bottom:16px;">
+      <h3>🧪 Resep Bahan per Layanan (HPP)</h3>
+      <p style="color:var(--text-soft);font-size:0.85rem;margin:6px 0 0;">Memuat…</p>
+    </div>
+
+    <div id="stockReportCard" class="setting-card">
+      <h3>📊 Laporan HPP &amp; Margin</h3>
+      <p style="color:var(--text-soft);font-size:0.85rem;margin:6px 0 0;">Memuat…</p>
+    </div>`;
+}
+
+function stockItemCard(s) {
+  const low = !!s.low;
+  const warna = low ? '#c43050' : '#1e8957';
+  const target = Math.max((Number(s.min_stock) || 0) * 2, (Number(s.min_stock) || 0) + 1, 1);
+  const persen = Math.max(0, Math.min(100, Math.round((Number(s.stock) || 0) / target * 100)));
+  return `<div class="card-list-item" style="margin-bottom:10px;border-left:4px solid ${warna};">
+    <div class="cli-head">${esc(s.name)}
+      <small style="color:var(--text-soft);font-weight:500;">· #${s.id} · ${esc(s.unit || 'pcs')}</small>
+      ${low ? '<span class="badge badge-rejected" style="margin-left:6px;">⚠️ Menipis</span>' : ''}
+    </div>
+    <div class="cli-meta">${esc(s.category || '')}${s.supplier ? ' · 🏪 ' + esc(s.supplier) : ''}${s.supplier_wa ? ' · 📱 ' + esc(s.supplier_wa) : ''}</div>
+    <div class="cli-row"><span class="cli-label">Sisa stok</span>
+      <span class="cli-value" style="color:${warna};font-weight:800;">${s.stock} ${esc(s.unit || '')}
+        <small style="font-weight:500;color:var(--text-soft);">(min ${s.min_stock || 0})</small></span></div>
+    <div style="height:8px;background:var(--bg);border-radius:999px;overflow:hidden;margin:4px 0 8px;">
+      <div style="height:100%;width:${persen}%;background:${warna};"></div>
+    </div>
+    <div class="cli-row"><span class="cli-label">Harga / nilai</span><span class="cli-value">${fmtRp(s.cost)} <small style="color:var(--text-soft);">→ ${fmtRp(s.value)}</small></span></div>
+    ${s.sessions_30d ? `<div class="cli-meta">30 hari: terpakai ${s.used_30d} ${esc(s.unit || '')} untuk ${s.sessions_30d} sesi
+      ${s.per_session ? '(' + s.per_session + ' ' + esc(s.unit || '') + '/sesi)' : ''} · biaya ${fmtRp(s.cost_used_30d)}</div>` : ''}
+    ${(s.used_in_services || []).length ? `<div class="cli-meta">🧪 dipakai di: ${s.used_in_services.map((x) => esc(x)).join(', ')}</div>` : ''}
+    ${low ? `<div class="cli-meta" style="color:#b45309;">Saran beli ${s.suggested_qty} ${esc(s.unit || '')} untuk kembali aman.</div>` : ''}
+    <div class="cli-actions">
+      <button class="btn-sm btn-approve" onclick="openSupplyMove(${s.id},'in')">➕ Masuk</button>
+      <button class="btn-sm btn-view" onclick="openSupplyMove(${s.id},'out')">➖ Keluar</button>
+      <button class="btn-sm btn-view" onclick="openSupplyMove(${s.id},'adjust')">⚖️ Sesuaikan</button>
+      <button class="btn-sm btn-view" onclick="openSupplyHistory(${s.id})">📜 Riwayat</button>
+      <button class="btn-sm btn-view" onclick="openSupplyForm(${s.id})">✏️ Edit</button>
+      <button class="btn-sm btn-del" onclick="deleteSupply(${s.id})">🗑️</button>
+    </div>
+  </div>`;
+}
+
+function stockSupplyOptions(selectedId) {
+  const rows = (STOCK_DATA && STOCK_DATA.supplies) || [];
+  return rows.map((s) => `<option value="${s.id}" ${Number(selectedId) === s.id ? 'selected' : ''}>${esc(s.name)} (sisa ${s.stock} ${esc(s.unit || '')})</option>`).join('');
+}
+
+async function addSupply() {
+  const fb = document.getElementById('stkAddFeedback');
+  const body = {
+    name: document.getElementById('stkAddName').value.trim(),
+    category: document.getElementById('stkAddCategory').value,
+    unit: document.getElementById('stkAddUnit').value,
+    stock: parseFloat(document.getElementById('stkAddStock').value) || 0,
+    min_stock: parseFloat(document.getElementById('stkAddMin').value) || 0,
+    cost: parseInt(document.getElementById('stkAddCost').value, 10) || 0,
+    supplier: document.getElementById('stkAddSupplier').value.trim(),
+    supplier_wa: document.getElementById('stkAddSupplierWa').value.trim(),
+    create_expense: document.getElementById('stkAddExpense').checked
+  };
+  if (!body.name) { fb.style.color = '#c43050'; fb.textContent = '❌ Nama barang wajib diisi.'; return; }
+  fb.style.color = 'var(--text-soft)';
+  fb.textContent = '⏳ Menyimpan...';
+  try {
+    const r = await api('/api/admin/supplies', { method: 'POST', body: JSON.stringify(body) });
+    fb.style.color = 'var(--success, #1e8957)';
+    fb.textContent = '✅ ' + r.supply.name + ' tersimpan' + (r.expense ? ' + pengeluaran ' + fmtRp(r.expense.amount) + ' tercatat' : '') + '.';
+    await renderStock();
+  } catch (e) {
+    fb.style.color = '#c43050';
+    fb.textContent = '❌ ' + e.message;
+  }
+}
+
+function openSupplyForm(id) {
+  const s = id ? ((STOCK_DATA && STOCK_DATA.supplies) || []).find((x) => x.id === id) : null;
+  const cats = (STOCK_DATA && STOCK_DATA.categories) || [];
+  const units = (STOCK_DATA && STOCK_DATA.units) || ['pcs'];
+  openModal(`
+    <h3>${s ? '✏️ Edit Barang' : '➕ Barang Baru'}</h3>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;">
+      <div class="form-group"><label>Nama</label><input id="stkName" value="${esc(s ? s.name : '')}"></div>
+      <div class="form-group"><label>Kategori</label><select id="stkCategory">
+        ${cats.map((k) => `<option value="${esc(k)}" ${s && s.category === k ? 'selected' : ''}>${esc(k)}</option>`).join('')}
+      </select></div>
+      <div class="form-group"><label>Satuan</label><select id="stkUnit">
+        ${units.map((u) => `<option value="${esc(u)}" ${s && s.unit === u ? 'selected' : ''}>${esc(u)}</option>`).join('')}
+      </select></div>
+      <div class="form-group"><label>Sisa stok</label><input id="stkStock" type="number" min="0" step="0.01" value="${s ? s.stock : 0}"></div>
+      <div class="form-group"><label>Batas minimum</label><input id="stkMin" type="number" min="0" step="0.01" value="${s ? (s.min_stock || 0) : 1}"></div>
+      <div class="form-group"><label>Harga beli / satuan</label><input id="stkCost" type="number" min="0" value="${s ? (s.cost || 0) : 0}"></div>
+      <div class="form-group"><label>Supplier</label><input id="stkSupplier" value="${esc(s ? (s.supplier || '') : '')}"></div>
+      <div class="form-group"><label>WA supplier</label><input id="stkSupplierWa" value="${esc(s ? (s.supplier_wa || '') : '')}"></div>
+    </div>
+    <div class="form-group"><label>Catatan</label><input id="stkNote" value="${esc(s ? (s.note || '') : '')}" placeholder="mis. 1 botol = ±20 sesi"></div>
+    <p style="color:var(--text-soft);font-size:0.82rem;margin:4px 0 0;">
+      Perubahan angka stok di sini otomatis tercatat sebagai <strong>penyesuaian</strong> di riwayat — jadi tidak ada angka yang berubah tanpa jejak.
+    </p>
+    <div class="btn-row" style="margin-top:14px;">
+      <button class="btn btn-primary" onclick="saveSupply(${s ? s.id : 'null'})">💾 Simpan</button>
+      <button class="btn btn-outline" onclick="closeModal()">Batal</button>
+    </div>
+    <div id="stkFormFeedback" style="margin-top:10px;font-size:0.85rem;"></div>
+  `);
+}
+
+async function saveSupply(id) {
+  const fb = document.getElementById('stkFormFeedback');
+  const body = {
+    name: document.getElementById('stkName').value.trim(),
+    category: document.getElementById('stkCategory').value,
+    unit: document.getElementById('stkUnit').value,
+    stock: parseFloat(document.getElementById('stkStock').value) || 0,
+    min_stock: parseFloat(document.getElementById('stkMin').value) || 0,
+    cost: parseInt(document.getElementById('stkCost').value, 10) || 0,
+    supplier: document.getElementById('stkSupplier').value.trim(),
+    supplier_wa: document.getElementById('stkSupplierWa').value.trim(),
+    note: document.getElementById('stkNote').value.trim()
+  };
+  fb.textContent = '⏳ Menyimpan...';
+  try {
+    if (id) await api('/api/admin/supplies/' + id, { method: 'PATCH', body: JSON.stringify(body) });
+    else await api('/api/admin/supplies', { method: 'POST', body: JSON.stringify(body) });
+    closeModal();
+    await renderStock();
+  } catch (e) {
+    fb.style.color = '#c43050';
+    fb.textContent = '❌ ' + e.message;
+  }
+}
+
+async function deleteSupply(id) {
+  const s = ((STOCK_DATA && STOCK_DATA.supplies) || []).find((x) => x.id === id);
+  if (!confirm('Hapus barang "' + (s ? s.name : '') + '"?\n\nRiwayat pergerakannya juga dihapus dan bahan ini dikeluarkan dari semua resep.\nPengeluaran yang pernah tercatat TIDAK terhapus (tetap ada di P&L).')) return;
+  try {
+    const r = await api('/api/admin/supplies/' + id, { method: 'DELETE' });
+    await renderStock();
+    alert('🗑️ Barang dihapus.' + (r.recipes_updated ? ' ' + r.recipes_updated + ' resep disesuaikan.' : ''));
+  } catch (e) { alert('Gagal: ' + e.message); }
+}
+
+function openSupplyMove(id, type) {
+  const s = ((STOCK_DATA && STOCK_DATA.supplies) || []).find((x) => x.id === id);
+  if (!s) return;
+  const label = type === 'in' ? '➕ Stok Masuk (belanja/restok)' : (type === 'out' ? '➖ Stok Keluar (dipakai)' : '⚖️ Sesuaikan Stok (stok opname)');
+  openModal(`
+    <h3>${label}</h3>
+    <p style="color:var(--text-soft);font-size:0.86rem;margin:6px 0 12px;">
+      <strong>${esc(s.name)}</strong> — sisa saat ini <strong>${s.stock} ${esc(s.unit || '')}</strong>${s.cost ? ' · harga terakhir ' + fmtRp(s.cost) : ''}
+    </p>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;">
+      <div class="form-group"><label>${type === 'adjust' ? 'Stok sebenarnya' : 'Jumlah'} (${esc(s.unit || 'pcs')})</label>
+        <input id="stkMoveQty" type="number" min="0" step="0.01" value="${type === 'adjust' ? s.stock : 1}"></div>
+      ${type === 'in' ? `<div class="form-group"><label>Harga beli / satuan</label><input id="stkMoveCost" type="number" min="0" value="${s.cost || 0}"></div>` : ''}
+      <div class="form-group"><label>Tanggal</label><input id="stkMoveDate" type="date" value="${localTodayStr()}"></div>
+      ${type === 'out' ? `<div class="form-group"><label>Untuk layanan (opsional)</label><input id="stkMoveService" placeholder="mis. Massage Ibu Hamil"></div>` : ''}
+    </div>
+    <div class="form-group"><label>Catatan</label><input id="stkMoveNote" placeholder="${type === 'in' ? 'Belanja di Toko A' : (type === 'out' ? 'Dipakai untuk kunjungan' : 'Hasil hitung ulang')}"></div>
+    ${type === 'in' ? `
+      <label style="display:flex;align-items:center;gap:8px;font-size:0.86rem;cursor:pointer;">
+        <input type="checkbox" id="stkMoveExpense" checked style="width:18px;height:18px;accent-color:var(--primary);">
+        Catat juga sebagai pengeluaran (kategori Supplies) — supaya P&amp;L otomatis benar
+      </label>` : ''}
+    <div class="btn-row" style="margin-top:14px;">
+      <button class="btn btn-primary" onclick="saveSupplyMove(${id},'${type}')">💾 Simpan</button>
+      <button class="btn btn-outline" onclick="closeModal()">Batal</button>
+    </div>
+    <div id="stkMoveFeedback" style="margin-top:10px;font-size:0.85rem;"></div>
+  `);
+}
+
+async function saveSupplyMove(id, type) {
+  const fb = document.getElementById('stkMoveFeedback');
+  const body = {
+    type,
+    qty: parseFloat(document.getElementById('stkMoveQty').value) || 0,
+    date: document.getElementById('stkMoveDate').value || localTodayStr(),
+    note: document.getElementById('stkMoveNote').value.trim()
+  };
+  if (document.getElementById('stkMoveCost')) body.unit_cost = parseInt(document.getElementById('stkMoveCost').value, 10) || 0;
+  if (document.getElementById('stkMoveService')) body.service_name = document.getElementById('stkMoveService').value.trim();
+  if (document.getElementById('stkMoveExpense')) body.create_expense = document.getElementById('stkMoveExpense').checked;
+  fb.textContent = '⏳ Menyimpan...';
+  try {
+    const r = await api('/api/admin/supplies/' + id + '/move', { method: 'POST', body: JSON.stringify(body) });
+    closeModal();
+    await renderStock();
+    showToast({
+      kind: 'success', icon: '📦',
+      title: 'Stok ' + (type === 'in' ? 'masuk' : (type === 'out' ? 'keluar' : 'disesuaikan')) + ': ' + r.supply.stock + ' ' + (r.supply.unit || ''),
+      desc: r.expense ? 'Pengeluaran ' + fmtRp(r.expense.amount) + ' otomatis tercatat di P&L.' : (r.move.note || '')
+    });
+  } catch (e) {
+    fb.style.color = '#c43050';
+    fb.textContent = '❌ ' + e.message;
+  }
+}
+
+async function openSupplyHistory(id) {
+  const s = ((STOCK_DATA && STOCK_DATA.supplies) || []).find((x) => x.id === id);
+  openModal('<h3>📜 Riwayat Stok</h3><p style="color:var(--text-soft);">Memuat…</p>');
+  try {
+    const d = await api('/api/admin/supplies/moves?supply_id=' + id + '&limit=200');
+    const rows = d.moves || [];
+    document.querySelector('#modalRoot .modal').innerHTML = `
+      <h3>📜 Riwayat: ${esc(s ? s.name : '')}</h3>
+      <p style="color:var(--text-soft);font-size:0.85rem;margin:6px 0 12px;">
+        ${rows.length} pergerakan terakhir. Tombol ↩️ mengembalikan efek stok dan (untuk restok) ikut menghapus pengeluaran yang tertaut.
+      </p>
+      <div style="max-height:55vh;overflow:auto;">
+        ${rows.length ? rows.map((m) => `
+          <div class="notif-card" style="margin-bottom:8px;">
+            <div class="notif-icon">${m.type === 'in' ? '➕' : (m.type === 'out' ? '➖' : '⚖️')}</div>
+            <div class="notif-body">
+              <div class="notif-title">${m.type_label} ${m.qty} ${esc(m.unit || '')} — ${m.before} → ${m.after}</div>
+              <div class="notif-meta">${esc(m.date)} · ${m.total_cost ? fmtRp(m.total_cost) : 'tanpa nilai'}${m.expense_id ? ' · 💸 masuk Pengeluaran #' + m.expense_id : ''}</div>
+              ${m.note || m.service_name ? `<div style="font-size:0.82rem;color:var(--text-soft);">${esc(m.note || '')}${m.service_name ? ' · ' + esc(m.service_name) : ''}</div>` : ''}
+              <div class="btn-row" style="margin-top:6px;">
+                <button class="btn-sm btn-view" onclick="undoSupplyMove(${m.id},${id})">↩️ Batalkan</button>
+              </div>
+            </div>
+          </div>`).join('') : '<p style="color:var(--text-soft);">Belum ada riwayat.</p>'}
+      </div>
+      <div class="btn-row" style="margin-top:12px;"><button class="btn btn-outline" onclick="closeModal()">Tutup</button></div>`;
+  } catch (e) {
+    alert('Gagal memuat riwayat: ' + e.message);
+    closeModal();
+  }
+}
+
+async function undoSupplyMove(moveId, supplyId) {
+  if (!confirm('Batalkan pergerakan stok ini?\n\nEfek stok dikembalikan ke angka sebelumnya.')) return;
+  try {
+    const r = await api('/api/admin/supplies/moves/' + moveId, { method: 'DELETE' });
+    await renderStock();
+    alert('↩️ Dibatalkan. Sisa ' + (r.supply ? r.supply.name : 'barang') + ' sekarang ' + (r.supply ? r.supply.stock : '') + (r.expense_removed ? '\nPengeluaran tertaut ikut dihapus.' : ''));
+    openSupplyHistory(supplyId);
+  } catch (e) { alert('Gagal: ' + e.message); }
+}
+
+async function openShoppingList() {
+  openModal('<h3>🛒 Daftar Belanja</h3><p style="color:var(--text-soft);">Menghitung…</p>');
+  try {
+    const d = await api('/api/admin/supplies/shopping-list');
+    const modal = document.querySelector('#modalRoot .modal');
+    if (!d.count) {
+      modal.innerHTML = `<h3>🛒 Daftar Belanja</h3>
+        <p style="color:var(--text-soft);">Belum ada barang yang perlu dibeli — semua stok masih di atas batas minimum. 🎉</p>
+        <div class="btn-row" style="margin-top:12px;"><button class="btn btn-outline" onclick="closeModal()">Tutup</button></div>`;
+      return;
+    }
+    modal.innerHTML = `
+      <h3>🛒 Daftar Belanja (${d.count} barang · estimasi ${fmtRp(d.total_estimate)})</h3>
+      <p style="color:var(--text-soft);font-size:0.85rem;margin:6px 0 10px;">
+        Saran jumlah = beli sampai 2× batas minimum. Kirim ke supplier lewat WhatsApp sekali klik, atau salin teksnya.
+      </p>
+      <div style="max-height:38vh;overflow:auto;">
+        ${d.by_supplier.map((g) => `
+          <div class="setting-card" style="margin-bottom:8px;padding:12px;">
+            <strong>🏪 ${esc(g.supplier)}</strong>
+            <div style="font-size:0.85rem;color:var(--text-soft);margin:4px 0 8px;">
+              ${g.count} barang · estimasi ${fmtRp(g.total_estimate)}${g.phone ? ' · 📱 ' + esc(g.phone) : ' · nomor supplier belum diisi'}
+            </div>
+            <div class="btn-row">
+              ${g.wa_link ? `<a class="btn-sm btn-pay" href="${esc(g.wa_link)}" target="_blank" rel="noopener" style="text-decoration:none;">💬 Kirim WA ke supplier</a>` : ''}
+              ${g.phone ? `<button class="btn-sm btn-approve" onclick="sendShoppingList('${escJs(g.phone)}','${escJs(g.supplier)}')">📨 Kirim via API</button>` : ''}
+            </div>
+          </div>`).join('')}
+      </div>
+      <div class="form-group" style="margin-top:10px;">
+        <label>Teks pesanan (bisa diedit dulu)</label>
+        <textarea id="stkOrderText" rows="7" style="width:100%;padding:10px 12px;border:1.5px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-family:inherit;font-size:0.86rem;">${esc(d.text)}</textarea>
+      </div>
+      <p style="color:var(--text-soft);font-size:0.8rem;margin:4px 0 0;">Template pesan bisa diubah di Pengaturan → Buku Stok.</p>
+      <div class="btn-row" style="margin-top:12px;">
+        <button class="btn btn-primary" onclick="copyStockText('stkOrderText')">📋 Salin Teks</button>
+        <button class="btn btn-outline" onclick="closeModal()">Tutup</button>
+      </div>`;
+  } catch (e) {
+    alert('Gagal memuat daftar belanja: ' + e.message);
+    closeModal();
+  }
+}
+
+function copyStockText(id) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const text = el.value || el.textContent || '';
+  try {
+    navigator.clipboard.writeText(text).then(
+      () => alert('📋 Teks disalin. Tempel di WhatsApp / catatan belanja.'),
+      () => { el.select(); document.execCommand('copy'); alert('📋 Teks disalin.'); }
+    );
+  } catch {
+    el.select();
+    document.execCommand('copy');
+    alert('📋 Teks disalin.');
+  }
+}
+
+async function sendShoppingList(phone, supplier) {
+  const textEl = document.getElementById('stkOrderText');
+  const body = { phone, text: textEl ? textEl.value : '' };
+  if (supplier && supplier !== 'Tanpa supplier') body.supplier = supplier;
+  try {
+    const r = await api('/api/admin/supplies/shopping-list/send', { method: 'POST', body: JSON.stringify(body) });
+    alert('✅ Daftar belanja terkirim ke ' + r.sent_to + ' (' + r.count + ' barang).');
+  } catch (e) { alert('Gagal kirim: ' + e.message); }
+}
+
+async function sendStockAlert() {
+  try {
+    const r = await api('/api/admin/supplies/alerts/send', { method: 'POST', body: '{}' });
+    alert('✅ Peringatan stok terkirim ke ' + r.sent_to + ' (' + r.count + ' barang).');
+    await renderStock();
+  } catch (e) {
+    // Tanpa kredensial WA Business API: tawarkan jalur wa.me sekali klik.
+    try {
+      const a = await api('/api/admin/supplies/alerts');
+      if (a.wa_link) {
+        if (confirm('Tidak bisa kirim otomatis: ' + e.message + '\n\nBuka WhatsApp dengan pesan yang sudah disiapkan?')) {
+          window.open(a.wa_link, '_blank', 'noopener');
+        }
+        return;
+      }
+    } catch { /* abaikan */ }
+    alert('Gagal: ' + e.message);
+  }
+}
+
+async function renderStockPending(tk) {
+  const card = document.getElementById('stockPendingCard');
+  if (!card) return;
+  const token = tk || STOCK_TOKEN;
+  let d;
+  try {
+    d = await api('/api/admin/supplies/pending-uses?days=14');
+  } catch (e) {
+    card.innerHTML = `<h3>⏳ Menunggu Pencatatan Bahan</h3><div class="alert alert-error">${esc(e.message)}</div>`;
+    return;
+  }
+  if (!isLatestRender('stock', token)) return;
+  STOCK_PENDING = d;
+  const rows = d.pending || [];
+  card.innerHTML = `
+    <h3>⏳ Menunggu Pencatatan Bahan (${d.count})</h3>
+    <p style="color:var(--text-soft);font-size:0.85rem;margin:6px 0 12px;">
+      Reservasi 14 hari terakhir yang layanannya sudah punya resep bahan, tetapi pemakaiannya belum dicatat.
+      Sekali klik: stok berkurang dan HPP masuk ke laporan.
+    </p>
+    ${rows.length ? rows.map((r) => `
+      <div class="notif-card" style="margin-bottom:8px;">
+        <div class="notif-icon">🧪</div>
+        <div class="notif-body">
+          <div class="notif-title">${esc(r.patient_name || '-')} · ${esc(r.service_name)}</div>
+          <div class="notif-meta">📅 ${esc(r.date)} · ${r.sessions} sesi · estimasi bahan ${fmtRp(r.total_cost)}
+            ${r.stock_ok ? '' : ' · <span style="color:#c43050;font-weight:700;">stok kurang: ' + r.missing.map((m) => esc(m.name) + ' (butuh ' + m.need + ')').join(', ') + '</span>'}</div>
+          <div class="btn-row" style="margin-top:6px;">
+            <button class="btn-sm btn-approve" onclick="applyReservationStock(${r.reservation_id})" ${r.stock_ok ? '' : 'disabled style="opacity:.5;"'}>✅ Pakai Bahan Sekarang</button>
+          </div>
+        </div>
+      </div>`).join('') : '<p style="color:var(--text-soft);padding:10px;text-align:center;">Semua pemakaian bahan sudah tercatat. 👍</p>'}`;
+}
+
+async function applyReservationStock(reservationId) {
+  if (!confirm('Catat pemakaian bahan untuk reservasi ini? Stok akan berkurang sesuai resep.')) return;
+  try {
+    const r = await api('/api/admin/supplies/use', { method: 'POST', body: JSON.stringify({ reservation_id: reservationId }) });
+    showToast({
+      kind: 'success', icon: '🧪',
+      title: 'Bahan tercatat: ' + r.service_name,
+      desc: r.moves.map((m) => m.supply_name + ' ' + m.qty + ' ' + (m.unit || '')).join(', ') + ' · HPP ' + fmtRp(r.total_cost)
+    });
+    await renderStock();
+  } catch (e) { alert('Gagal: ' + e.message); }
+}
+
+function openStockUseForm() {
+  const rows = (STOCK_DATA && STOCK_DATA.supplies) || [];
+  const services = (STOCK_RECIPES && STOCK_RECIPES.services) || [];
+  const recipes = (STOCK_RECIPES && STOCK_RECIPES.recipes) || [];
+  if (!rows.length) { alert('Tambahkan barang dulu di daftar stok.'); return; }
+  if (!recipes.length) { alert('Belum ada resep bahan. Buat resepnya dulu di kartu "Resep Bahan per Layanan".'); return; }
+  const names = recipes.map((r) => r.service_name);
+  openModal(`
+    <h3>🧪 Pakai Bahan untuk Layanan</h3>
+    <p style="color:var(--text-soft);font-size:0.86rem;margin:6px 0 12px;">
+      Stok berkurang sesuai resep dan nilainya tercatat sebagai HPP layanan.
+    </p>
+    <div class="form-group"><label>Layanan (punya resep)</label>
+      <select id="stkUseService">${names.map((n) => `<option value="${esc(n)}">${esc(n)}</option>`).join('')}</select>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;">
+      <div class="form-group"><label>Jumlah sesi</label><input id="stkUseSessions" type="number" min="1" max="60" value="1"></div>
+      <div class="form-group"><label>Tanggal</label><input id="stkUseDate" type="date" value="${localTodayStr()}"></div>
+    </div>
+    <div class="form-group"><label>Catatan</label><input id="stkUseNote" placeholder="mis. sesi ke-3 Bunda Ana"></div>
+    <div class="btn-row" style="margin-top:14px;">
+      <button class="btn btn-primary" onclick="submitStockUse()">💾 Catat Pemakaian</button>
+      <button class="btn btn-outline" onclick="closeModal()">Batal</button>
+    </div>
+    <div id="stkUseFeedback" style="margin-top:10px;font-size:0.85rem;"></div>
+  `);
+}
+
+async function submitStockUse() {
+  const fb = document.getElementById('stkUseFeedback');
+  const body = {
+    service_name: document.getElementById('stkUseService').value,
+    sessions: parseInt(document.getElementById('stkUseSessions').value, 10) || 1,
+    date: document.getElementById('stkUseDate').value || localTodayStr(),
+    note: document.getElementById('stkUseNote').value.trim()
+  };
+  fb.textContent = '⏳ Mencatat...';
+  try {
+    const r = await api('/api/admin/supplies/use', { method: 'POST', body: JSON.stringify(body) });
+    closeModal();
+    await renderStock();
+    showToast({
+      kind: 'success', icon: '🧪',
+      title: 'HPP ' + fmtRp(r.total_cost) + ' tercatat (' + r.sessions + ' sesi)',
+      desc: r.moves.map((m) => m.supply_name + ' −' + m.qty + ' ' + (m.unit || '')).join(', ')
+    });
+  } catch (e) {
+    fb.style.color = '#c43050';
+    fb.textContent = '❌ ' + e.message;
+  }
+}
+
+async function renderStockRecipes(tk) {
+  const card = document.getElementById('stockRecipeCard');
+  if (!card) return;
+  const token = tk || STOCK_TOKEN;
+  let d;
+  try {
+    d = await api('/api/admin/supply-recipes');
+  } catch (e) {
+    card.innerHTML = `<h3>🧪 Resep Bahan per Layanan (HPP)</h3><div class="alert alert-error">${esc(e.message)}</div>`;
+    return;
+  }
+  if (!isLatestRender('stock', token)) return;
+  STOCK_RECIPES = d;
+  card.innerHTML = `
+    <h3>🧪 Resep Bahan per Layanan (HPP)</h3>
+    <p style="color:var(--text-soft);font-size:0.85rem;margin:6px 0 12px;">
+      Resep = bahan yang dipakai untuk <strong>satu sesi</strong> layanan. Dari sini HPP (biaya bahan) per sesi dihitung
+      otomatis, sehingga margin per layanan di laporan bawah bukan lagi kira-kira.
+    </p>
+    ${d.recipes.length ? d.recipes.map((r) => `
+      <div class="card-list-item" style="margin-bottom:10px;">
+        <div class="cli-head">${esc(r.service_name)} <small style="color:var(--text-soft);font-weight:500;">· #${r.id}</small></div>
+        <div class="cli-row"><span class="cli-label">Biaya bahan / sesi</span><span class="cli-value" style="font-weight:800;">${fmtRp(r.cost_per_session)}</span></div>
+        <div style="font-size:0.85rem;margin:4px 0;">
+          ${r.items.map((it) => `<span style="display:inline-block;background:var(--bg);border-radius:8px;padding:3px 8px;margin:2px 4px 2px 0;">${esc(it.name)} × ${it.qty} ${esc(it.unit)}${it.stock < it.qty ? ' <span style="color:#c43050;">(stok kurang)</span>' : ''}</span>`).join('')}
+        </div>
+        ${r.note ? `<div class="cli-meta">${esc(r.note)}</div>` : ''}
+        <div class="cli-actions">
+          <button class="btn-sm btn-view" onclick="openRecipeForm(${r.id})">✏️ Edit</button>
+          <button class="btn-sm btn-del" onclick="deleteRecipe(${r.id})">🗑️</button>
+        </div>
+      </div>`).join('') : '<p style="color:var(--text-soft);padding:10px;text-align:center;">Belum ada resep. Buat satu untuk layanan yang paling sering dipakai.</p>'}
+    <div class="btn-row" style="margin-top:10px;">
+      <button class="btn btn-primary" onclick="openRecipeForm(null)">➕ Buat Resep Baru</button>
+      <button class="btn btn-outline" onclick="openStockUseForm()">🧪 Pakai Bahan Sekarang</button>
+    </div>`;
+}
+
+let RECIPE_ROWS = [];
+
+function openRecipeForm(id) {
+  const d = STOCK_RECIPES || { recipes: [], services: [], supplies: [] };
+  const r = id ? (d.recipes || []).find((x) => x.id === id) : null;
+  if (!(d.supplies || []).length) { alert('Tambahkan barang di daftar stok dulu.'); return; }
+  RECIPE_ROWS = r && r.items.length ? r.items.map((it) => ({ supply_id: it.supply_id, qty: it.qty })) : [{ supply_id: d.supplies[0].id, qty: 1 }];
+  openModal(`
+    <h3>${r ? '✏️ Edit Resep' : '➕ Resep Baru'}</h3>
+    <div class="form-group"><label>Layanan</label>
+      <input id="recipeService" list="recipeServiceList" value="${esc(r ? r.service_name : '')}" placeholder="Pilih / ketik nama layanan">
+      <datalist id="recipeServiceList">${(d.services || []).map((n) => `<option value="${esc(n)}"></option>`).join('')}</datalist>
+    </div>
+    <label style="font-size:0.85rem;font-weight:600;">Bahan per 1 sesi</label>
+    <div id="recipeRows" style="margin-top:6px;"></div>
+    <div class="btn-row" style="margin-top:8px;">
+      <button class="btn-sm btn-view" onclick="addRecipeRow()">➕ Tambah bahan</button>
+    </div>
+    <div class="form-group" style="margin-top:10px;"><label>Catatan</label><input id="recipeNote" value="${esc(r ? (r.note || '') : '')}" placeholder="mis. 1 sesi ± 60 menit"></div>
+    <div class="btn-row" style="margin-top:14px;">
+      <button class="btn btn-primary" onclick="saveRecipe(${r ? r.id : 'null'})">💾 Simpan Resep</button>
+      <button class="btn btn-outline" onclick="closeModal()">Batal</button>
+    </div>
+    <div id="recipeFeedback" style="margin-top:10px;font-size:0.85rem;"></div>
+  `);
+  renderRecipeRows();
+}
+
+function renderRecipeRows() {
+  const wrap = document.getElementById('recipeRows');
+  if (!wrap) return;
+  const supplies = (STOCK_RECIPES && STOCK_RECIPES.supplies) || [];
+  wrap.innerHTML = RECIPE_ROWS.map((row, i) => `
+    <div style="display:grid;grid-template-columns:1fr 110px 40px;gap:8px;align-items:center;margin-bottom:8px;">
+      <select onchange="RECIPE_ROWS[${i}].supply_id=parseInt(this.value,10)">${supplies.map((s) => `<option value="${s.id}" ${Number(row.supply_id) === s.id ? 'selected' : ''}>${esc(s.name)} — ${fmtRp(s.cost)}/${esc(s.unit || '')}</option>`).join('')}</select>
+      <input type="number" min="0" step="0.01" value="${row.qty}" oninput="RECIPE_ROWS[${i}].qty=parseFloat(this.value)||0" placeholder="jumlah">
+      <button class="btn-sm btn-del" onclick="RECIPE_ROWS.splice(${i},1);renderRecipeRows()">×</button>
+    </div>`).join('') + `
+    <p style="color:var(--text-soft);font-size:0.82rem;margin:4px 0 0;">
+      Estimasi biaya bahan / sesi: <strong id="recipeCostPreview">${fmtRp(recipeDraftCost())}</strong>
+    </p>`;
+  const wrapEl = document.getElementById('recipeRows');
+  if (wrapEl && !wrapEl.dataset.bound) {
+    wrapEl.dataset.bound = '1';
+    wrapEl.addEventListener('input', () => {
+      const prev = document.getElementById('recipeCostPreview');
+      if (prev) prev.textContent = fmtRp(recipeDraftCost());
+    });
+  }
+}
+
+function recipeDraftCost() {
+  const supplies = (STOCK_RECIPES && STOCK_RECIPES.supplies) || [];
+  return Math.round(RECIPE_ROWS.reduce((n, row) => {
+    const s = supplies.find((x) => x.id === Number(row.supply_id));
+    return n + (s ? (Number(row.qty) || 0) * (Number(s.cost) || 0) : 0);
+  }, 0));
+}
+
+function addRecipeRow() {
+  const supplies = (STOCK_RECIPES && STOCK_RECIPES.supplies) || [];
+  if (!supplies.length) return;
+  RECIPE_ROWS.push({ supply_id: supplies[0].id, qty: 1 });
+  renderRecipeRows();
+}
+
+async function saveRecipe(id) {
+  const fb = document.getElementById('recipeFeedback');
+  const body = {
+    service_name: document.getElementById('recipeService').value.trim(),
+    note: document.getElementById('recipeNote').value.trim(),
+    items: RECIPE_ROWS.filter((r) => r.supply_id && Number(r.qty) > 0)
+  };
+  if (!body.service_name) { fb.style.color = '#c43050'; fb.textContent = '❌ Nama layanan wajib diisi.'; return; }
+  if (!body.items.length) { fb.style.color = '#c43050'; fb.textContent = '❌ Minimal 1 bahan dengan jumlah > 0.'; return; }
+  fb.textContent = '⏳ Menyimpan...';
+  try {
+    const r = await api('/api/admin/supply-recipes', { method: 'POST', body: JSON.stringify(body) });
+    closeModal();
+    await renderStock();
+    alert('✅ Resep ' + r.recipe.service_name + ' disimpan. Biaya bahan ' + fmtRp(r.recipe.cost_per_session) + ' / sesi.');
+  } catch (e) {
+    fb.style.color = '#c43050';
+    fb.textContent = '❌ ' + e.message;
+  }
+}
+
+async function deleteRecipe(id) {
+  if (!confirm('Hapus resep ini? Pemakaian bahan untuk layanan ini tidak lagi dihitung otomatis.')) return;
+  try {
+    await api('/api/admin/supply-recipes/' + id, { method: 'DELETE' });
+    await renderStock();
+  } catch (e) { alert('Gagal: ' + e.message); }
+}
+
+async function renderStockReport(months, tk) {
+  const card = document.getElementById('stockReportCard');
+  if (!card) return;
+  const token = tk || STOCK_TOKEN;
+  const m = months || STOCK_REPORT_MONTHS || 6;
+  STOCK_REPORT_MONTHS = m;
+  let d;
+  try {
+    d = await api('/api/admin/supplies/report?months=' + m);
+  } catch (e) {
+    card.innerHTML = `<h3>📊 Laporan HPP &amp; Margin</h3><div class="alert alert-error">${esc(e.message)}</div>`;
+    return;
+  }
+  if (!isLatestRender('stock', token)) return;
+  STOCK_REPORT = d;
+  const services = d.services || [];
+  card.innerHTML = `
+    <h3>📊 Laporan HPP &amp; Margin</h3>
+    <p style="color:var(--text-soft);font-size:0.85rem;margin:6px 0 12px;">
+      Pembelian bahan sudah masuk <strong>Pengeluaran</strong> (kategori Supplies) ketika restok dicatat, jadi
+      angka <em>biaya bahan</em> di bawah adalah pemakaian (HPP) dan <strong>tidak</strong> ditambahkan lagi ke laba —
+      kalau ditambahkan, laba akan terlihat lebih kecil dari sebenarnya.
+    </p>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:10px;">
+      <select onchange="renderStockReport(parseInt(this.value,10))" style="padding:8px 12px;border-radius:10px;border:1px solid var(--border);background:var(--card);color:var(--text);font-weight:600;">
+        ${[3, 6, 12].map((x) => `<option value="${x}" ${x === m ? 'selected' : ''}>${x} bulan</option>`).join('')}
+      </select>
+      <span style="flex:1;"></span>
+      <a class="btn-sm btn-view" style="text-decoration:none;" href="${apiUrl('/api/admin/supplies/export.xlsx')}" onclick="return stockDownload(this)">⬇️ Export Excel</a>
+    </div>
+    <div class="stat-grid" style="margin-bottom:14px;">
+      <div class="stat-card peach"><div class="label">Nilai Persediaan</div><div class="value">${fmtRp(d.stock_value)}</div></div>
+      <div class="stat-card"><div class="label">Pembelian (${m} bln)</div><div class="value">${fmtRp(d.purchase_total)}</div></div>
+      <div class="stat-card pink"><div class="label">Bahan Terpakai (HPP)</div><div class="value">${fmtRp(d.material_total)}</div></div>
+      <div class="stat-card"><div class="label">Resep Dibuat</div><div class="value">${d.recipes_count}</div></div>
+    </div>
+    ${services.length ? `
+      <div style="overflow:auto;border:1px solid var(--border);border-radius:10px;">
+        <table class="data-table">
+          <thead><tr><th>Layanan</th><th>Sesi</th><th>Omzet</th><th>Bahan (HPP)</th><th>Bahan/sesi</th><th>Margin</th><th>%</th></tr></thead>
+          <tbody>
+            ${services.map((s) => `<tr>
+              <td>${esc(s.service_name)} ${s.has_recipe ? '' : '<small style="color:var(--text-soft);">(tanpa resep)</small>'}</td>
+              <td>${s.sessions}</td>
+              <td>${s.omzet ? fmtRp(s.omzet) : '—'}</td>
+              <td>${s.material_cost ? fmtRp(s.material_cost) : '—'}</td>
+              <td>${s.material_per_session ? fmtRp(s.material_per_session) : '—'}</td>
+              <td style="font-weight:700;color:${s.margin >= 0 ? 'var(--success, #1e8957)' : '#c43050'};">${s.omzet ? fmtRp(s.margin) : '—'}</td>
+              <td>${s.margin_percent === null ? '—' : s.margin_percent + '%'}</td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>` : '<p style="color:var(--text-soft);padding:10px;text-align:center;">Belum ada data. Catat pemakaian bahan dulu agar HPP per layanan muncul.</p>'}
+    <h4 style="margin:16px 0 8px;">Pemakaian Bahan per Barang (30 hari)</h4>
+    <div style="overflow:auto;border:1px solid var(--border);border-radius:10px;">
+      <table class="data-table">
+        <thead><tr><th>Barang</th><th>Sisa</th><th>Masuk</th><th>Terpakai</th><th>Sesi</th><th>Per sesi</th><th>Nilai terpakai</th></tr></thead>
+        <tbody>
+          ${(d.items || []).map((s) => `<tr>
+            <td>${esc(s.name)} ${s.low ? '<span class="badge badge-rejected">⚠️</span>' : ''}</td>
+            <td>${s.stock} ${esc(s.unit)}</td>
+            <td>${s.purchased_30d || '—'}</td>
+            <td>${s.used_30d || '—'}</td>
+            <td>${s.sessions_30d || '—'}</td>
+            <td>${s.per_session === null ? '—' : s.per_session + ' ' + esc(s.unit)}</td>
+            <td>${s.cost_used_30d ? fmtRp(s.cost_used_30d) : '—'}</td>
+          </tr>`).join('') || '<tr><td colspan="7" style="text-align:center;color:var(--text-soft);">Belum ada barang.</td></tr>'}
+        </tbody>
+      </table>
+    </div>`;
+}
+
+let STOCK_REPORT_MONTHS = 6;
+
+// Export Excel butuh token admin → unduh lewat fetch lalu simpan sebagai blob
+// (tautan biasa tidak membawa header Authorization).
+async function stockDownload(el) {
+  try {
+    const res = await fetch(apiUrl('/api/admin/supplies/export.xlsx'), { headers: { Authorization: 'Bearer ' + TOKEN } });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'buku-stok-adzkiya-' + localTodayStr() + '.xlsx';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+  } catch (e) {
+    alert('Gagal mengunduh Excel: ' + e.message);
+  }
+  return false;
+}
+
 // ---------- SETTINGS ----------
 async function renderSettings() {
   const _token73 = renderToken('settings');
   const s = await api('/api/admin/settings');
+  // Kategori pengeluaran dipakai kartu "Buku Stok" untuk memilih kategori
+  // yang dipakai saat restok dicatat (default: Supplies).
+  try { EXPENSE_CATEGORIES = await api('/api/admin/expense-categories'); } catch { EXPENSE_CATEGORIES = []; }
   // Render yang lebih baru sudah dimulai — jangan menimpa hasilnya.
   if (!isLatestRender('settings', _token73)) return;
   SETTINGS = s;
@@ -4621,6 +5465,49 @@ async function renderSettings() {
         <div id="schedFeedback" style="margin-top:10px;font-size:0.85rem;"></div>
       </div>
 
+      <div class="setting-card" id="stockSettingsCard">
+        <h3>📦 Buku Stok &amp; Bahan</h3>
+        <p style="color:var(--text-soft);font-size:0.85rem;margin:6px 0 12px;line-height:1.6;">
+          Mengatur <strong>peringatan stok menipis</strong> (otomatis dikirim ke WhatsApp bila kredensial
+          WhatsApp Business API terisi) dan kategori <strong>pengeluaran</strong> yang dipakai saat restok dicatat.
+        </p>
+        <label style="display:flex;align-items:center;gap:8px;font-size:0.88rem;cursor:pointer;">
+          <input type="checkbox" id="stkSetEnabled" ${s.supply_alert_enabled !== false ? 'checked' : ''} style="width:18px;height:18px;accent-color:var(--primary);"> Aktifkan peringatan stok menipis
+        </label>
+        <label style="display:flex;align-items:center;gap:8px;margin-top:6px;font-size:0.88rem;cursor:pointer;">
+          <input type="checkbox" id="stkSetAutoWa" ${s.supply_auto_wa !== false ? 'checked' : ''} style="width:18px;height:18px;accent-color:var(--primary);"> Kirim peringatan otomatis via WhatsApp Business API
+        </label>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin-top:10px;">
+          <div class="form-group">
+            <label>Nomor WA tujuan peringatan</label>
+            <input type="text" id="stkSetWa" value="${esc(s.supply_alert_wa || '')}" placeholder="kosong = WA bisnis (${esc(s.whatsapp || s.phone || 'belum diisi')})" style="width:100%;padding:8px 12px;border:1.5px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);">
+          </div>
+          <div class="form-group">
+            <label>Jarak minimal antar peringatan (jam)</label>
+            <input type="number" id="stkSetInterval" min="1" max="168" value="${s.supply_alert_interval_hours || 24}" style="width:100%;padding:8px 12px;border:1.5px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);">
+          </div>
+          <div class="form-group">
+            <label>Kategori pengeluaran untuk restok</label>
+            <select id="stkSetCategory" style="width:100%;padding:8px 12px;border:1.5px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-weight:600;">
+              ${(typeof EXPENSE_CATEGORIES !== 'undefined' ? EXPENSE_CATEGORIES : []).map((c) => `<option value="${esc(c.id)}" ${(s.supply_expense_category || 'cat_supplies') === c.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('') || `<option value="cat_supplies">🧴 Supplies (minyak, lotion)</option>`}
+            </select>
+          </div>
+        </div>
+        <div class="form-group" style="margin-top:10px;">
+          <label>Pesan peringatan <span style="color:var(--text-soft);font-weight:500;">(boleh pakai {bisnis} {tanggal} {daftar} {jumlah} {total})</span></label>
+          <textarea id="stkSetAlertMsg" rows="3" style="width:100%;padding:10px 12px;border:1.5px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-family:inherit;font-size:0.88rem;">${esc(s.supply_alert_message || '⚠️ Stok {bisnis} menipis per {tanggal}:\n\n{daftar}\n\nSegera restok supaya tidak kehabisan saat melayani pasien.')}</textarea>
+        </div>
+        <div class="form-group" style="margin-top:10px;">
+          <label>Pesan daftar belanja ke supplier <span style="color:var(--text-soft);font-weight:500;">(boleh pakai {bisnis} {tanggal} {daftar} {total})</span></label>
+          <textarea id="stkSetOrderMsg" rows="3" style="width:100%;padding:10px 12px;border:1.5px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-family:inherit;font-size:0.88rem;">${esc(s.supply_order_message || 'Halo, saya mau pesan bahan untuk {bisnis} ({tanggal}):\n\n{daftar}\n\nEstimasi total: {total}. Terima kasih 🙏')}</textarea>
+        </div>
+        <div class="btn-row" style="margin-top:12px;">
+          <button type="button" class="btn btn-primary" onclick="saveStokSettings()">💾 Simpan Pengaturan Stok</button>
+          <button type="button" class="btn btn-outline" onclick="navigate('stock')">📦 Buka Buku Stok</button>
+        </div>
+        <div id="stkSetFeedback" style="margin-top:10px;font-size:0.85rem;"></div>
+      </div>
+
       <div class="setting-card" id="storageStatusCard">
         <h3 style="display:flex;align-items:center;gap:8px;">🗄️ Status Penyimpanan Data</h3>
         <div id="storageStatusBody" style="font-size:0.88rem;color:var(--text-soft);line-height:1.6;">Memuat status…</div>
@@ -4814,6 +5701,36 @@ async function saveSchedSettings() {
     await loadCache();
     fb.style.color = 'var(--success, #1e8957)';
     fb.textContent = '✅ Tersimpan. Pengingat: ' + (leads.length ? leads.join(', ') + ' jam sebelum jadwal' : '24, 2 jam') + '.';
+  } catch (e) {
+    fb.style.color = '#c43050';
+    fb.textContent = '❌ ' + e.message;
+  }
+}
+
+// Simpan pengaturan Buku Stok (peringatan menipis + kategori pengeluaran
+// restok + template pesan). Dipisah dari "Simpan Semua" supaya admin bisa
+// mengubahnya tanpa ikut mengirim ulang data bisnis.
+async function saveStokSettings() {
+  const fb = document.getElementById('stkSetFeedback');
+  const interval = parseInt(document.getElementById('stkSetInterval').value, 10);
+  fb.textContent = '⏳ Menyimpan...';
+  fb.style.color = 'var(--text-soft)';
+  try {
+    await api('/api/admin/settings', {
+      method: 'PUT',
+      body: JSON.stringify({
+        supply_alert_enabled: document.getElementById('stkSetEnabled').checked,
+        supply_auto_wa: document.getElementById('stkSetAutoWa').checked,
+        supply_alert_wa: document.getElementById('stkSetWa').value.trim(),
+        supply_alert_interval_hours: Number.isFinite(interval) ? Math.max(1, Math.min(168, interval)) : 24,
+        supply_expense_category: document.getElementById('stkSetCategory').value,
+        supply_alert_message: document.getElementById('stkSetAlertMsg').value.trim(),
+        supply_order_message: document.getElementById('stkSetOrderMsg').value.trim()
+      })
+    });
+    await loadCache();
+    fb.style.color = 'var(--success, #1e8957)';
+    fb.textContent = '✅ Pengaturan stok tersimpan.';
   } catch (e) {
     fb.style.color = '#c43050';
     fb.textContent = '❌ ' + e.message;

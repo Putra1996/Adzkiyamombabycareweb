@@ -28,13 +28,13 @@ Keluaran berupa daftar `OK` / `!!` per pemeriksaan, lalu ringkasan
 
 ## Cakupan
 
-- **audit-integration.js** (86 pemeriksaan): halaman publik, reservasi form
+- **audit-integration.js** (96 pemeriksaan): halaman publik, reservasi form
   (validasi harga/jadwal/hari libur), admin CRUD reservasi, kwitansi + link
   publik, rekap & Excel, akunting & pengeluaran, broadcast WA & template,
   CRM/RFM, notifikasi, pengaturan, backup & restore terenkripsi, AI
   (status/config/diagnosa/tes/chat), webhook WA, keamanan token, status
   penyimpanan.
-- **audit-features.js** (36 pemeriksaan): impor kwitansi JSON, hapus massal,
+- **audit-features.js** (137 pemeriksaan): impor kwitansi JSON, hapus massal,
   unggahan berkas & TTD pemilik, kategori pengeluaran, CRM tepi, **reservasi
   otomatis dari AI**, webhook WA sungguhan, dan integrasi
   kwitansi → reservasi mirror → rekap.

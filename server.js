@@ -164,9 +164,14 @@ let saveChain = Promise.resolve();
 
 function normalizeStateObject(state) {
   const out = state && typeof state === 'object' ? state : {};
-  out._seq = out._seq || { admins: 0, reservations: 0, receipts: 0, broadcasts: 0, expenses: 0, packages: 0 };
-  ['admins', 'reservations', 'receipts', 'broadcasts', 'expenses', 'packages'].forEach((key) => { out[key] = Array.isArray(out[key]) ? out[key] : []; });
+  out._seq = out._seq || { admins: 0, reservations: 0, receipts: 0, broadcasts: 0, expenses: 0, packages: 0, supplies: 0, supply_moves: 0, supply_recipes: 0 };
+  ['admins', 'reservations', 'receipts', 'broadcasts', 'expenses', 'packages', 'supplies', 'supply_moves', 'supply_recipes'].forEach((key) => { out[key] = Array.isArray(out[key]) ? out[key] : []; });
   out._seq.packages = out._seq.packages || 0;
+  // Buku stok (lihat bagian BUKU STOK): barang, riwayat pergerakan, dan
+  // resep bahan per layanan. File data lama tidak punya kunci ini.
+  out._seq.supplies = out._seq.supplies || 0;
+  out._seq.supply_moves = out._seq.supply_moves || 0;
+  out._seq.supply_recipes = out._seq.supply_recipes || 0;
   // Sisa sesi paket disimpan di out.packages (lihat bagian PAKET SESI).
   // Penghitung nomor kwitansi per hari (INV-YYYYMMDD-NNN). File data lama
   // tidak punya kunci ini — mulai dari objek kosong.
@@ -290,6 +295,7 @@ function mergeTransactionalState(dbStateInput, liveStateInput) {
   const report = {
     reservations_added: 0, receipts_added: 0, expenses_added: 0,
     broadcasts_added: 0, expense_categories_copied: false, admins_added: 0,
+    supplies_added: 0, supply_moves_added: 0, supply_recipes_added: 0,
     db_before: {
       reservations: target.reservations.length,
       receipts: target.receipts.length,
@@ -347,6 +353,37 @@ function mergeTransactionalState(dbStateInput, liveStateInput) {
     report.broadcasts_added++;
   }
 
+  // Buku stok: barang (dedupe per nama), riwayat pergerakan (dedupe per
+  // barang + waktu + jenis + jumlah), resep (dedupe per nama layanan).
+  // Tanpa ini, data stok yang dicatat saat database sedang mati akan hilang
+  // begitu admin menekan "Sinkronkan Data Darurat ke Database".
+  const supKey = (s) => String(s && s.name || '').trim().toLowerCase();
+  const supKeys = new Set(target.supplies.map(supKey));
+  for (const s of live.supplies) {
+    const key = supKey(s);
+    if (!key || supKeys.has(key)) continue;
+    supKeys.add(key);
+    target.supplies.push(s);
+    report.supplies_added++;
+  }
+  const moveKey = (m) => [m.supply_id, m.at || '', m.type || '', m.qty, m.date || ''].join('|');
+  const moveKeys = new Set(target.supply_moves.map(moveKey));
+  for (const m of live.supply_moves) {
+    const key = moveKey(m);
+    if (moveKeys.has(key)) continue;
+    moveKeys.add(key);
+    target.supply_moves.push(m);
+    report.supply_moves_added++;
+  }
+  const recipeKeys = new Set(target.supply_recipes.map((r) => String(r && r.service_name || '').trim().toLowerCase()));
+  for (const r of live.supply_recipes) {
+    const key = String(r && r.service_name || '').trim().toLowerCase();
+    if (!key || recipeKeys.has(key)) continue;
+    recipeKeys.add(key);
+    target.supply_recipes.push(r);
+    report.supply_recipes_added++;
+  }
+
   // Kategori pengeluaran & token kwitansi: hanya disalin kalau database
   // belum punya (tidak menimpa apa pun).
   if ((!target.expense_categories || !target.expense_categories.length) && live.expense_categories && live.expense_categories.length) {
@@ -382,6 +419,9 @@ function mergeTransactionalState(dbStateInput, liveStateInput) {
   target._seq.expenses = Math.max(target._seq.expenses || 0, liveSeq.expenses || 0, maxId(target.expenses));
   target._seq.broadcasts = Math.max(target._seq.broadcasts || 0, liveSeq.broadcasts || 0, maxId(target.broadcasts));
   target._seq.admins = Math.max(target._seq.admins || 0, liveSeq.admins || 0, maxId(target.admins));
+  target._seq.supplies = Math.max(target._seq.supplies || 0, liveSeq.supplies || 0, maxId(target.supplies));
+  target._seq.supply_moves = Math.max(target._seq.supply_moves || 0, liveSeq.supply_moves || 0, maxId(target.supply_moves));
+  target._seq.supply_recipes = Math.max(target._seq.supply_recipes || 0, liveSeq.supply_recipes || 0, maxId(target.supply_recipes));
 
   report.db_after = {
     reservations: target.reservations.length,
@@ -569,13 +609,36 @@ function nextId(t) { DB._seq[t] = (DB._seq[t] || 0) + 1; return DB._seq[t]; }
 // imported twice.
 function syncReceiptToReservation(receipt) {
   if (!receipt || !receipt.patient_name || !receipt.service_date) return null;
-  // Skip if a matching reservation already exists.
   const existing = DB.reservations.find((r) =>
     r.patient_name === receipt.patient_name &&
     r.reservation_date === receipt.service_date &&
     Math.abs((r.total || 0) - (receipt.total || 0)) <= 1
   );
-  if (existing) return null;
+  if (existing) {
+    // Reservasi untuk pelanggan + tanggal + nominal yang sama sudah ada
+    // (mis. Bunda booking lewat web, lalu dibayar dan dibuatkan kwitansi).
+    //
+    // Dulu fungsi ini berhenti di sini. Akibatnya, kalau reservasi itu masih
+    // berstatus BELUM LUNAS, pendapatan yang sudah diterima tidak pernah
+    // muncul di Rekap Bulanan maupun P&L — kwitansi tidak ditambahkan
+    // terpisah karena dianggap sudah diwakili reservasi mirror. Padahal
+    // kwitansi adalah bukti pembayaran diterima, jadi reservasi itu yang
+    // harus ditandai lunas (bukan dibuatkan dokumen kedua).
+    //
+    // Reservasi yang sudah ditolak (rejected) tidak diubah: kwitansi untuk
+    // booking yang dibatalkan perlu ditangani manual oleh admin.
+    if (existing.status !== 'rejected' && existing.payment_status !== 'lunas') {
+      existing.payment_status = 'lunas';
+      if (existing.status === 'pending') existing.status = 'approved';
+      existing.paid_via_receipt = receipt.invoice_no || null;
+      existing.paid_at = new Date().toISOString();
+      const tag = `Pembayaran diterima via kwitansi ${receipt.invoice_no || ''}`.trim();
+      const notes = String(existing.notes || '');
+      if (!notes.includes(tag)) existing.notes = [notes, tag].filter(Boolean).join(' | ');
+      return existing;
+    }
+    return null;
+  }
   const items = Array.isArray(receipt.items) ? receipt.items : [];
   if (!items.length) return null;
   // Use the receipt's service_time if it's a valid HH:MM, otherwise
@@ -817,6 +880,16 @@ function ensureNewSettings() {
   ];
   if (typeof DB.settings.reminder_hours_before !== 'number') DB.settings.reminder_hours_before = 2;
   if (typeof DB.settings.notif_sound !== 'boolean') DB.settings.notif_sound = true;
+  // Buku stok (lihat bagian BUKU STOK): peringatan stok menipis. Default
+  // menyala, dan otomatis dikirim via WhatsApp Business API bila
+  // kredensialnya sudah diisi (maksimal sekali per 24 jam).
+  if (typeof DB.settings.supply_alert_enabled !== 'boolean') DB.settings.supply_alert_enabled = true;
+  if (typeof DB.settings.supply_auto_wa !== 'boolean') DB.settings.supply_auto_wa = true;
+  if (typeof DB.settings.supply_alert_wa !== 'string') DB.settings.supply_alert_wa = '';
+  if (typeof DB.settings.supply_alert_interval_hours !== 'number') DB.settings.supply_alert_interval_hours = 24;
+  if (typeof DB.settings.supply_expense_category !== 'string' || !DB.settings.supply_expense_category) {
+    DB.settings.supply_expense_category = 'cat_supplies';
+  }
   // Blackout dates — older data.json files won't have these keys.
   // Always coerce to plain JSON-safe values (no Date objects etc.) so
   // the public endpoint can return them as-is.
@@ -905,6 +978,23 @@ function ensureNewSettings() {
         setTimeout(autoSend, 25000);
         setInterval(autoSend, 5 * 60 * 1000);
       }
+      // PERINGATAN STOK MENIPIS (lihat bagian BUKU STOK): dicek tiap 30
+      // menit, dikirim ke WhatsApp admin/supplier hanya bila benar-benar ada
+      // barang di bawah batas minimum dan jeda minimal antar-peringatan
+      // (default 24 jam) sudah lewat — supaya tidak jadi spam.
+      const autoStockAlert = async () => {
+        try {
+          if (!supplyAlertDue()) return;
+          const items = lowStockSupplies();
+          const result = await sendSupplyAlertNow(items);
+          console.log(`[stok] peringatan stok menipis terkirim ke ${result.sent_to} (${result.count} barang)`);
+        } catch (e) {
+          console.warn('[stok] gagal kirim peringatan:', sanitizeAIError(e));
+          recordAIError(e);
+        }
+      };
+      setTimeout(autoStockAlert, 45000);
+      setInterval(autoStockAlert, 30 * 60 * 1000);
       // Pemanasan AI (tidak memblokir boot): siapkan daftar model & prompt
       // sistem di latar belakang supaya pesan pertama pengunjung tidak
       // menanggung biaya tambahan apa pun.
@@ -2039,6 +2129,1078 @@ app.delete('/api/admin/packages/:id', auth, (req, res) => {
   res.json({ ok: true, deleted: before - DB.packages.length });
 });
 
+// ===== BUKU STOK (BAHAN HABIS PAKAI) =====
+//
+// Mencatat barang habis pakai (minyak pijat, lotion, tisu, kasa, handscoon,
+// alkohol swab, dll). Tanpa catatan, pertanyaan "sisa minyak masih berapa?"
+// hanya bisa dijawab dengan mengecek rak, dan biaya bahan per layanan hanya
+// kira-kira — padahal itu komponen utama margin.
+//
+// Yang dijawab fitur ini:
+//   1. SISA STOK & PERINGATAN — tiap barang punya satuan, harga beli, dan
+//      batas minimum. Begitu stok ≤ batas minimum, barang muncul di panel,
+//      di dasbor, dan (bila kredensial WA ada) dikirim otomatis ke WhatsApp.
+//   2. JEJAK MASUK/KELUAR — setiap perubahan stok punya riwayat (sebelum →
+//      sesudah, siapa/kapan). Jadi selisih "1 botol harusnya 20 sesi" bisa
+//      ditelusuri, bukan cuma dikira-kira.
+//   3. SAMBUNGAN KE UANG — restok bisa sekaligus menjadi pengeluaran
+//      (kategori Supplies) sehingga P&L otomatis benar; resep bahan per
+//      layanan memberi HPP (biaya bahan) per sesi + margin per layanan; dan
+//      daftar belanja siap dikirim ke supplier lewat WhatsApp sekali klik.
+//
+// Data: DB.supplies (barang), DB.supply_moves (riwayat), DB.supply_recipes
+// (resep bahan per layanan). Semua endpoint di bawah wajib token admin.
+const SUPPLY_CATEGORIES = [
+  '🧴 Bahan perawatan (minyak, lotion)',
+  '🧻 Habis pakai (tisu, kasa, kapas)',
+  '🧤 Alat sekali pakai (handscoon, masker)',
+  '💊 Medis (alkohol, betadine)',
+  '📦 Lainnya'
+];
+const SUPPLY_UNITS = ['pcs', 'botol', 'sachet', 'box', 'pack', 'roll', 'ml', 'gram', 'liter'];
+const SUPPLY_QTY_MAX = 1000000;
+
+// Bulatkan jumlah ke 3 desimal supaya 0.1 + 0.2 tidak menjadi 0.30000000004
+// (satuan ml/gram butuh pecahan, satuan pcs tetap bulat dalam praktiknya).
+function roundQty(n) {
+  const v = Number(n);
+  if (!Number.isFinite(v)) return 0;
+  return Math.round(v * 1000) / 1000;
+}
+function clampQty(n) {
+  const v = roundQty(n);
+  if (!Number.isFinite(v) || v < 0) return 0;
+  return Math.min(v, SUPPLY_QTY_MAX);
+}
+function supplyStock(item) {
+  return roundQty(item && item.stock);
+}
+// Barang dianggap menipis bila stok ≤ batas minimum. min_stock 0 = admin
+// tidak ingin peringatan untuk barang itu (mis. alat yang tidak habis).
+function supplyLowStock(item) {
+  if (!item) return false;
+  const min = Number(item.min_stock);
+  if (!Number.isFinite(min) || min <= 0) return false;
+  return supplyStock(item) <= min;
+}
+// Saran jumlah pembelian: pulihkan stok sampai 2x batas minimum, minimal 1.
+// Contoh: min 3 botol, sisa 1 → saran beli 5 botol.
+function restockSuggestion(item) {
+  const min = Number((item && item.min_stock) || 0);
+  const stock = supplyStock(item);
+  if (!Number.isFinite(min) || min <= 0) return 1;
+  const target = Math.max(min * 2, min + 1);
+  return Math.max(1, Math.ceil(target - stock));
+}
+function supplyStockValue(list) {
+  const rows = Array.isArray(list) ? list : (DB.supplies || []);
+  return Math.round(rows.reduce((n, s) => n + supplyStock(s) * (Number(s.cost) || 0), 0));
+}
+function supplyById(id) {
+  const n = parseInt(id, 10);
+  if (!Number.isFinite(n)) return null;
+  return (DB.supplies || []).find((s) => s.id === n) || null;
+}
+function lowStockSupplies() {
+  return (DB.supplies || []).filter(supplyLowStock).map((s) => ({
+    id: s.id,
+    name: s.name,
+    unit: s.unit || '',
+    stock: supplyStock(s),
+    min_stock: Number(s.min_stock) || 0,
+    cost: Number(s.cost) || 0,
+    category: s.category || '',
+    supplier: s.supplier || '',
+    supplier_wa: s.supplier_wa || '',
+    suggested_qty: restockSuggestion(s),
+    estimated_cost: Math.round(restockSuggestion(s) * (Number(s.cost) || 0))
+  })).sort((a, b) => (a.stock / (a.min_stock || 1)) - (b.stock / (b.min_stock || 1)));
+}
+function supplyRecipeFor(serviceName) {
+  const key = String(serviceName || '').trim().toLowerCase();
+  if (!key) return null;
+  return (DB.supply_recipes || []).find((r) => String(r.service_name || '').trim().toLowerCase() === key) || null;
+}
+// Biaya bahan satu resep (1 sesi) memakai harga beli terakhir tiap barang.
+function recipeCost(recipe) {
+  return Math.round(((recipe && recipe.items) || []).reduce((n, it) => {
+    const s = supplyById(it.supply_id);
+    if (!s) return n;
+    return n + (Number(it.qty) || 0) * (Number(s.cost) || 0);
+  }, 0));
+}
+// Rencana pemakaian bahan: apa saja yang dipakai, berapa biayanya, dan
+// apakah stoknya cukup. Dihitung dulu (tanpa mengubah apa pun) supaya
+// pemakaian bersifat "semua atau tidak sama sekali" — tidak ada sesi yang
+// setengah tercatat.
+function supplyUsePlan(serviceName, sessions) {
+  const recipe = supplyRecipeFor(serviceName);
+  const n = Math.max(1, Math.min(60, parseInt(sessions, 10) || 1));
+  if (!recipe) {
+    return { found: false, service_name: String(serviceName || ''), sessions: n, items: [], missing: [], total_cost: 0, ok: false };
+  }
+  const items = [];
+  const missing = [];
+  let total = 0;
+  (recipe.items || []).forEach((it) => {
+    const s = supplyById(it.supply_id);
+    const need = roundQty((Number(it.qty) || 0) * n);
+    if (!s) {
+      missing.push({ supply_id: it.supply_id, name: '(barang sudah dihapus)', unit: '', need, stock: 0 });
+      return;
+    }
+    const costPerUnit = Number(s.cost) || 0;
+    const cost = Math.round(need * costPerUnit);
+    items.push({ supply_id: s.id, name: s.name, unit: s.unit || '', qty: need, cost_per_unit: costPerUnit, cost });
+    if (supplyStock(s) < need) {
+      missing.push({ supply_id: s.id, name: s.name, unit: s.unit || '', need, stock: supplyStock(s) });
+    }
+    total += cost;
+  });
+  return {
+    found: true,
+    recipe_id: recipe.id,
+    service_name: recipe.service_name || serviceName,
+    sessions: n,
+    items,
+    missing,
+    total_cost: Math.round(total),
+    ok: missing.length === 0 && items.length > 0,
+    note: recipe.note || ''
+  };
+}
+// Satu-satunya pintu perubahan stok. Mengembalikan objek riwayat supaya
+// pemanggil bisa menautkan pengeluaran (restok) atau membatalkannya.
+function recordSupplyMove(supply, opts) {
+  const o = opts || {};
+  const type = o.type === 'in' ? 'in' : (o.type === 'adjust' ? 'adjust' : 'out');
+  const qty = clampQty(o.qty);
+  const before = supplyStock(supply);
+  let after = before;
+  if (type === 'in') after = roundQty(before + qty);
+  else if (type === 'out') after = roundQty(before - qty);
+  else after = qty;                        // adjust = stok opname (nilai absolut)
+  supply.stock = after;
+  supply.updated_at = new Date().toISOString();
+  const givenCost = Number(o.unit_cost);
+  if (Number.isFinite(givenCost) && givenCost > 0) supply.cost = Math.round(givenCost);
+  const unitCost = (Number.isFinite(givenCost) && givenCost > 0) ? Math.round(givenCost) : (Number(supply.cost) || 0);
+  const delta = type === 'adjust' ? Math.abs(after - before) : qty;
+  const move = {
+    id: nextId('supply_moves'),
+    supply_id: supply.id,
+    supply_name: supply.name,
+    type,
+    qty: type === 'adjust' ? roundQty(after) : qty,
+    before,
+    after,
+    unit: supply.unit || '',
+    unit_cost: unitCost,
+    total_cost: Math.round(delta * unitCost),
+    date: /^\d{4}-\d{2}-\d{2}$/.test(String(o.date || '')) ? String(o.date) : todayJakarta(),
+    note: String(o.note || '').slice(0, 200),
+    service_name: String(o.service_name || '').slice(0, 200),
+    reservation_id: o.reservation_id || null,
+    batch: o.batch || null,
+    expense_id: null,
+    at: new Date().toISOString()
+  };
+  DB.supply_moves.push(move);
+  return move;
+}
+// Pemakaian bahan untuk 1 sesi layanan (mengurangi stok + mencatat riwayat).
+function applySupplyUse(plan, meta) {
+  const m = meta || {};
+  if (!plan || !plan.ok) return [];
+  const batch = m.batch || ('use-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6));
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(String(m.date || '')) ? String(m.date) : todayJakarta();
+  const moves = [];
+  (plan.items || []).forEach((it) => {
+    const s = supplyById(it.supply_id);
+    if (!s) return;
+    const move = recordSupplyMove(s, {
+      type: 'out',
+      qty: it.qty,
+      unit_cost: it.cost_per_unit,
+      date,
+      note: m.note || ('Pemakaian untuk ' + plan.service_name + (plan.sessions > 1 ? ' (' + plan.sessions + ' sesi)' : '')),
+      service_name: plan.service_name,
+      reservation_id: m.reservation_id || null,
+      batch
+    });
+    move.source = 'recipe';
+    moves.push(move);
+  });
+  return moves;
+}
+function supplyExpenseCategory() {
+  const s = DB.settings || {};
+  const id = String(s.supply_expense_category || '').trim();
+  return id || 'cat_supplies';
+}
+// Restok = uang keluar. Dibuatkan entri Pengeluaran supaya P&L otomatis
+// memuatnya; tautannya disimpan di riwayat stok (expense_id) sehingga saat
+// restok dibatalkan, pengeluarannya ikut dibersihkan (tidak dihitung dua
+// kali / tidak tertinggal).
+function createSupplyExpense(supply, move) {
+  const amount = Math.round(Number((move && move.total_cost) || 0));
+  if (!amount || amount <= 0) return null;
+  const exp = {
+    id: nextId('expenses'),
+    date: move.date || todayJakarta(),
+    category: supplyExpenseCategory(),
+    amount,
+    description: ('Restok ' + supply.name + ' ' + move.qty + ' ' + (supply.unit || 'unit')).slice(0, 200),
+    source: 'supply_restock',
+    supply_id: supply.id,
+    supply_move_id: move.id,
+    created_at: new Date().toISOString()
+  };
+  DB.expenses.push(exp);
+  move.expense_id = exp.id;
+  return exp;
+}
+function supplyOrderTemplate() {
+  const s = DB.settings || {};
+  return String(s.supply_order_message ||
+    'Halo, saya mau pesan bahan untuk {bisnis} ({tanggal}):\n\n{daftar}\n\nEstimasi total: {total}. Terima kasih 🙏')
+    .slice(0, 800);
+}
+function supplyAlertTemplate() {
+  const s = DB.settings || {};
+  return String(s.supply_alert_message ||
+    '⚠️ Stok {bisnis} menipis per {tanggal}:\n\n{daftar}\n\nSegera restok supaya tidak kehabisan saat melayani pasien.')
+    .slice(0, 800);
+}
+// Teks daftar belanja / peringatan. Placeholder yang didukung:
+// {bisnis} {tanggal} {daftar} {total} {jumlah} {min}
+function renderSupplyOrderText(items, opts) {
+  const o = opts || {};
+  const rows = Array.isArray(items) ? items : [];
+  const s = DB.settings || {};
+  const daftar = rows.map((it, i) =>
+    (i + 1) + '. ' + it.name + ' — ' + it.suggested_qty + ' ' + (it.unit || 'pcs') +
+    (it.estimated_cost ? ' (±Rp' + it.estimated_cost.toLocaleString('id-ID') + ')' : '')
+  ).join('\n');
+  const total = rows.reduce((n, it) => n + (Number(it.estimated_cost) || 0), 0);
+  return supplyOrderTemplate()
+    .replace(/\{bisnis\}/g, o.bisnis || s.business_name || 'Adzkiya Mom Baby Care')
+    .replace(/\{tanggal\}/g, o.tanggal || todayJakarta())
+    .replace(/\{supplier\}/g, o.supplier || '')
+    .replace(/\{jumlah\}/g, String(rows.length))
+    .replace(/\{daftar\}/g, daftar || '-')
+    .replace(/\{total\}/g, 'Rp' + total.toLocaleString('id-ID'));
+}
+function renderSupplyAlertText(items, opts) {
+  const o = opts || {};
+  const rows = Array.isArray(items) ? items : [];
+  const s = DB.settings || {};
+  const daftar = rows.map((it) =>
+    '• ' + it.name + ': sisa ' + it.stock + ' ' + (it.unit || 'pcs') +
+    ' (min ' + it.min_stock + ') → beli ' + it.suggested_qty + ' ' + (it.unit || 'pcs') +
+    (it.supplier ? ' · ' + it.supplier : '')
+  ).join('\n');
+  return supplyAlertTemplate()
+    .replace(/\{bisnis\}/g, o.bisnis || s.business_name || 'Adzkiya Mom Baby Care')
+    .replace(/\{tanggal\}/g, o.tanggal || todayJakarta())
+    .replace(/\{jumlah\}/g, String(rows.length))
+    .replace(/\{daftar\}/g, daftar || '-')
+    .replace(/\{total\}/g, 'Rp' + rows.reduce((n, it) => n + (Number(it.estimated_cost) || 0), 0).toLocaleString('id-ID'));
+}
+function supplyAlertRecipient() {
+  const s = DB.settings || {};
+  return String(s.supply_alert_wa || s.whatsapp || s.phone || '').replace(/\s+/g, '');
+}
+function supplyAlertIntervalHours() {
+  const s = DB.settings || {};
+  const n = parseInt(s.supply_alert_interval_hours, 10);
+  return Number.isFinite(n) ? Math.max(1, Math.min(168, n)) : 24;
+}
+function supplyWhatsReady() {
+  const s = DB.settings || {};
+  return !!(s.ai_assistant_phone_id && s.ai_assistant_access_token);
+}
+// Perlu kirim peringatan otomatis? Dijaga supaya tidak spam: minimal
+// supply_alert_interval_hours sekali dan hanya bila ada barang menipis.
+function supplyAlertDue() {
+  const s = DB.settings || {};
+  if (s.supply_alert_enabled === false) return false;
+  if (s.supply_auto_wa === false) return false;
+  if (!lowStockSupplies().length) return false;
+  const last = s.supply_alert_last_at ? new Date(s.supply_alert_last_at).getTime() : 0;
+  if (Number.isFinite(last) && last && Date.now() - last < supplyAlertIntervalHours() * 3600 * 1000) return false;
+  return true;
+}
+function markSupplyAlertSent() {
+  if (!DB.settings) return;
+  DB.settings.supply_alert_last_at = new Date().toISOString();
+  save();
+}
+async function sendSupplyAlertNow(items) {
+  const rows = Array.isArray(items) ? items : lowStockSupplies();
+  if (!rows.length) throw new Error('Tidak ada barang yang menipis');
+  const phone = supplyAlertRecipient();
+  if (!phone) throw new Error('Nomor WhatsApp tujuan peringatan stok belum diisi (Pengaturan → Buku Stok)');
+  if (!supplyWhatsReady()) throw new Error('WhatsApp Business API belum dikonfigurasi — pakai tombol WA (sekali klik) sebagai gantinya.');
+  const text = renderSupplyAlertText(rows);
+  await sendWAReply(phone, text);
+  markSupplyAlertSent();
+  return { sent_to: phone, count: rows.length, text };
+}
+// Biaya bahan (HPP) & pembelian per bulan — dipakai laporan stok DAN
+// ringkasan akunting. Pembelian TIDAK ditambahkan lagi ke total beban P&L
+// karena sudah tercatat sebagai Pengeluaran saat restok (kalau ditambah di
+// dua tempat, laba akan terlihat lebih kecil dari sebenarnya).
+function supplyCostByMonth(monthList) {
+  const list = Array.isArray(monthList) ? monthList : [];
+  const set = new Set(list);
+  const purchase = Object.fromEntries(list.map((m) => [m, 0]));
+  const material = Object.fromEntries(list.map((m) => [m, 0]));
+  (DB.supply_moves || []).forEach((m) => {
+    const mth = String(m.date || '').slice(0, 7);
+    if (!set.has(mth)) return;
+    const cost = Math.round(Number(m.total_cost) || 0);
+    if (m.type === 'in') purchase[mth] += cost;
+    else if (m.type === 'out') material[mth] += cost;
+  });
+  return {
+    purchase,
+    material,
+    purchase_total: Object.values(purchase).reduce((a, b) => a + b, 0),
+    material_total: Object.values(material).reduce((a, b) => a + b, 0)
+  };
+}
+// Pemakaian bahan per barang dalam N hari terakhir + berapa sesi yang
+// dilayani. Angka ini yang membuat kebocoran kelihatan: kalau 1 botol
+// biasanya untuk 20 sesi tetapi bulan ini hanya 12 sesi, selisihnya bisa
+// ditelusuri dari riwayat.
+function supplyUsageByItem(days) {
+  const n = Math.max(1, Math.min(365, parseInt(days, 10) || 30));
+  const from = shiftDateStr(todayJakarta(), -n);
+  const out = {};
+  (DB.supply_moves || []).forEach((m) => {
+    if (String(m.date || '') < from) return;
+    const key = m.supply_id;
+    out[key] = out[key] || { purchased: 0, used: 0, cost_used: 0, batches: new Set() };
+    if (m.type === 'in') out[key].purchased += Number(m.qty) || 0;
+    else if (m.type === 'out') {
+      out[key].used += Number(m.qty) || 0;
+      out[key].cost_used += Number(m.total_cost) || 0;
+      if (m.batch) out[key].batches.add(m.batch);
+    }
+  });
+  Object.values(out).forEach((v) => {
+    v.purchased = roundQty(v.purchased);
+    v.used = roundQty(v.used);
+    v.cost_used = Math.round(v.cost_used);
+    v.sessions = v.batches.size;
+    delete v.batches;
+  });
+  return out;
+}
+
+// ---- Barang: daftar + ringkasan ----
+app.get('/api/admin/supplies', auth, (req, res) => {
+  const q = String(req.query.q || '').trim().toLowerCase();
+  const kategori = String(req.query.category || '');
+  const onlyLow = req.query.low === '1' || req.query.low === 'true';
+  let rows = (DB.supplies || []).slice();
+  if (q) {
+    rows = rows.filter((s) =>
+      String(s.name || '').toLowerCase().includes(q) ||
+      String(s.supplier || '').toLowerCase().includes(q) ||
+      String(s.category || '').toLowerCase().includes(q));
+  }
+  if (kategori) rows = rows.filter((s) => String(s.category || '') === kategori);
+  if (onlyLow) rows = rows.filter(supplyLowStock);
+  const usage = supplyUsageByItem(30);
+  const withMeta = rows.map((s) => {
+    const u = usage[s.id] || { purchased: 0, used: 0, cost_used: 0, sessions: 0 };
+    return {
+      ...s,
+      stock: supplyStock(s),
+      low: supplyLowStock(s),
+      value: Math.round(supplyStock(s) * (Number(s.cost) || 0)),
+      suggested_qty: restockSuggestion(s),
+      used_30d: u.used,
+      sessions_30d: u.sessions,
+      cost_used_30d: u.cost_used,
+      per_session: u.sessions ? roundQty(u.used / u.sessions) : null,
+      used_in_services: (DB.supply_recipes || []).filter((r) => (r.items || []).some((it) => it.supply_id === s.id)).map((r) => r.service_name)
+    };
+  });
+  // Menipis di atas, lalu urut nama supaya daftar enak dibaca.
+  withMeta.sort((a, b) => (b.low ? 1 : 0) - (a.low ? 1 : 0) || String(a.name || '').localeCompare(String(b.name || '')));
+  const all = DB.supplies || [];
+  const month = monthJakarta();
+  const cost = supplyCostByMonth([month]);
+  res.setHeader('Cache-Control', 'private, no-store');
+  res.json({
+    count: withMeta.length,
+    total_items: all.length,
+    low_count: all.filter(supplyLowStock).length,
+    stock_value: supplyStockValue(all),
+    used_cost_this_month: cost.material[month] || 0,
+    purchased_cost_this_month: cost.purchase[month] || 0,
+    categories: SUPPLY_CATEGORIES,
+    units: SUPPLY_UNITS,
+    low_stock: lowStockSupplies(),
+    supplies: withMeta
+  });
+});
+
+app.post('/api/admin/supplies', auth, (req, res) => {
+  const b = req.body || {};
+  const name = String(b.name || '').trim().slice(0, 120);
+  if (!name) return res.status(400).json({ error: 'Nama barang wajib diisi' });
+  if ((DB.supplies || []).some((s) => String(s.name || '').trim().toLowerCase() === name.toLowerCase())) {
+    return res.status(409).json({ error: 'Barang dengan nama ini sudah ada' });
+  }
+  const stock = clampQty(b.stock);
+  const minStock = clampQty(b.min_stock);
+  const harga = Math.max(0, Math.round(Number(b.cost) || 0));
+  const item = {
+    id: nextId('supplies'),
+    name,
+    category: String(b.category || SUPPLY_CATEGORIES[0]).slice(0, 80),
+    unit: String(b.unit || 'pcs').slice(0, 20),
+    stock: 0,
+    min_stock: minStock,
+    cost: harga,
+    supplier: String(b.supplier || '').slice(0, 120),
+    supplier_wa: String(b.supplier_wa || '').slice(0, 30),
+    note: String(b.note || '').slice(0, 300),
+    active: b.active !== false,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString()
+  };
+  DB.supplies.push(item);
+  // Stok awal tetap lewat riwayat (bukan ditulis langsung) supaya jejaknya
+  // lengkap dan bisa dibatalkan bila salah input.
+  let move = null;
+  let expense = null;
+  if (stock > 0) {
+    move = recordSupplyMove(item, { type: 'in', qty: stock, unit_cost: harga, note: 'Stok awal', source: 'initial' });
+    if (b.create_expense === true) expense = createSupplyExpense(item, move);
+  }
+  save();
+  res.json({ ok: true, supply: { ...item, low: supplyLowStock(item) }, move, expense, low_count: lowStockSupplies().length });
+});
+
+app.patch('/api/admin/supplies/:id', auth, (req, res) => {
+  const item = supplyById(req.params.id);
+  if (!item) return res.status(404).json({ error: 'Barang tidak ditemukan' });
+  const b = req.body || {};
+  if (typeof b.name === 'string' && b.name.trim()) {
+    const name = b.name.trim().slice(0, 120);
+    const dup = (DB.supplies || []).some((s) => s.id !== item.id && String(s.name || '').trim().toLowerCase() === name.toLowerCase());
+    if (dup) return res.status(409).json({ error: 'Nama barang itu sudah dipakai' });
+    item.name = name;
+  }
+  if (typeof b.category === 'string') item.category = b.category.slice(0, 80);
+  if (typeof b.unit === 'string' && b.unit.trim()) item.unit = b.unit.trim().slice(0, 20);
+  if (b.min_stock !== undefined) item.min_stock = clampQty(b.min_stock);
+  if (b.cost !== undefined) item.cost = Math.max(0, Math.round(Number(b.cost) || 0));
+  if (typeof b.supplier === 'string') item.supplier = b.supplier.slice(0, 120);
+  if (typeof b.supplier_wa === 'string') item.supplier_wa = b.supplier_wa.slice(0, 30);
+  if (typeof b.note === 'string') item.note = b.note.slice(0, 300);
+  if (b.active !== undefined) item.active = !!b.active;
+  let move = null;
+  // Perubahan stok dari form edit pun dicatat sebagai penyesuaian supaya
+  // tidak ada angka yang berubah tanpa jejak.
+  if (b.stock !== undefined && clampQty(b.stock) !== supplyStock(item)) {
+    move = recordSupplyMove(item, {
+      type: 'adjust',
+      qty: clampQty(b.stock),
+      date: b.date,
+      note: b.stock_note || 'Penyesuaian dari edit barang'
+    });
+  }
+  item.updated_at = new Date().toISOString();
+  save();
+  res.json({ ok: true, supply: { ...item, low: supplyLowStock(item) }, move, low_count: lowStockSupplies().length });
+});
+
+app.delete('/api/admin/supplies/:id', auth, (req, res) => {
+  const item = supplyById(req.params.id);
+  if (!item) return res.status(404).json({ error: 'Barang tidak ditemukan' });
+  DB.supplies = (DB.supplies || []).filter((s) => s.id !== item.id);
+  const movesBefore = (DB.supply_moves || []).length;
+  DB.supply_moves = (DB.supply_moves || []).filter((m) => m.supply_id !== item.id);
+  let recipesUpdated = 0;
+  (DB.supply_recipes || []).forEach((r) => {
+    const before = (r.items || []).length;
+    r.items = (r.items || []).filter((it) => it.supply_id !== item.id);
+    if (r.items.length !== before) {
+      recipesUpdated++;
+      r.updated_at = new Date().toISOString();
+    }
+  });
+  save();
+  res.json({
+    ok: true,
+    deleted: true,
+    moves_deleted: movesBefore - (DB.supply_moves || []).length,
+    recipes_updated: recipesUpdated
+  });
+});
+
+// ---- Stok masuk / keluar / penyesuaian ----
+app.post('/api/admin/supplies/:id/move', auth, (req, res) => {
+  const item = supplyById(req.params.id);
+  if (!item) return res.status(404).json({ error: 'Barang tidak ditemukan' });
+  const b = req.body || {};
+  const type = String(b.type || 'in');
+  if (!['in', 'out', 'adjust'].includes(type)) {
+    return res.status(400).json({ error: 'Jenis pergerakan harus salah satu dari: in, out, adjust' });
+  }
+  const qty = clampQty(b.qty);
+  if (type !== 'adjust' && qty <= 0) return res.status(400).json({ error: 'Jumlah harus lebih dari 0' });
+  if (type === 'out' && qty > supplyStock(item)) {
+    return res.status(400).json({
+      error: 'Stok tidak cukup — sisa ' + supplyStock(item) + ' ' + (item.unit || ''),
+      stock: supplyStock(item)
+    });
+  }
+  const unitCostRaw = (b.unit_cost === undefined || b.unit_cost === null || b.unit_cost === '')
+    ? (Number(item.cost) || 0)
+    : Math.max(0, Math.round(Number(b.unit_cost) || 0));
+  const move = recordSupplyMove(item, {
+    type,
+    qty,
+    unit_cost: unitCostRaw,
+    date: b.date,
+    note: b.note,
+    service_name: b.service_name,
+    reservation_id: b.reservation_id || null
+  });
+  // Restok = uang keluar: catat sekaligus ke Pengeluaran (bisa dimatikan
+  // dengan create_expense=false kalau pembeliannya sudah dicatat manual).
+  let expense = null;
+  if (type === 'in' && b.create_expense !== false && move.total_cost > 0) {
+    expense = createSupplyExpense(item, move);
+  }
+  save();
+  res.json({
+    ok: true,
+    supply: { ...item, low: supplyLowStock(item), stock: supplyStock(item) },
+    move,
+    expense,
+    low_stock: lowStockSupplies()
+  });
+});
+
+app.get('/api/admin/supplies/moves', auth, (req, res) => {
+  const sid = req.query.supply_id ? parseInt(req.query.supply_id, 10) : null;
+  const month = String(req.query.month || '');
+  const limit = Math.max(1, Math.min(500, parseInt(req.query.limit || '100', 10) || 100));
+  let rows = (DB.supply_moves || []).slice();
+  if (sid) rows = rows.filter((m) => m.supply_id === sid);
+  if (/^\d{4}-\d{2}$/.test(month)) rows = rows.filter((m) => String(m.date || '').slice(0, 7) === month);
+  rows.sort((a, b) => String(b.at || '').localeCompare(String(a.at || '')) || (b.id - a.id));
+  res.setHeader('Cache-Control', 'private, no-store');
+  res.json({
+    count: rows.length,
+    moves: rows.slice(0, limit).map((m) => ({ ...m, type_label: m.type === 'in' ? 'Masuk' : (m.type === 'out' ? 'Keluar' : 'Penyesuaian') }))
+  });
+});
+
+// Batalkan satu riwayat (salah input). Efek stok dikembalikan dan
+// pengeluaran yang tertaut ikut dihapus supaya P&L tidak tertinggal.
+app.delete('/api/admin/supplies/moves/:id', auth, (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const idx = (DB.supply_moves || []).findIndex((m) => m.id === id);
+  if (idx < 0) return res.status(404).json({ error: 'Riwayat tidak ditemukan' });
+  const move = DB.supply_moves[idx];
+  const item = supplyById(move.supply_id);
+  if (!item) {
+    DB.supply_moves.splice(idx, 1);
+    save();
+    return res.json({ ok: true, orphan: true, message: 'Barang sudah dihapus — riwayat ikut dibersihkan.' });
+  }
+  const before = supplyStock(item);
+  let after = before;
+  if (move.type === 'in') after = roundQty(before - (Number(move.qty) || 0));
+  else if (move.type === 'out') after = roundQty(before + (Number(move.qty) || 0));
+  else after = roundQty(move.before);
+  if (after < 0) {
+    return res.status(400).json({
+      error: 'Tidak bisa dibatalkan — stok sudah terpakai. Pakai "Sesuaikan" untuk memperbaiki angka stok.',
+      stock: before
+    });
+  }
+  item.stock = after;
+  item.updated_at = new Date().toISOString();
+  let expenseRemoved = 0;
+  if (move.expense_id) {
+    const expBefore = (DB.expenses || []).length;
+    DB.expenses = (DB.expenses || []).filter((e) => e.id !== move.expense_id);
+    expenseRemoved = expBefore - DB.expenses.length;
+  }
+  DB.supply_moves.splice(idx, 1);
+  save();
+  res.json({
+    ok: true,
+    supply: { ...item, low: supplyLowStock(item), stock: supplyStock(item) },
+    expense_removed: expenseRemoved,
+    low_stock: lowStockSupplies()
+  });
+});
+
+// ---- Daftar belanja ----
+app.get('/api/admin/supplies/shopping-list', auth, (req, res) => {
+  const items = lowStockSupplies();
+  const groups = {};
+  items.forEach((it) => {
+    const key = it.supplier || 'Tanpa supplier';
+    groups[key] = groups[key] || [];
+    groups[key].push(it);
+  });
+  const bySupplier = Object.keys(groups).map((name) => {
+    const rows = groups[name];
+    const phone = rows.find((r) => r.supplier_wa) ? rows.find((r) => r.supplier_wa).supplier_wa : '';
+    const text = renderSupplyOrderText(rows, { supplier: name === 'Tanpa supplier' ? '' : name });
+    return {
+      supplier: name,
+      phone,
+      count: rows.length,
+      total_estimate: rows.reduce((n, r) => n + r.estimated_cost, 0),
+      text,
+      wa_link: phone ? buildWaLink(phone, text) : null,
+      items: rows
+    };
+  }).sort((a, b) => b.total_estimate - a.total_estimate);
+  const text = renderSupplyOrderText(items);
+  const fallbackPhone = String(req.query.phone || '') || bySupplier.find((g) => g.phone)?.phone || '';
+  res.setHeader('Cache-Control', 'private, no-store');
+  res.json({
+    count: items.length,
+    total_estimate: items.reduce((n, it) => n + it.estimated_cost, 0),
+    items,
+    by_supplier: bySupplier,
+    text,
+    wa_link: fallbackPhone ? buildWaLink(fallbackPhone, text) : null,
+    whatsapp_ready: supplyWhatsReady()
+  });
+});
+
+app.post('/api/admin/supplies/shopping-list/send', auth, async (req, res) => {
+  const b = req.body || {};
+  let items = lowStockSupplies();
+  if (b.supplier) items = items.filter((it) => (it.supplier || 'Tanpa supplier') === b.supplier);
+  if (!items.length) return res.status(400).json({ error: 'Tidak ada barang yang perlu dibeli saat ini' });
+  const phone = String(b.phone || items.find((it) => it.supplier_wa)?.supplier_wa || '').trim();
+  if (!phone) return res.status(400).json({ error: 'Nomor WhatsApp supplier belum diisi — lengkapi di data barang atau isi manual.' });
+  const text = String(b.text || '').trim() || renderSupplyOrderText(items, { supplier: b.supplier || '' });
+  if (!supplyWhatsReady()) {
+    return res.status(400).json({ error: 'WhatsApp Business API belum dikonfigurasi — pakai tautan wa.me (sekali klik) di daftar belanja.' });
+  }
+  try {
+    await sendWAReply(phone, text);
+    res.json({ ok: true, sent_to: phone, count: items.length, text });
+  } catch (e) {
+    recordAIError(e);
+    res.status(500).json({ error: 'Gagal mengirim daftar belanja: ' + sanitizeAIError(e) });
+  }
+});
+
+// ---- Peringatan stok menipis ----
+app.get('/api/admin/supplies/alerts', auth, (req, res) => {
+  const s = DB.settings || {};
+  const items = lowStockSupplies();
+  const text = renderSupplyAlertText(items);
+  const recipient = supplyAlertRecipient();
+  res.setHeader('Cache-Control', 'private, no-store');
+  res.json({
+    enabled: s.supply_alert_enabled !== false,
+    auto_wa: s.supply_auto_wa !== false,
+    whatsapp_ready: supplyWhatsReady(),
+    recipient,
+    interval_hours: supplyAlertIntervalHours(),
+    last_sent_at: s.supply_alert_last_at || null,
+    due: supplyAlertDue(),
+    count: items.length,
+    items,
+    text,
+    wa_link: recipient ? buildWaLink(recipient, text) : null
+  });
+});
+
+app.post('/api/admin/supplies/alerts/send', auth, async (req, res) => {
+  try {
+    const result = await sendSupplyAlertNow(lowStockSupplies());
+    save();
+    res.json({ ok: true, ...result });
+  } catch (e) {
+    recordAIError(e);
+    const msg = sanitizeAIError(e);
+    const code = /belum (diisi|dikonfigurasi)/i.test(msg) ? 400 : 500;
+    res.status(code).json({ error: 'Gagal mengirim peringatan stok: ' + msg });
+  }
+});
+
+// ---- Resep bahan per layanan (HPP) ----
+app.get('/api/admin/supply-recipes', auth, (req, res) => {
+  const rows = (DB.supply_recipes || []).map((r) => ({
+    id: r.id,
+    service_name: r.service_name,
+    note: r.note || '',
+    created_at: r.created_at,
+    updated_at: r.updated_at,
+    cost_per_session: recipeCost(r),
+    items: (r.items || []).map((it) => {
+      const s = supplyById(it.supply_id);
+      const costPerUnit = s ? (Number(s.cost) || 0) : 0;
+      return {
+        supply_id: it.supply_id,
+        name: s ? s.name : '(barang sudah dihapus)',
+        unit: s ? (s.unit || '') : '',
+        qty: Number(it.qty) || 0,
+        stock: s ? supplyStock(s) : 0,
+        cost_per_unit: costPerUnit,
+        cost: Math.round((Number(it.qty) || 0) * costPerUnit)
+      };
+    })
+  }));
+  rows.sort((a, b) => String(a.service_name).localeCompare(String(b.service_name)));
+  res.json({
+    count: rows.length,
+    recipes: rows,
+    services: SERVICES.flatMap((c) => (c.items || []).map((i) => i.name)),
+    supplies: (DB.supplies || []).map((s) => ({ id: s.id, name: s.name, unit: s.unit || '', cost: Number(s.cost) || 0, stock: supplyStock(s) }))
+  });
+});
+
+app.post('/api/admin/supply-recipes', auth, (req, res) => {
+  const b = req.body || {};
+  const service_name = String(b.service_name || '').trim().slice(0, 200);
+  if (!service_name) return res.status(400).json({ error: 'Nama layanan wajib diisi' });
+  const items = (Array.isArray(b.items) ? b.items : [])
+    .map((it) => ({ supply_id: parseInt(it && it.supply_id, 10), qty: clampQty(it && it.qty) }))
+    .filter((it) => it.supply_id && it.qty > 0);
+  if (!items.length) return res.status(400).json({ error: 'Minimal 1 bahan dengan jumlah lebih dari 0' });
+  if (items.some((it) => !supplyById(it.supply_id))) return res.status(400).json({ error: 'Ada bahan yang tidak dikenal (mungkin sudah dihapus)' });
+  // Gabungkan bahan kembar supaya biaya tidak dihitung dua kali.
+  const merged = {};
+  items.forEach((it) => { merged[it.supply_id] = roundQty((merged[it.supply_id] || 0) + it.qty); });
+  const cleanItems = Object.keys(merged).map((k) => ({ supply_id: parseInt(k, 10), qty: merged[k] }));
+  let recipe = supplyRecipeFor(service_name);
+  if (recipe) {
+    recipe.items = cleanItems;
+    recipe.note = String(b.note || '').slice(0, 200);
+    recipe.updated_at = new Date().toISOString();
+  } else {
+    recipe = {
+      id: nextId('supply_recipes'),
+      service_name,
+      items: cleanItems,
+      note: String(b.note || '').slice(0, 200),
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    };
+    DB.supply_recipes.push(recipe);
+  }
+  save();
+  res.json({ ok: true, recipe: { ...recipe, cost_per_session: recipeCost(recipe) } });
+});
+
+app.delete('/api/admin/supply-recipes/:id', auth, (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const before = (DB.supply_recipes || []).length;
+  DB.supply_recipes = (DB.supply_recipes || []).filter((r) => r.id !== id);
+  save();
+  res.json({ ok: true, deleted: before - DB.supply_recipes.length });
+});
+
+// ---- Pemakaian bahan untuk layanan ----
+// Dipakai tombol "📦 Pakai bahan" — baik dari reservasi (reservation_id)
+// maupun manual (service_name + sessions). Berisfat semua-atau-tidak:
+// bila satu bahan kurang, tidak ada stok yang berubah.
+app.post('/api/admin/supplies/use', auth, (req, res) => {
+  const b = req.body || {};
+  let serviceName = String(b.service_name || '').trim();
+  let reservation = null;
+  if (b.reservation_id) {
+    reservation = DB.reservations.find((r) => r.id === parseInt(b.reservation_id, 10));
+    if (!reservation) return res.status(404).json({ error: 'Reservasi tidak ditemukan' });
+    if (reservation.stock_applied_at) {
+      return res.status(409).json({
+        error: 'Bahan untuk reservasi ini sudah pernah dicatat (' + reservation.stock_applied_at + ')',
+        applied_at: reservation.stock_applied_at
+      });
+    }
+    if (!serviceName) {
+      const names = (reservation.items && reservation.items.length ? reservation.items.map((i) => i.name) : [reservation.service_name]).filter(Boolean);
+      serviceName = names.find((n) => supplyRecipeFor(n)) || names[0] || '';
+    }
+  }
+  if (!serviceName) return res.status(400).json({ error: 'Nama layanan atau reservasi wajib diisi' });
+  const plan = supplyUsePlan(serviceName, b.sessions || (reservation
+    ? (Array.isArray(reservation.slots) && reservation.slots.length ? reservation.slots.length : (reservation.qty || 1))
+    : 1));
+  if (!plan.found) return res.status(404).json({ error: 'Belum ada resep bahan untuk layanan "' + serviceName + '"' });
+  if (plan.missing.length) {
+    return res.status(400).json({
+      error: 'Stok tidak cukup: ' + plan.missing.map((m) => m.name + ' butuh ' + m.need + ' ' + (m.unit || '') + ' (sisa ' + m.stock + ')').join('; '),
+      plan
+    });
+  }
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(String(b.date || ''))
+    ? String(b.date)
+    : ((reservation && reservation.reservation_date) || todayJakarta());
+  const moves = applySupplyUse(plan, { date, reservation_id: reservation ? reservation.id : null, note: b.note, batch: b.batch });
+  if (reservation) {
+    reservation.stock_applied_at = new Date().toISOString();
+    reservation.stock_cost = plan.total_cost;
+  }
+  save();
+  res.json({
+    ok: true,
+    service_name: plan.service_name,
+    sessions: plan.sessions,
+    total_cost: plan.total_cost,
+    plan,
+    moves,
+    low_stock: lowStockSupplies()
+  });
+});
+
+// Reservasi yang bahannya belum dicatat — supaya pemakaian tidak terlupa
+// (dan HPP tetap akurat) tanpa harus menelusuri riwayat satu per satu.
+app.get('/api/admin/supplies/pending-uses', auth, (req, res) => {
+  const days = Math.max(1, Math.min(120, parseInt(req.query.days, 10) || 14));
+  const from = shiftDateStr(todayJakarta(), -days);
+  const rows = [];
+  DB.reservations.forEach((r) => {
+    if (r.stock_applied_at) return;
+    const date = (Array.isArray(r.slots) && r.slots[0] && r.slots[0].date) || r.reservation_date || '';
+    if (!date || date < from) return;
+    const names = (r.items && r.items.length ? r.items.map((i) => i.name) : [r.service_name]).filter(Boolean);
+    const matched = names.find((n) => supplyRecipeFor(n));
+    if (!matched) return;
+    const sessions = Array.isArray(r.slots) && r.slots.length ? r.slots.length : (r.qty || 1);
+    const plan = supplyUsePlan(matched, sessions);
+    rows.push({
+      reservation_id: r.id,
+      patient_name: r.patient_name,
+      date,
+      status: r.status,
+      payment_status: r.payment_status,
+      service_name: matched,
+      sessions,
+      total_cost: plan.total_cost,
+      stock_ok: plan.ok,
+      missing: plan.missing
+    });
+  });
+  rows.sort((a, b) => String(a.date).localeCompare(String(b.date)));
+  res.setHeader('Cache-Control', 'private, no-store');
+  res.json({ count: rows.length, days, pending: rows.slice(0, 100) });
+});
+
+// ---- Laporan: nilai persediaan, HPP, margin per layanan ----
+app.get('/api/admin/supplies/report', auth, (req, res) => {
+  const months = Math.max(1, Math.min(24, parseInt(req.query.months || '6', 10) || 6));
+  const monthList = [];
+  for (let i = months - 1; i >= 0; i--) monthList.push(shiftMonthStr(monthJakarta(), -i));
+  const monthSet = new Set(monthList);
+  const cost = supplyCostByMonth(monthList);
+
+  // Omzet per layanan dari reservasi berstatus lunas — dibagi proporsional
+  // bila satu reservasi memuat lebih dari satu layanan (total reservasi
+  // adalah satu angka, jadi porsi tiap layanan dihitung dari harga × jumlah).
+  const revenue = {};
+  DB.reservations.forEach((r) => {
+    if (r.payment_status !== 'lunas') return;
+    const mth = String(r.reservation_date || '').slice(0, 7);
+    if (!monthSet.has(mth)) return;
+    const items = (r.items && r.items.length) ? r.items : [{ name: r.service_name, price: r.service_price, qty: r.qty || 1 }];
+    const total = Number(r.total) || calcReservationTotal(r);
+    const weightSum = items.reduce((n, it) => n + (Number(it.price) || 0) * (Number(it.qty) || 1), 0);
+    const sessions = Array.isArray(r.slots) && r.slots.length ? r.slots.length : (r.qty || 1);
+    items.filter((it) => it && it.name).forEach((it) => {
+      const w = (Number(it.price) || 0) * (Number(it.qty) || 1);
+      const share = weightSum > 0 ? (total * w / weightSum) : (total / items.length);
+      const key = String(it.name);
+      revenue[key] = revenue[key] || { amount: 0, sessions: 0 };
+      revenue[key].amount += share;
+      revenue[key].sessions += sessions;
+    });
+  });
+
+  // Bahan terpakai per layanan (dari riwayat keluar yang tertaut resep).
+  const material = {};
+  (DB.supply_moves || []).forEach((m) => {
+    if (m.type !== 'out' || !m.service_name) return;
+    const mth = String(m.date || '').slice(0, 7);
+    if (!monthSet.has(mth)) return;
+    const key = String(m.service_name);
+    material[key] = material[key] || { cost: 0, batches: new Set() };
+    material[key].cost += Number(m.total_cost) || 0;
+    if (m.batch) material[key].batches.add(m.batch);
+  });
+
+  const names = Array.from(new Set([...Object.keys(material), ...Object.keys(revenue)]));
+  const services = names.map((name) => {
+    const mat = material[name] || { cost: 0, batches: new Set() };
+    const rev = revenue[name] || { amount: 0, sessions: 0 };
+    const materialCost = Math.round(mat.cost);
+    const sessions = Math.max(mat.batches.size, rev.sessions);
+    const omzet = Math.round(rev.amount);
+    const margin = omzet - materialCost;
+    return {
+      service_name: name,
+      sessions,
+      sessions_with_material: mat.batches.size,
+      omzet,
+      material_cost: materialCost,
+      material_per_session: sessions ? Math.round(materialCost / sessions) : 0,
+      margin,
+      margin_percent: omzet > 0 ? Math.round((margin / omzet) * 100) : null,
+      has_recipe: !!supplyRecipeFor(name)
+    };
+  }).sort((a, b) => (b.omzet - a.omzet) || (b.material_cost - a.material_cost));
+
+  const usage = supplyUsageByItem(30);
+  const items = (DB.supplies || []).map((s) => {
+    const u = usage[s.id] || { used: 0, purchased: 0, cost_used: 0, sessions: 0 };
+    return {
+      id: s.id,
+      name: s.name,
+      unit: s.unit || '',
+      stock: supplyStock(s),
+      min_stock: Number(s.min_stock) || 0,
+      low: supplyLowStock(s),
+      cost: Number(s.cost) || 0,
+      value: Math.round(supplyStock(s) * (Number(s.cost) || 0)),
+      purchased_30d: u.purchased,
+      used_30d: u.used,
+      sessions_30d: u.sessions,
+      per_session: u.sessions ? roundQty(u.used / u.sessions) : null,
+      cost_used_30d: u.cost_used
+    };
+  }).sort((a, b) => (b.low ? 1 : 0) - (a.low ? 1 : 0) || b.cost_used_30d - a.cost_used_30d);
+
+  res.setHeader('Cache-Control', 'private, no-store');
+  res.json({
+    months,
+    monthList,
+    byMonth: monthList.map((m) => ({ month: m, purchase: cost.purchase[m] || 0, material_used: cost.material[m] || 0 })),
+    purchase_total: cost.purchase_total,
+    material_total: cost.material_total,
+    stock_value: supplyStockValue(),
+    items_count: (DB.supplies || []).length,
+    low_count: (DB.supplies || []).filter(supplyLowStock).length,
+    recipes_count: (DB.supply_recipes || []).length,
+    services,
+    items
+  });
+});
+
+// Export Excel: Stok, Riwayat, HPP per layanan (siap dilampirkan ke
+// pembukuan / dikirim ke akuntan).
+app.get('/api/admin/supplies/export.xlsx', auth, async (req, res) => {
+  try {
+    const wb = new ExcelJS.Workbook();
+    wb.creator = 'Adzkiya Mom Baby Care';
+    wb.created = new Date();
+    const pink = { argb: 'FFEE5A8A' };
+    const soft = { argb: 'FFFFF5F8' };
+    const head = (sheet, headers) => {
+      headers.forEach((h, i) => {
+        const cell = sheet.getCell(3, i + 1);
+        cell.value = h;
+        cell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 10 };
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: pink };
+        cell.alignment = { horizontal: 'center', vertical: 'middle' };
+      });
+      sheet.getRow(3).height = 22;
+    };
+    const title = (sheet, text, span) => {
+      sheet.mergeCells(1, 1, 1, span);
+      sheet.getCell(1, 1).value = '🌸 ADZKIYA MOM BABY CARE — ' + text;
+      sheet.getCell(1, 1).font = { size: 14, bold: true, color: { argb: 'FF4A2533' } };
+      sheet.mergeCells(2, 1, 2, span);
+      sheet.getCell(2, 1).value = 'Dibuat: ' + new Date().toLocaleString('id-ID') + ' WIB';
+      sheet.getCell(2, 1).font = { size: 9, color: { argb: 'FF7C8390' } };
+    };
+
+    const stok = wb.addWorksheet('Stok', { views: [{ showGridLines: false }] });
+    title(stok, 'BUKU STOK BARANG', 9);
+    head(stok, ['Barang', 'Kategori', 'Satuan', 'Sisa', 'Min', 'Harga beli', 'Nilai', 'Supplier', 'Status']);
+    (DB.supplies || []).forEach((s, i) => {
+      const row = stok.addRow([
+        s.name, s.category || '', s.unit || '', supplyStock(s), Number(s.min_stock) || 0,
+        Number(s.cost) || 0, Math.round(supplyStock(s) * (Number(s.cost) || 0)),
+        s.supplier || '', supplyLowStock(s) ? 'MENIPIS' : 'Aman'
+      ]);
+      row.getCell(6).numFmt = '"Rp"#,##0';
+      row.getCell(7).numFmt = '"Rp"#,##0';
+      if (supplyLowStock(s)) row.getCell(9).font = { bold: true, color: { argb: 'FFC43050' } };
+      if (i % 2 === 0) for (let c = 1; c <= 9; c++) row.getCell(c).fill = { type: 'pattern', pattern: 'solid', fgColor: soft };
+    });
+
+    const riwayat = wb.addWorksheet('Riwayat', { views: [{ showGridLines: false }] });
+    title(riwayat, 'RIWAYAT STOK MASUK & KELUAR', 9);
+    head(riwayat, ['Tanggal', 'Barang', 'Jenis', 'Jumlah', 'Satuan', 'Sebelum', 'Sesudah', 'Nilai', 'Catatan']);
+    (DB.supply_moves || []).slice().sort((a, b) => String(a.date || '').localeCompare(String(b.date || '')) || (a.id - b.id))
+      .forEach((m, i) => {
+        const row = riwayat.addRow([
+          m.date || '', m.supply_name || '', m.type === 'in' ? 'Masuk' : (m.type === 'out' ? 'Keluar' : 'Penyesuaian'),
+          Number(m.qty) || 0, m.unit || '', Number(m.before) || 0, Number(m.after) || 0,
+          Number(m.total_cost) || 0, m.note || m.service_name || ''
+        ]);
+        row.getCell(8).numFmt = '"Rp"#,##0';
+        if (i % 2 === 0) for (let c = 1; c <= 9; c++) row.getCell(c).fill = { type: 'pattern', pattern: 'solid', fgColor: soft };
+      });
+
+    const hpp = wb.addWorksheet('HPP per Layanan', { views: [{ showGridLines: false }] });
+    title(hpp, 'HPP & MARGIN PER LAYANAN', 8);
+    head(hpp, ['Layanan', 'Sesi', 'Omzet', 'Biaya bahan', 'Bahan/sesi', 'Margin', 'Margin %', 'Resep?']);
+    const report = (DB.supply_recipes || []).map((r) => ({ service_name: r.service_name, cost_per_session: recipeCost(r) }));
+    const revenueByService = {};
+    DB.reservations.forEach((r) => {
+      if (r.payment_status !== 'lunas') return;
+      const items = (r.items && r.items.length) ? r.items : [{ name: r.service_name, price: r.service_price, qty: r.qty || 1 }];
+      const total = Number(r.total) || calcReservationTotal(r);
+      const weightSum = items.reduce((n, it) => n + (Number(it.price) || 0) * (Number(it.qty) || 1), 0);
+      const sessions = Array.isArray(r.slots) && r.slots.length ? r.slots.length : (r.qty || 1);
+      items.filter((it) => it && it.name).forEach((it) => {
+        const w = (Number(it.price) || 0) * (Number(it.qty) || 1);
+        const share = weightSum > 0 ? (total * w / weightSum) : (total / items.length);
+        revenueByService[it.name] = revenueByService[it.name] || { amount: 0, sessions: 0 };
+        revenueByService[it.name].amount += share;
+        revenueByService[it.name].sessions += sessions;
+      });
+    });
+    const names = Array.from(new Set([...report.map((r) => r.service_name), ...Object.keys(revenueByService)]));
+    names.forEach((name, i) => {
+      const rev = revenueByService[name] || { amount: 0, sessions: 0 };
+      const rec = report.find((r) => r.service_name === name);
+      const omzet = Math.round(rev.amount);
+      const material = rec ? Math.round(rec.cost_per_session * rev.sessions) : 0;
+      const margin = omzet - material;
+      const row = hpp.addRow([
+        name, rev.sessions, omzet, material, rec ? rec.cost_per_session : 0,
+        margin, omzet > 0 ? Math.round((margin / omzet) * 100) : '', rec ? 'Ya' : 'Belum'
+      ]);
+      [3, 4, 5, 6].forEach((c) => { row.getCell(c).numFmt = '"Rp"#,##0'; });
+      row.getCell(7).numFmt = '0"%"';
+      if (i % 2 === 0) for (let c = 1; c <= 8; c++) row.getCell(c).fill = { type: 'pattern', pattern: 'solid', fgColor: soft };
+    });
+
+    const fname = 'buku-stok-adzkiya-' + todayJakarta() + '.xlsx';
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${fname}"`);
+    res.setHeader('Cache-Control', 'private, no-store');
+    await wb.xlsx.write(res);
+    res.end();
+  } catch (e) {
+    console.error('[stok] export xlsx gagal:', e.message);
+    if (!res.headersSent) res.status(500).json({ error: 'Gagal membuat file Excel: ' + e.message });
+  }
+});
+
 // ===== PENGINGAT OTOMATIS =====
 // Menyusun daftar pengingat yang JATUH TEMPO (mis. H-2 jam / H-1 hari),
 // mengirimnya otomatis lewat WhatsApp Cloud API bila kredensial tersedia,
@@ -2278,7 +3440,15 @@ app.get('/api/admin/stats', auth, (req, res) => {
   const lunas = DB.reservations.filter(r => r.payment_status === 'lunas').length;
   const omzet = DB.reservations.filter(r => r.payment_status === 'lunas')
     .reduce((s, r) => s + calcReservationTotal(r), 0);
-  res.json({ pending, approved, lunas, omzet, total: DB.reservations.length });
+  // Buku stok: dasbor menampilkan peringatan bila ada barang menipis
+  // (lihat bagian BUKU STOK).
+  const lowStock = lowStockSupplies();
+  res.json({
+    pending, approved, lunas, omzet, total: DB.reservations.length,
+    low_stock: lowStock.length,
+    low_stock_items: lowStock.slice(0, 5).map((s) => s.name + ' (sisa ' + s.stock + ' ' + (s.unit || '') + ')'),
+    stock_value: supplyStockValue()
+  });
 });
 
 // ===== ADMIN — MINI-CRM (Customer Profile + RFM) =====
@@ -3915,6 +5085,17 @@ app.get('/api/admin/accounting/summary', auth, (req, res) => {
     profit: s.profit + m.profit,
   }), { income: 0, expense: 0, profit: 0 });
 
+  // Buku stok: biaya bahan (HPP) dari pemakaian stok. SENGAJA tidak
+  // ditambahkan ke totals.expense — pembelian bahan sudah tercatat sebagai
+  // pengeluaran kategori Supplies saat restok, jadi menambahkannya lagi akan
+  // menghitung beban dua kali dan membuat laba terlihat lebih kecil.
+  const supply = supplyCostByMonth(monthList);
+  const supplyByMonth = monthList.map((m) => ({
+    month: m,
+    purchase: supply.purchase[m] || 0,
+    material_used: supply.material[m] || 0
+  }));
+
   res.json({
     months: monthList.length,
     monthList,
@@ -3922,6 +5103,14 @@ app.get('/api/admin/accounting/summary', auth, (req, res) => {
     byMonth,
     expenses_by_category: expensesByCategory,
     expense_categories: DB.expense_categories,
+    supply: {
+      stock_value: supplyStockValue(),
+      items_count: (DB.supplies || []).length,
+      low_count: (DB.supplies || []).filter(supplyLowStock).length,
+      purchase_total: supply.purchase_total,
+      material_total: supply.material_total,
+      by_month: supplyByMonth
+    },
   });
 });
 
@@ -5415,6 +6604,11 @@ function buildBackupPayload() {
     receipts: DB.receipts,
     expenses: DB.expenses,
     expense_categories: DB.expense_categories,
+    // Buku stok ikut di-backup: tanpa ini, sisa stok & resep bahan hilang
+    // saat restore (padahal P&L menautkan pengeluaran restok ke riwayat ini).
+    supplies: DB.supplies,
+    supply_moves: DB.supply_moves,
+    supply_recipes: DB.supply_recipes,
     broadcasts: DB.broadcasts.map((b) => ({
       id: b.id, name: b.name, body: b.body, recipient_count: b.recipient_count,
       filter: b.filter, created_at: b.created_at
@@ -5427,6 +6621,10 @@ function buildBackupPayload() {
         ai_assistant_conversations,
         ai_last_error, ai_last_error_at, ai_openrouter_free_only, ai_openrouter_free_only_at,
         reminder_sent_keys,
+        // Timestamp peringatan stok terakhir tidak perlu dibawa ke perangkat
+        // lain — kalau ikut tersalin, peringatan bisa "terdiam" 24 jam di
+        // instalasi baru.
+        supply_alert_last_at,
         ...rest
       } = (DB.settings || {});
       return rest;
@@ -5478,6 +6676,46 @@ app.post('/api/admin/restore', auth, restoreJsonParser, (req, res) => {
       }
     }
     const { reservations = [], receipts = [], settings, mode = 'append', sync_reservations } = body;
+    // Buku stok ikut di-restore (kalau ada di file backup). Dedupe: barang &
+    // resep per nama, riwayat per (barang, waktu, jenis, jumlah) — jadi
+    // restore berulang tidak menggandakan data. Riwayat ditautkan ke barang
+    // hasil restore (id_map) dan `expense_id` dikosongkan karena endpoint ini
+    // tidak memulihkan daftar pengeluaran (tautan ke pengeluaran lama akan
+    // menggantung & membuat pembatalan riwayat menghapus entri yang salah).
+    let suppliesImported = 0, supplyRecipesImported = 0, supplyMovesImported = 0;
+    if (Array.isArray(body.supplies) && body.supplies.length) {
+      const byName = new Map(DB.supplies.map((s) => [String((s && s.name) || '').trim().toLowerCase(), s]));
+      const idMap = new Map();
+      body.supplies.forEach((s) => {
+        if (!s || !String(s.name || '').trim()) return;
+        const key = String(s.name).trim().toLowerCase();
+        const existing = byName.get(key);
+        if (existing) { idMap.set(s.id, existing.id); return; }
+        const item = { ...s, id: nextId('supplies'), updated_at: new Date().toISOString() };
+        DB.supplies.push(item);
+        byName.set(key, item);
+        idMap.set(s.id, item.id);
+        suppliesImported++;
+      });
+      (Array.isArray(body.supply_recipes) ? body.supply_recipes : []).forEach((r) => {
+        if (!r || !String(r.service_name || '').trim()) return;
+        const key = String(r.service_name).trim().toLowerCase();
+        if (DB.supply_recipes.some((x) => String((x && x.service_name) || '').trim().toLowerCase() === key)) return;
+        const items = (r.items || [])
+          .map((it) => ({ supply_id: idMap.get(it && it.supply_id) || (it && it.supply_id), qty: Number(it && it.qty) || 0 }))
+          .filter((it) => it.supply_id && it.qty > 0);
+        DB.supply_recipes.push({ ...r, id: nextId('supply_recipes'), items });
+        supplyRecipesImported++;
+      });
+      (Array.isArray(body.supply_moves) ? body.supply_moves : []).forEach((m) => {
+        if (!m) return;
+        const supplyId = idMap.get(m.supply_id) || m.supply_id;
+        const key = [supplyId, m.at || '', m.type || '', m.qty, m.date || ''].join('|');
+        if (DB.supply_moves.some((x) => [x.supply_id, x.at || '', x.type || '', x.qty, x.date || ''].join('|') === key)) return;
+        DB.supply_moves.push({ ...m, supply_id: supplyId, id: nextId('supply_moves'), expense_id: null });
+        supplyMovesImported++;
+      });
+    }
     const errors = [];
     if (mode === 'replace') {
       DB.reservations = []; DB.receipts = [];
@@ -5537,7 +6775,10 @@ app.post('/api/admin/restore', auth, restoreJsonParser, (req, res) => {
         reservations: reservationsImported,
         receipts: receiptsImported,
         reservations_skipped: reservationsSkipped,
-        receipts_skipped: receiptsSkipped
+        receipts_skipped: receiptsSkipped,
+        supplies: suppliesImported,
+        supply_recipes: supplyRecipesImported,
+        supply_moves: supplyMovesImported
       },
       mode
     });

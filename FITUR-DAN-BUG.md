@@ -170,3 +170,78 @@ Ditambahkan tiga fitur beserta auditnya (`test/scheduling.test.js` 14 tes +
 ### Hasil audit
 - Audit menyeluruh: **86 + 49 = 135 pemeriksaan, 0 masalah**.
 - `npm test`: 88 lulus (3 dilewati karena jsdom tidak terpasang).
+
+
+## Fitur baru: Buku Stok & Bahan (bahan habis pakai)
+
+Ditambahkan halaman **📦 Buku Stok** (menu setelah Akunting) beserta auditnya
+(`test/stock.test.js` 14 tes + `tools/audit-features.js` bagian [23] +
+`tools/audit-integration.js` bagian [14]).
+
+### Yang bisa dilakukan
+1. **Barang & sisa stok** — nama, kategori, satuan (pcs/botol/ml/…), batas minimum,
+   harga beli, supplier + nomor WA supplier. Stok awal tetap tercatat di riwayat.
+2. **Riwayat masuk / keluar / penyesuaian** — setiap perubahan mencatat angka
+   sebelum → sesudah, tanggal, catatan, dan (kalau ada) pengeluaran yang tertaut.
+   Salah input bisa dibatalkan; pembatalan yang membuat stok minus ditolak.
+3. **Sambungan ke uang** — restok bisa sekaligus menjadi Pengeluaran (kategori
+   Supplies), jadi P&L otomatis benar. Batalkan restok = pengeluaran itu ikut hilang.
+   Pemakaian bahan **tidak** menambah beban baru (sudah dibeli) agar tidak dihitung ganda.
+4. **Resep bahan per layanan (HPP)** — bahan per 1 sesi → biaya bahan per sesi.
+   Tombol “🧪 Pakai Bahan” mengurangi stok sesuai resep (semua-atau-tidak-sama-sekali)
+   dan mencatat HPP, termasuk dari reservasi (sekali klik, anti-dobel).
+5. **Peringatan stok menipis** — muncul di dasbor + halaman stok, bisa dikirim
+   otomatis via WhatsApp Business API (maks. sekali per 24 jam, bisa diatur)
+   atau sekali klik lewat wa.me. Teks pesan bisa diedit.
+6. **Daftar belanja** — barang di bawah minimum + saran jumlah (2× minimum − sisa),
+   dikelompokkan per supplier, ada tautan WA per supplier dan export Excel
+   (sheet Stok, Riwayat, HPP per Layanan).
+7. **Laporan HPP & margin per layanan** — omzet layanan (reservasi lunas) vs bahan
+   terpakai, bahan per sesi, margin & persennya; plus pemakaian per barang 30 hari
+   (terpakai berapa, untuk berapa sesi, per sesi berapa) untuk melihat kebocoran.
+
+### Keputusan desain yang disengaja
+- **Stok tidak pernah ditulis langsung.** Semua perubahan (termasuk dari form edit)
+  lewat satu pintu `recordSupplyMove()` sehingga selalu ada jejak sebelum → sesudah.
+- **Pemakaian bersifat semua-atau-tidak.** Kalau satu bahan kurang, tidak ada stok
+  yang berubah dan admin dapat rincian kekurangannya.
+- **HPP tidak ditambahkan ke Total Beban.** Pembelian sudah dicatat sebagai
+  pengeluaran saat restok; menambahkan HPP lagi akan membuat laba terlihat lebih
+  kecil dari sebenarnya. Angka HPP tampil terpisah di Akunting & laporan stok.
+- **Restore tidak memulihkan tautan pengeluaran** (`expense_id` dikosongkan) karena
+  daftar pengeluaran tidak ikut di file restore — tautan menggantung bisa menghapus
+  entri yang salah saat riwayat dibatalkan.
+
+### Hasil audit
+- Audit menyeluruh: **96 + 137 = 233 pemeriksaan, 0 masalah**.
+- `npm test`: 102 lulus (3 dilewati karena jsdom tidak terpasang; dengan jsdom
+  terpasang halaman Buku Stok ikut diuji render penuh di DOM).
+- Uji E2E tambahan memakai jsdom **melawan server sungguhan** (bukan fixture):
+  24 pemeriksaan, 0 masalah — halaman render, peringatan menipis, resep & HPP,
+  pemakaian dari reservasi, riwayat, daftar belanja ke supplier, kartu
+  pengaturan stok, dan nol error runtime saat semua aksi dijalankan.
+- Dua temuan awal saat menulis skrip audit (bukan bug aplikasi): pencarian barang
+  juga menjangkau kategori (kata "lotion"/"minyak" ada di nama kategori bawaan),
+  dan pembatalan restok yang sudah terpakai memang harus ditolak — skrip uji
+  diperbaiki memakai barang khusus untuk uji pembatalan.
+
+### Bug lain yang ketemu saat audit buku stok (di luar stok, ikut diperbaiki)
+
+1. **Tiga kartu halaman stok tertinggal di tulisan "Memuat…".**
+   `isLatestRender()` mensyaratkan token render = `RENDER_SEQ` global, jadi saat
+   kartu "Menunggu Pencatatan Bahan", "Resep Bahan", dan "Laporan HPP" dimuat
+   bersamaan, hanya kartu terakhir yang lolos pemeriksaan — dua lainnya dibuang
+   diam-diam. → ketiga kartu sekarang memakai token halaman stok (satu token),
+   tetap otomatis batal bila admin pindah halaman. Ditemukan lewat uji E2E
+   jsdom ↔ server sungguhan.
+
+2. **Pendapatan yang sudah diterima bisa hilang dari Rekap & P&L.**
+   Bila pelanggan sudah punya reservasi di tanggal itu (mis. booking lewat web),
+   lalu dibayar dan dibuatkan kwitansi, `syncReceiptToReservation()` berhenti
+   tanpa melakukan apa pun karena "reservasi sudah ada". Karena kwitansi tidak
+   dihitung terpisah di ringkasan P&L (dianggap sudah diwakili reservasi mirror),
+   uang yang benar-benar diterima tidak muncul di omzet sampai admin menandai
+   lunas manual. → kwitansi sekarang menandai reservasi yang cocok menjadi
+   **lunas + approved** dan mencatat jejak "Pembayaran diterima via kwitansi
+   INV-…" di catatan reservasi. Reservasi berstatus **rejected tidak diubah**,
+   dan tidak ada dokumen kedua yang dibuat (`test/api.test.js` + audit [21]).
