@@ -6,12 +6,21 @@
 // Setiap pemeriksaan mencetak OK / !! (masalah) supaya temuan bisa langsung
 // ditindaklanjuti.
 const BASE = process.env.BASE || 'http://127.0.0.1:3600';
+// Kredensial akun uji. Nilainya SAMA dengan contoh di tools/README.md dan bisa
+// ditimpa lewat env — dulu keduanya berbeda sehingga siapa pun yang mengikuti
+// README akan mendapat "Login gagal, audit berhenti" tanpa sebab yang jelas.
+const AUDIT_EMAIL = process.env.AUDIT_EMAIL || 'a@b.id';
+const AUDIT_PASSWORD = process.env.AUDIT_PASSWORD || 'password12345';
 
 let pass = 0, fail = 0;
 const masalah = [];
 function ok(label, extra) { pass++; console.log('  OK   ' + label + (extra ? ' — ' + extra : '')); }
 function bad(label, extra) { fail++; masalah.push(label + (extra ? ' — ' + extra : '')); console.log('  !!   ' + label + (extra ? ' — ' + extra : '')); }
 function check(label, cond, extra) { cond ? ok(label, extra) : bad(label, extra); }
+
+// Rate limit API (240/menit) bisa tercapai bila beberapa skrip audit dijalankan
+// beruntun pada server yang sama — itu bukan bug aplikasi.
+const isRateLimited = (r) => r && r.status === 429;
 
 const api = async (path, opts) => {
   const res = await fetch(BASE + path, opts);
@@ -25,7 +34,7 @@ const api = async (path, opts) => {
   // ---------- 0. Login ----------
   const login = await api('/api/auth/login', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email: 'a@b.id', password: 'password12345' })
+    body: JSON.stringify({ email: AUDIT_EMAIL, password: AUDIT_PASSWORD })
   });
   if (login.status !== 200) { console.error('Login gagal, audit berhenti:', login.text); process.exit(1); }
   const TOKEN = login.json.token;
@@ -251,6 +260,27 @@ const api = async (path, opts) => {
   check('endpoint peringatan stok berjalan', typeof stokAlerts.count === 'number' && typeof stokAlerts.interval_hours === 'number', 'jeda=' + stokAlerts.interval_hours + ' jam');
   check('no-auth: /api/admin/supplies → 401', (await api('/api/admin/supplies')).status === 401);
   check('no-auth: /api/admin/supplies/report → 401', (await api('/api/admin/supplies/report')).status === 401);
+  // Pemulihan storage darurat: salinan WAJIB pakai ID baru (kalau tidak, dua
+  // transaksi berbeda ber-ID sama dan tombol Setujui/Hapus bisa salah sasaran).
+  const mergeSrc = require('fs').readFileSync(require('path').join(__dirname, '..', 'server.js'), 'utf8');
+  const mergeFn = mergeSrc.slice(mergeSrc.indexOf('function mergeTransactionalState'), mergeSrc.indexOf('function startDbRetryLoop'));
+  check('pemulihan storage memberi ID baru untuk reservasi', /target\.reservations\.push\(\{ \.\.\.r, id: resSeq \}\)/.test(mergeFn));
+  check('pemulihan storage memberi ID baru untuk kwitansi', /target\.receipts\.push\(\{ \.\.\.k, id: recSeq \}\)/.test(mergeFn));
+  check('pemulihan storage memberi ID baru untuk broadcast', /target\.broadcasts\.push\(\{ \.\.\.b, id: bcSeq \}\)/.test(mergeFn));
+  check('pemulihan storage ikut menyalin paket sesi', /report\.packages_added\+\+/.test(mergeFn));
+  check('pemulihan storage memetakan tautan riwayat stok ↔ pengeluaran', /expIdMap\.get\(oldExpenseId\)/.test(mergeFn));
+  check('laporan pemulihan menyebut jumlah paket & barang', /packages: target\.packages\.length/.test(mergeFn) && /supplies: target\.supplies\.length/.test(mergeFn));
+
+  // Ronde 3: barang nonaktif, sumber galat, penjagaan riwayat lama
+  const stokCek = (await api('/api/admin/supplies', { headers: H })).json;
+  check('daftar stok memisahkan barang nonaktif', typeof stokCek.inactive_count === 'number');
+  const cfgAi = (await api('/api/admin/ai/config', { headers: H })).json;
+  check('config AI melaporkan sumber galat terakhir', typeof cfgAi.last_error_source === 'string');
+  const jsAdmin = await api('/js/admin.js');
+  check('panel: ada tombol aktif/nonaktifkan barang', /toggleSupplyActive/.test(jsAdmin.text));
+  check('panel: label sumber galat WhatsApp (bukan AI)', /Peringatan stok \(WhatsApp\)/.test(jsAdmin.text));
+  check('server: riwayat lama tanpa angka stok tidak bisa dikosongkan', /tidak menyimpan angka stok sebelumnya/.test(mergeSrc));
+
   // Panel admin: halaman & menu stok tersedia
   const adminPage = await api('/admin');
   check('panel admin memuat menu Buku Stok', adminPage.status === 200 && /data-page="stock"/.test(adminPage.text));

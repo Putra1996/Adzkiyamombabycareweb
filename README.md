@@ -16,7 +16,7 @@ PostgreSQL/MySQL (atau file untuk mode darurat).
 | [SECURITY.md](SECURITY.md) | Perlindungan data pasien + checklist wajib admin |
 | [DEPLOYMENT.md](DEPLOYMENT.md) | Deploy Railway + GitHub Pages, penanganan penyimpanan |
 | [FITUR-DAN-BUG.md](FITUR-DAN-BUG.md) | Catatan fitur, bug, & hasil audit |
-| [tools/README.md](tools/README.md) | Skrip audit menyeluruh (233 pemeriksaan) untuk dijalankan sebelum rilis |
+| [tools/README.md](tools/README.md) | Skrip audit menyeluruh (274 pemeriksaan) untuk dijalankan sebelum rilis |
 
 ## ✨ Fitur
 
@@ -26,7 +26,7 @@ PostgreSQL/MySQL (atau file untuk mode darurat).
 - **AI Booking Assistant**: chat widget di beranda + auto-reply WhatsApp (Gemini primary, OpenRouter fallback) lengkap dengan tes koneksi dari panel — lihat [PANDUAN-AI-WA.md](PANDUAN-AI-WA.md).
 - **Penjadwalan pintar**: deteksi jadwal bentrok + jeda perjalanan antar rumah, jam kosong otomatis di form.
 - **Paket sesi**: pelacakan sisa sesi otomatis untuk layanan 5/7/14 hari dan paket laktasi 3x/5x/7x.
-- **Buku stok (bahan habis pakai)**: sisa stok + batas minimum dengan peringatan (panel & WA otomatis), riwayat masuk/keluar tiap barang, restok otomatis masuk Pengeluaran/P&L, resep bahan per layanan → HPP & margin per layanan, daftar belanja ke supplier sekali klik, export Excel.
+- **Buku stok (bahan habis pakai)**: sisa stok + batas minimum dengan peringatan (panel & WA otomatis), riwayat masuk/keluar tiap barang, restok otomatis masuk Pengeluaran/P&L, resep bahan per layanan → HPP & margin per layanan, daftar belanja ke supplier sekali klik, export Excel, dan penanda **aktif/nonaktif** untuk barang yang sudah tidak dipakai.
 - **Pengingat otomatis**: H-24 jam & H-2 jam via WhatsApp API (atau kirim sekali klik) + notifikasi HP.
 - **PWA**: bisa dipasang di layar utama & menerima notifikasi reservasi.
 - **Keamanan**: token admin, rate limit, backup terenkripsi (AES-256-GCM + scrypt), tanda tangan webhook, dan pemulihan penyimpanan — lihat [SECURITY.md](SECURITY.md).
