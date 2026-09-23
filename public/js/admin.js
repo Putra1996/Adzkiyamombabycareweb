@@ -4436,7 +4436,7 @@ function renderStockPage() {
     </div>
 
     <div class="stat-grid" style="margin-bottom:16px;">
-      <div class="stat-card"><div class="label">Jenis Barang</div><div class="value">${d.total_items || 0}</div></div>
+      <div class="stat-card"><div class="label">Jenis Barang</div><div class="value">${d.total_items || 0}${d.inactive_count ? `<small style="display:block;font-weight:500;font-size:0.8rem;color:var(--text-soft);">${d.inactive_count} nonaktif</small>` : ''}</div></div>
       <div class="stat-card pink"><div class="label">Stok Menipis</div><div class="value">${d.low_count || 0}</div></div>
       <div class="stat-card peach"><div class="label">Nilai Persediaan</div><div class="value">${fmtRp(d.stock_value || 0)}</div></div>
       <div class="stat-card"><div class="label">Bahan Terpakai (bulan ini)</div><div class="value">${fmtRp(d.used_cost_this_month || 0)}</div></div>
@@ -4444,7 +4444,7 @@ function renderStockPage() {
 
     ${low.length ? `
       <div class="alert alert-error" style="border-radius:12px;padding:14px 16px;margin-bottom:16px;">
-        <strong>⚠️ ${low.length} barang menipis:</strong>
+        <strong>⚠️ ${low.length} barang menipis</strong> <span style="font-weight:500;">(barang nonaktif tidak diperingatkan)</span>:
         ${low.slice(0, 6).map((s) => `${esc(s.name)} (sisa ${s.stock} ${esc(s.unit)}, min ${s.min_stock})`).join(' · ')}
         ${low.length > 6 ? ` · +${low.length - 6} lagi` : ''}
         <div class="btn-row" style="margin-top:10px;">
@@ -4527,7 +4527,10 @@ function stockItemCard(s) {
   return `<div class="card-list-item" style="margin-bottom:10px;border-left:4px solid ${warna};">
     <div class="cli-head">${esc(s.name)}
       <small style="color:var(--text-soft);font-weight:500;">· #${s.id} · ${esc(s.unit || 'pcs')}</small>
-      ${low ? '<span class="badge badge-rejected" style="margin-left:6px;">⚠️ Menipis</span>' : ''}
+      ${s.active === false ? '<span class="badge" style="margin-left:6px;background:#e5e7eb;color:#4b5563;">🚫 Nonaktif</span>' : ''}
+      ${s.active === false
+        ? (s.low_raw ? '<span class="badge" style="margin-left:6px;background:#f3f4f6;color:#6b7280;">sisa di bawah minimum (tidak diperingatkan)</span>' : '')
+        : (low ? '<span class="badge badge-rejected" style="margin-left:6px;">⚠️ Menipis</span>' : '')}
     </div>
     <div class="cli-meta">${esc(s.category || '')}${s.supplier ? ' · 🏪 ' + esc(s.supplier) : ''}${s.supplier_wa ? ' · 📱 ' + esc(s.supplier_wa) : ''}</div>
     <div class="cli-row"><span class="cli-label">Sisa stok</span>
@@ -4547,6 +4550,7 @@ function stockItemCard(s) {
       <button class="btn-sm btn-view" onclick="openSupplyMove(${s.id},'adjust')">⚖️ Sesuaikan</button>
       <button class="btn-sm btn-view" onclick="openSupplyHistory(${s.id})">📜 Riwayat</button>
       <button class="btn-sm btn-view" onclick="openSupplyForm(${s.id})">✏️ Edit</button>
+      <button class="btn-sm btn-view" onclick="toggleSupplyActive(${s.id})" title="${s.active === false ? 'Pakai lagi barang ini (ikut diperingatkan bila menipis)' : 'Hentikan: barang tidak lagi diperingatkan / masuk daftar belanja'}">${s.active === false ? '♻️ Aktifkan' : '🚫 Nonaktifkan'}</button>
       <button class="btn-sm btn-del" onclick="deleteSupply(${s.id})">🗑️</button>
     </div>
   </div>`;
@@ -4554,7 +4558,7 @@ function stockItemCard(s) {
 
 function stockSupplyOptions(selectedId) {
   const rows = (STOCK_DATA && STOCK_DATA.supplies) || [];
-  return rows.map((s) => `<option value="${s.id}" ${Number(selectedId) === s.id ? 'selected' : ''}>${esc(s.name)} (sisa ${s.stock} ${esc(s.unit || '')})</option>`).join('');
+  return rows.map((s) => `<option value="${s.id}" ${Number(selectedId) === s.id ? 'selected' : ''}>${esc(s.name)} (sisa ${s.stock} ${esc(s.unit || '')}${s.active === false ? ' · nonaktif' : ''})</option>`).join('');
 }
 
 async function addSupply() {
@@ -4605,6 +4609,10 @@ function openSupplyForm(id) {
       <div class="form-group"><label>WA supplier</label><input id="stkSupplierWa" value="${esc(s ? (s.supplier_wa || '') : '')}"></div>
     </div>
     <div class="form-group"><label>Catatan</label><input id="stkNote" value="${esc(s ? (s.note || '') : '')}" placeholder="mis. 1 botol = ±20 sesi"></div>
+    <label style="display:flex;align-items:center;gap:8px;font-size:0.86rem;cursor:pointer;">
+      <input type="checkbox" id="stkActive" ${s && s.active === false ? '' : 'checked'} style="width:18px;height:18px;accent-color:var(--primary);">
+      Masih dipakai (ikut diperingatkan bila stok menipis & masuk daftar belanja)
+    </label>
     <p style="color:var(--text-soft);font-size:0.82rem;margin:4px 0 0;">
       Perubahan angka stok di sini otomatis tercatat sebagai <strong>penyesuaian</strong> di riwayat — jadi tidak ada angka yang berubah tanpa jejak.
     </p>
@@ -4627,7 +4635,8 @@ async function saveSupply(id) {
     cost: parseInt(document.getElementById('stkCost').value, 10) || 0,
     supplier: document.getElementById('stkSupplier').value.trim(),
     supplier_wa: document.getElementById('stkSupplierWa').value.trim(),
-    note: document.getElementById('stkNote').value.trim()
+    note: document.getElementById('stkNote').value.trim(),
+    active: document.getElementById('stkActive') ? document.getElementById('stkActive').checked : true
   };
   fb.textContent = '⏳ Menyimpan...';
   try {
@@ -4639,6 +4648,24 @@ async function saveSupply(id) {
     fb.style.color = '#c43050';
     fb.textContent = '❌ ' + e.message;
   }
+}
+
+// Hentikan/pakai-lagi barang. Barang nonaktif tetap tersimpan (riwayat, resep,
+// HPP) tetapi tidak lagi memicu peringatan stok maupun masuk daftar belanja.
+async function toggleSupplyActive(id) {
+  const s = ((STOCK_DATA && STOCK_DATA.supplies) || []).find((x) => x.id === id);
+  if (!s) return;
+  const akanAktif = s.active === false;
+  if (!akanAktif && !confirm('Nonaktifkan "' + s.name + '"?\n\nBarang tetap tersimpan beserta riwayatnya, tetapi tidak lagi memicu peringatan stok / masuk daftar belanja.')) return;
+  try {
+    await api('/api/admin/supplies/' + id, { method: 'PATCH', body: JSON.stringify({ active: akanAktif }) });
+    await renderStock();
+    showToast({
+      kind: 'success', icon: akanAktif ? '♻️' : '🚫',
+      title: akanAktif ? 'Barang dipakai lagi: ' + s.name : 'Barang dinonaktifkan: ' + s.name,
+      desc: akanAktif ? 'Barang ini ikut diperingatkan bila stok menipis.' : 'Barang tidak lagi diperingatkan & tidak masuk daftar belanja.'
+    });
+  } catch (e) { alert('Gagal: ' + e.message); }
 }
 
 async function deleteSupply(id) {
@@ -4900,7 +4927,14 @@ function openStockUseForm() {
       Stok berkurang sesuai resep dan nilainya tercatat sebagai HPP layanan.
     </p>
     <div class="form-group"><label>Layanan (punya resep)</label>
-      <select id="stkUseService">${names.map((n) => `<option value="${esc(n)}">${esc(n)}</option>`).join('')}</select>
+      <select id="stkUseService">${names.map((n) => {
+        const rec = recipes.find((r) => r.service_name === n);
+        const adaNonaktif = rec && (rec.items || []).some((it) => {
+          const sup = ((STOCK_DATA && STOCK_DATA.supplies) || []).find((x) => x.id === it.supply_id);
+          return sup && sup.active === false;
+        });
+        return `<option value="${esc(n)}">${esc(n)}${adaNonaktif ? ' ⚠️ (ada bahan nonaktif)' : ''}</option>`;
+      }).join('')}</select>
     </div>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;">
       <div class="form-group"><label>Jumlah sesi</label><input id="stkUseSessions" type="number" min="1" max="60" value="1"></div>
@@ -4963,7 +4997,11 @@ async function renderStockRecipes(tk) {
         <div class="cli-head">${esc(r.service_name)} <small style="color:var(--text-soft);font-weight:500;">· #${r.id}</small></div>
         <div class="cli-row"><span class="cli-label">Biaya bahan / sesi</span><span class="cli-value" style="font-weight:800;">${fmtRp(r.cost_per_session)}</span></div>
         <div style="font-size:0.85rem;margin:4px 0;">
-          ${r.items.map((it) => `<span style="display:inline-block;background:var(--bg);border-radius:8px;padding:3px 8px;margin:2px 4px 2px 0;">${esc(it.name)} × ${it.qty} ${esc(it.unit)}${it.stock < it.qty ? ' <span style="color:#c43050;">(stok kurang)</span>' : ''}</span>`).join('')}
+          ${r.items.map((it) => {
+            const sup = ((STOCK_DATA && STOCK_DATA.supplies) || []).find((x) => x.id === it.supply_id);
+            const nonaktif = sup && sup.active === false;
+            return `<span style="display:inline-block;background:var(--bg);border-radius:8px;padding:3px 8px;margin:2px 4px 2px 0;${nonaktif ? 'opacity:.65;' : ''}">${esc(it.name)} × ${it.qty} ${esc(it.unit)}${!nonaktif && it.stock < it.qty ? ' <span style="color:#c43050;">(stok kurang)</span>' : ''}${nonaktif ? ' <span style="color:#b45309;">(nonaktif)</span>' : ''}</span>`;
+          }).join('')}
         </div>
         ${r.note ? `<div class="cli-meta">${esc(r.note)}</div>` : ''}
         <div class="cli-actions">
@@ -5011,7 +5049,7 @@ function renderRecipeRows() {
   const supplies = (STOCK_RECIPES && STOCK_RECIPES.supplies) || [];
   wrap.innerHTML = RECIPE_ROWS.map((row, i) => `
     <div style="display:grid;grid-template-columns:1fr 110px 40px;gap:8px;align-items:center;margin-bottom:8px;">
-      <select onchange="RECIPE_ROWS[${i}].supply_id=parseInt(this.value,10)">${supplies.map((s) => `<option value="${s.id}" ${Number(row.supply_id) === s.id ? 'selected' : ''}>${esc(s.name)} — ${fmtRp(s.cost)}/${esc(s.unit || '')}</option>`).join('')}</select>
+      <select onchange="RECIPE_ROWS[${i}].supply_id=parseInt(this.value,10)">${supplies.map((s) => `<option value="${s.id}" ${Number(row.supply_id) === s.id ? 'selected' : ''}>${esc(s.name)} — ${fmtRp(s.cost)}/${esc(s.unit || '')}${s.active === false ? ' (nonaktif)' : ''}</option>`).join('')}</select>
       <input type="number" min="0" step="0.01" value="${row.qty}" oninput="RECIPE_ROWS[${i}].qty=parseFloat(this.value)||0" placeholder="jumlah">
       <button class="btn-sm btn-del" onclick="RECIPE_ROWS.splice(${i},1);renderRecipeRows()">×</button>
     </div>`).join('') + `
@@ -5946,6 +5984,8 @@ async function syncStorageToDb() {
     alert('✅ ' + (res.message || 'Sinkronisasi selesai.') + '\n\n' +
       'Ditambahkan: ' + (r.reservations_added || 0) + ' reservasi, ' + (r.receipts_added || 0) + ' kwitansi, ' +
       (r.expenses_added || 0) + ' pengeluaran, ' + (r.broadcasts_added || 0) + ' broadcast' +
+      (r.packages_added ? ', ' + r.packages_added + ' paket sesi' : '') +
+      (r.supplies_added ? ', ' + r.supplies_added + ' barang stok' : '') +
       (r.admins_added ? ', ' + r.admins_added + ' akun admin' : '') + '.\n' +
       'Total di database: ' + ((r.db_after && r.db_after.reservations) || 0) + ' reservasi · ' +
       ((r.db_after && r.db_after.receipts) || 0) + ' kwitansi.');
@@ -6044,10 +6084,21 @@ async function wireAIAssistantSettings() {
       }
       if (cfg.last_error) {
         const kapan = cfg.last_error_at ? new Date(cfg.last_error_at).toLocaleString('id-ID', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : '';
+        // Catatan ini dipakai bersama oleh AI + pengiriman WhatsApp (pengingat,
+        // peringatan stok, daftar belanja). Tanpa label sumber, kegagalan kirim
+        // WA terbaca sebagai "AI bermasalah" dan admin menguji ulang AI yang
+        // sebenarnya sehat.
+        const sumber = {
+          reminder: { label: '⏰ Pengingat WhatsApp', saran: 'Periksa kredensial WhatsApp Business API (Phone Number ID & Access Token) lalu coba lagi dari halaman <strong>⏰ Pengingat</strong>.' },
+          stock_alert: { label: '📦 Peringatan stok (WhatsApp)', saran: 'Periksa kredensial WhatsApp Business API & nomor tujuan peringatan di <strong>Pengaturan → Buku Stok</strong>.' },
+          stock_order: { label: '🛒 Daftar belanja ke supplier', saran: 'Periksa kredensial WhatsApp Business API & nomor WA supplier di halaman <strong>📦 Buku Stok</strong>.' }
+        }[cfg.last_error_source];
         html += '<div style="padding:10px 12px;background:#fef2f2;border:1.5px solid #fca5a5;border-radius:10px;color:#7f1d1d;margin-top:8px;font-size:0.84rem;line-height:1.55;">'
-          + '<strong>❌ Kegagalan terakhir' + (kapan ? ' (' + esc(kapan) + ')' : '') + ':</strong><br>'
+          + '<strong>❌ Kegagalan terakhir' + (sumber ? ' — ' + sumber.label : '') + (kapan ? ' (' + esc(kapan) + ')' : '') + ':</strong><br>'
           + '<code style="font-size:0.8rem;">' + esc(cfg.last_error) + '</code>'
-          + '<div style="margin-top:6px;font-weight:500;">Klik <strong>🤖 Tes AI</strong> untuk menguji ulang setelah memperbaiki kunci/kuota.</div></div>';
+          + '<div style="margin-top:6px;font-weight:500;">'
+          + (sumber ? sumber.saran : 'Klik <strong>🤖 Tes AI</strong> untuk menguji ulang setelah memperbaiki kunci/kuota.')
+          + '</div></div>';
       }
       rbox.innerHTML = html;
     }

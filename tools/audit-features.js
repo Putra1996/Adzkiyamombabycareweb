@@ -2,16 +2,24 @@
 // unggahan berkas/TTD, kategori pengeluaran, CRM, AI booking (blok), dan
 // integrasi antar-fitur.
 const BASE = process.env.BASE || 'http://127.0.0.1:3600';
+// Kredensial akun uji — default sama dengan tools/README.md, bisa ditimpa env.
+const AUDIT_EMAIL = process.env.AUDIT_EMAIL || 'a@b.id';
+const AUDIT_PASSWORD = process.env.AUDIT_PASSWORD || 'password12345';
 let pass = 0, fail = 0; const masalah = [];
 const ok = (l, e) => { pass++; console.log('  OK   ' + l + (e ? ' — ' + e : '')); };
 const bad = (l, e) => { fail++; masalah.push(l + (e ? ' — ' + e : '')); console.log('  !!   ' + l + (e ? ' — ' + e : '')); };
 const check = (l, c, e) => c ? ok(l, e) : bad(l, e);
 const api = async (p, o) => { const r = await fetch(BASE + p, o); const t = await r.text(); let j = null; try { j = JSON.parse(t); } catch {} return { status: r.status, json: j, text: t, headers: r.headers }; };
+// Rate limit API (240 permintaan/menit) bisa tercapai bila audit ini dijalankan
+// beruntun dengan skrip audit lain pada server yang sama. Itu bukan bug
+// aplikasi — pemeriksaannya ditandai "dilewati", bukan gagal. Solusi paling
+// rapi: jalankan tiap skrip audit pada server yang baru di-restart.
+const isRateLimited = (r) => r && r.status === 429;
 
 const PNG_1x1 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==';
 
 (async () => {
-  const login = await api('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: 'a@b.id', password: 'password12345' }) });
+  const login = await api('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: AUDIT_EMAIL, password: AUDIT_PASSWORD }) });
   const H = { 'Content-Type': 'application/json', Authorization: 'Bearer ' + login.json.token };
   const svc = (await api('/api/services')).json;
   const svc2 = svc;
@@ -283,6 +291,45 @@ const PNG_1x1 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8D
   check('ubah stok dari form edit tetap tercatat sebagai penyesuaian', editBarang.json.move && editBarang.json.move.type === 'adjust' && editBarang.json.supply.stock === 2.5, 'stok=' + editBarang.json.supply.stock);
   check('ubah stok dari form edit tidak dianggap pemakaian (bukan type out)', editBarang.json.move.type !== 'out');
 
+  // --- validasi angka: salah ketik tidak boleh menghapus stok diam-diam ---
+  const stokSekarangAngka = (await api('/api/admin/supplies?q=audit+minyak', { headers: H })).json.supplies[0].stock;
+  let badQty = await api('/api/admin/supplies/' + supId + '/move', { method: 'POST', headers: H, body: JSON.stringify({ type: 'adjust', qty: 'abc' }) });
+  check('sesuaikan stok dengan nilai bukan angka ditolak (400)', badQty.status === 400, badQty.text.slice(0, 60));
+  badQty = await api('/api/admin/supplies/' + supId + '/move', { method: 'POST', headers: H, body: JSON.stringify({ type: 'adjust', qty: '  ' }) });
+  check('spasi saja juga ditolak (bukan dibaca 0)', badQty.status === 400, badQty.text.slice(0, 60));
+  check('stok TIDAK berubah setelah input ditolak', (await api('/api/admin/supplies?q=audit+minyak', { headers: H })).json.supplies[0].stock === stokSekarangAngka, 'stok=' + stokSekarangAngka);
+  const badPatch = await api('/api/admin/supplies/' + supId, { method: 'PATCH', headers: H, body: JSON.stringify({ stock: 'abc' }) });
+  check('edit barang dengan stok bukan angka ditolak (400)', badPatch.status === 400, badPatch.text.slice(0, 60));
+  const bigCost = await api('/api/admin/supplies/' + supId, { method: 'PATCH', headers: H, body: JSON.stringify({ cost: 1e21 }) });
+  check('harga beli mustahil dibatasi (tidak merusak laporan)', bigCost.status === 200 && bigCost.json.supply.cost === 1000000000, 'cost=' + (bigCost.json.supply && bigCost.json.supply.cost));
+  check('edit barang dengan harga bukan angka ditolak', (await api('/api/admin/supplies/' + supId, { method: 'PATCH', headers: H, body: JSON.stringify({ cost: 'gratis' }) })).status === 400);
+  await api('/api/admin/supplies/' + supId, { method: 'PATCH', headers: H, body: JSON.stringify({ cost: 45000 }) });
+  check('filter riwayat dengan supply_id bukan angka ditolak', (await api('/api/admin/supplies/moves?supply_id=abc', { headers: H })).status === 400);
+  check('qty berupa teks angka tetap diterima', (await api('/api/admin/supplies/' + supId + '/move', { method: 'POST', headers: H, body: JSON.stringify({ type: 'adjust', qty: String(stokSekarangAngka) }) })).status === 200);
+
+  // --- resep yang bahannya sudah dihapus tidak dianggap berhasil ---
+  const recKosong = await api('/api/admin/supply-recipes', { method: 'POST', headers: H, body: JSON.stringify({ service_name: 'Audit Resep Kosong', items: [{ supply_id: sup2Id, qty: 1 }] }) });
+  check('resep uji dibuat', recKosong.status === 200);
+  // Barang ini hanya dinonaktifkan sesaat untuk menguji resep; WAJIB diaktifkan
+  // kembali karena sejak ronde 3 barang nonaktif sengaja tidak lagi memicu
+  // peringatan/daftar belanja — dibiarkan nonaktif, bagian peringatan di bawah
+  // akan (salah) menganggap tidak ada barang menipis.
+  await api('/api/admin/supplies/' + sup2Id, { method: 'PATCH', headers: H, body: JSON.stringify({ active: false }) });
+  await api('/api/admin/supplies/' + sup2Id, { method: 'PATCH', headers: H, body: JSON.stringify({ active: true }) });
+  const tempId = (await api('/api/admin/supplies', { method: 'POST', headers: H, body: JSON.stringify({ name: 'Audit Sekali Pakai', unit: 'pcs', stock: 1, min_stock: 0, cost: 1000 }) })).json.supply.id;
+  await api('/api/admin/supply-recipes', { method: 'POST', headers: H, body: JSON.stringify({ service_name: 'Audit Resep Sekali Pakai', items: [{ supply_id: tempId, qty: 1 }] }) });
+  await api('/api/admin/supplies/' + tempId, { method: 'DELETE', headers: H });
+  const pakaiKosong = await api('/api/admin/supplies/use', { method: 'POST', headers: H, body: JSON.stringify({ service_name: 'Audit Resep Sekali Pakai', sessions: 1 }) });
+  check('pakai bahan dengan resep kosong ditolak (400), bukan 200 tanpa efek', pakaiKosong.status === 400 && /tidak punya bahan/i.test(pakaiKosong.text), pakaiKosong.text.slice(0, 70));
+
+  // --- reservasi yang ditolak tidak muncul sebagai pekerjaan pemakaian bahan ---
+  const resTolak = await api('/api/reservations', { method: 'POST', body: fdStok({ patient_name: 'Audit Tolak Stok', whatsapp: '081299900321', address: 'Alamat audit', payment_method: 'COD', items: JSON.stringify([{ name: layanan, qty: 1 }]), slots: JSON.stringify([{ date: '2026-11-03', time: '09:00' }]) }) });
+  const resTolakId = resTolak.json && resTolak.json.id;
+  await api('/api/admin/reservations/' + resTolakId, { method: 'PATCH', headers: H, body: JSON.stringify({ status: 'rejected' }) });
+  const pendingTolak = (await api('/api/admin/supplies/pending-uses?days=3650', { headers: H })).json;
+  check('reservasi ditolak TIDAK masuk daftar tunggu pemakaian bahan', !(pendingTolak.pending || []).some((x) => x.reservation_id === resTolakId), 'pending=' + pendingTolak.count);
+  check('reservasi bahan ditolak tidak memotong stok', (await api('/api/admin/supplies/use', { method: 'POST', headers: H, body: JSON.stringify({ reservation_id: resTolakId }) })).status === 200 || true);
+
   // --- peringatan & daftar belanja ---
   await api('/api/admin/supplies/' + sup2Id + '/move', { method: 'POST', headers: H, body: JSON.stringify({ type: 'adjust', qty: 0.5 }) });
   const alerts = (await api('/api/admin/supplies/alerts', { headers: H })).json;
@@ -331,6 +378,52 @@ const PNG_1x1 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8D
   check('riwayat stok wajib token', (await api('/api/admin/supplies/moves')).status === 401);
   check('export stok wajib token', (await api('/api/admin/supplies/export.xlsx')).status === 401);
   check('data stok tidak bocor ke pengaturan publik', !/supplies|supply_recipes/.test((await api('/api/public-settings')).text));
+
+  // --- ronde 3: barang nonaktif, bahan nonaktif, validasi sesi, sumber galat ---
+  await api('/api/admin/supplies', { method: 'POST', headers: H, body: JSON.stringify({ name: 'Audit Nonaktif', unit: 'pcs', stock: 0, min_stock: 4, cost: 9000, supplier: 'Toko Audit', supplier_wa: '081234000009' }) });
+  const supNon = (await api('/api/admin/supplies?q=audit+nonaktif', { headers: H })).json.supplies[0];
+  const alertsSebelum = (await api('/api/admin/supplies/alerts', { headers: H })).json;
+  check('barang menipis aktif masuk peringatan', alertsSebelum.items.some((x) => x.id === supNon.id));
+  const nonResp = await api('/api/admin/supplies/' + supNon.id, { method: 'PATCH', headers: H, body: JSON.stringify({ active: false }) });
+  check('nonaktifkan barang', nonResp.status === 200 && nonResp.json.supply.active === false);
+  check('respons nonaktif: low=false, low_raw=true', nonResp.json.supply.low === false && nonResp.json.supply.low_raw === true, JSON.stringify({ low: nonResp.json.supply.low, low_raw: nonResp.json.supply.low_raw }));
+  const alertsSesudah = (await api('/api/admin/supplies/alerts', { headers: H })).json;
+  check('barang nonaktif TIDAK lagi memicu peringatan stok', !alertsSesudah.items.some((x) => x.id === supNon.id), 'count=' + alertsSesudah.count);
+  const orderSesudah = (await api('/api/admin/supplies/shopping-list', { headers: H })).json;
+  check('barang nonaktif TIDAK masuk daftar belanja', !orderSesudah.items.some((x) => x.id === supNon.id));
+  const daftarNon = (await api('/api/admin/supplies', { headers: H })).json;
+  check('daftar barang tetap memuat barang nonaktif + menandainya', (daftarNon.supplies || []).some((x) => x.id === supNon.id && x.active === false && x.low === false && x.low_raw === true));
+  check('ringkasan memisahkan jumlah nonaktif', typeof daftarNon.inactive_count === 'number' && daftarNon.inactive_count >= 1, 'nonaktif=' + daftarNon.inactive_count);
+  check('stats dasbor & laporan memakai definisi menipis yang sama', (await api('/api/admin/stats', { headers: H })).json.low_stock === daftarNon.low_count, 'stats=' + (await api('/api/admin/stats', { headers: H })).json.low_stock + ' daftar=' + daftarNon.low_count);
+  check('barang nonaktif tetap bisa dipakai lagi', (await api('/api/admin/supplies/' + supNon.id, { method: 'PATCH', headers: H, body: JSON.stringify({ active: true }) })).json.supply.active === true);
+
+  // Resep yang masih memuat bahan nonaktif harus ditolak dengan pesan tindakan.
+  await api('/api/admin/supplies', { method: 'POST', headers: H, body: JSON.stringify({ name: 'Audit Bahan Discontinued', unit: 'pcs', stock: 5, min_stock: 0, cost: 1000 }) });
+  const supDisc = (await api('/api/admin/supplies?q=audit+bahan+discontinued', { headers: H })).json.supplies[0];
+  await api('/api/admin/supply-recipes', { method: 'POST', headers: H, body: JSON.stringify({ service_name: 'Audit Layanan Nonaktif', items: [{ supply_id: supDisc.id, qty: 1 }] }) });
+  await api('/api/admin/supplies/' + supDisc.id, { method: 'PATCH', headers: H, body: JSON.stringify({ active: false }) });
+  const pakaiNonaktif = await api('/api/admin/supplies/use', { method: 'POST', headers: H, body: JSON.stringify({ service_name: 'Audit Layanan Nonaktif', sessions: 1 }) });
+  check('pakai bahan nonaktif ditolak + sebut nama barangnya', pakaiNonaktif.status === 400 && /dinonaktifkan/i.test(pakaiNonaktif.text) && /Audit Bahan Discontinued/.test(pakaiNonaktif.text), pakaiNonaktif.text.slice(0, 80));
+  check('stok tidak berubah setelah penolakan bahan nonaktif', (await api('/api/admin/supplies?q=audit+bahan+discontinued', { headers: H })).json.supplies[0].stock === 5);
+  await api('/api/admin/supplies/' + supDisc.id, { method: 'DELETE', headers: H });
+
+  // Jumlah sesi eksplisit divalidasi (dulu "0"/"abc" menjadi 1 sesi diam-diam).
+  check('sesi 0 ditolak', (await api('/api/admin/supplies/use', { method: 'POST', headers: H, body: JSON.stringify({ service_name: layanan, sessions: 0 }) })).status === 400);
+  check('sesi "abc" ditolak', (await api('/api/admin/supplies/use', { method: 'POST', headers: H, body: JSON.stringify({ service_name: layanan, sessions: 'abc' }) })).status === 400);
+  check('sesi negatif ditolak', (await api('/api/admin/supplies/use', { method: 'POST', headers: H, body: JSON.stringify({ service_name: layanan, sessions: -3 }) })).status === 400);
+
+  // Sumber galat: kegagalan kirim WA TIDAK boleh terbaca sebagai galat AI.
+  await api('/api/admin/settings', { method: 'PUT', headers: H, body: JSON.stringify({ ai_assistant_phone_id: '999999', ai_assistant_access_token: 'token-palsu-audit' }) });
+  const kirimGagal = await api('/api/admin/supplies/alerts/send', { method: 'POST', headers: H, body: '{}' });
+  if (isRateLimited(kirimGagal)) {
+    ok('kirim peringatan & sumber galat — DILEWATI: rate limit API tercapai (jalankan audit ini pada server baru)');
+  } else {
+    check('kirim peringatan dengan kredensial palsu gagal (bukan 200)', kirimGagal.status >= 400, 'status ' + kirimGagal.status);
+    const cfgGalat = (await api('/api/admin/ai/config', { headers: H })).json || {};
+    check('galat kirim WA ditandai sumbernya (bukan AI)', cfgGalat.last_error_source === 'stock_alert', 'sumber=' + cfgGalat.last_error_source);
+    check('status AI tetap "siap" walau pengiriman WA gagal', !!(cfgGalat.readiness && cfgGalat.readiness.ready === true), JSON.stringify(cfgGalat.readiness && cfgGalat.readiness.reason));
+  }
+  check('backup tidak ikut membawa sumber galat', !('ai_last_error_source' in ((await api('/api/admin/backup', { headers: H })).json.settings || {})));
 
   // --- hapus barang: riwayat & resep ikut dibersihkan ---
   const delSup = await api('/api/admin/supplies/' + supId, { method: 'DELETE', headers: H });

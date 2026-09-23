@@ -42,11 +42,16 @@ function stockSandbox(opts) {
     save: () => {},
     nextId: (t) => { sandbox.DB._seq[t] = (sandbox.DB._seq[t] || 0) + 1; return sandbox.DB._seq[t]; }
   };
+  // recordAIError memakai sanitizeAIError() dari server.js; di sandbox cukup
+  // dianggap tidak mengubah pesan.
+  sandbox.sanitizeAIError = (e) => String((e && e.message) || e || '');
+  sandbox._lastAIErrorSaved = { msg: null, src: null, at: 0 };
   // Konstanta diambil apa adanya dari server.js (bukan ditulis ulang) supaya
   // batas atas jumlah stok ikut teruji.
   const qtyMax = /const SUPPLY_QTY_MAX = (\d+);/.exec(serverSrc);
   assert.ok(qtyMax, 'konstanta SUPPLY_QTY_MAX tidak ditemukan di server.js');
   sandbox.SUPPLY_QTY_MAX = Number(qtyMax[1]);
+  sandbox.SUPPLY_MONEY_MAX = Number(/const SUPPLY_MONEY_MAX = (\d+);/.exec(serverSrc)[1]);
   vm.createContext(sandbox);
   for (const fn of [
     'function shiftDateStr',
@@ -56,6 +61,8 @@ function stockSandbox(opts) {
     'function supplyLowStock',
     'function restockSuggestion',
     'function supplyStockValue',
+    'function clampMoney',
+    'function parseNumberInput',
     'function supplyById',
     'function lowStockSupplies',
     'function supplyRecipeFor',
@@ -75,7 +82,9 @@ function stockSandbox(opts) {
     'function supplyAlertDue',
     'function markSupplyAlertSent',
     'function supplyCostByMonth',
-    'function supplyUsageByItem'
+    'function supplyUsageByItem',
+    'function recordAIError',
+    'function clearAIError'
   ]) {
     vm.runInContext(block(fn), sandbox);
   }
@@ -84,6 +93,25 @@ function stockSandbox(opts) {
   const ctx = (expr) => vm.runInContext(expr, sandbox);
   return { sandbox, ctx };
 }
+
+// ---------- sandbox pemulihan storage (merge) ----------
+function mergeSandbox() {
+  const sandbox = { console };
+  vm.createContext(sandbox);
+  vm.runInContext(block('function normalizeStateObject'), sandbox);
+  vm.runInContext(block('function mergeTransactionalState'), sandbox);
+  return sandbox;
+}
+function mergeState(sandbox, dbState, liveState) {
+  return vm.runInContext(
+    'mergeTransactionalState(JSON.parse(' + JSON.stringify(JSON.stringify(dbState)) + '), JSON.parse(' + JSON.stringify(JSON.stringify(liveState)) + '))',
+    sandbox
+  );
+}
+const hasDuplicateIds = (arr) => {
+  const ids = (arr || []).map((x) => x.id);
+  return ids.length !== new Set(ids).size;
+};
 
 const barang = (id, name, stock, min, cost, extra) => Object.assign({
   id, name, unit: 'botol', stock, min_stock: min, cost, category: '🧴 Bahan', supplier: '', supplier_wa: ''
@@ -268,6 +296,175 @@ test('Laporan: melihat riwayat lama tidak dihitung sebagai pemakaian baru', () =
   assert.equal(usage[1], undefined, 'pemakaian Juli harus di luar jendela 30 hari');
 });
 
+test('Angka: input bukan angka DITOLAK, bukan dibaca sebagai 0', () => {
+  const { ctx } = stockSandbox();
+  // Dulu "abc" berubah jadi 0 sehingga stok bisa hilang tanpa peringatan.
+  for (const bad of ['', '  ', 'abc', null, undefined, true, false, [], {}, 'Infinity', NaN]) {
+    assert.equal(ctx('parseNumberInput(' + JSON.stringify(bad) + ')'), null, 'input ' + JSON.stringify(bad) + ' harus ditolak');
+  }
+  assert.equal(ctx('parseNumberInput(0)'), 0, 'nol adalah angka yang sah (stok boleh 0)');
+  assert.equal(ctx('parseNumberInput("2.5")'), 2.5, 'angka dalam bentuk teks tetap diterima');
+  assert.equal(ctx('parseNumberInput(-3)'), -3, 'nilai negatif diteruskan agar bisa divalidasi pemanggil');
+});
+
+test('Uang: harga satuan dibatasi & tidak pernah NaN', () => {
+  const { ctx } = stockSandbox();
+  assert.equal(ctx('clampMoney(45000)'), 45000);
+  assert.equal(ctx('clampMoney(-100)'), 0);
+  assert.equal(ctx('clampMoney("abc")'), 0);
+  // Infinity tidak mungkin datang dari HTTP (JSON mengubahnya jadi null) —
+  // nilainya dianggap tidak sah, bukan dibulatkan menjadi angka raksasa.
+  assert.equal(ctx('clampMoney(Infinity)'), 0);
+  assert.equal(ctx('clampMoney(1e21)'), 1000000000, 'harga tidak boleh merusak laporan dengan angka mustahil');
+  assert.equal(ctx('clampMoney(0.4)'), 0);
+  assert.equal(ctx('clampMoney(1000.6)'), 1001);
+  // Harga beli dari restok juga dibatasi
+  const items = [barang(1, 'Minyak', 0, 1, 1000)];
+  const { sandbox } = stockSandbox({ supplies: items, settings: {} });
+  sandbox.ctx = null;
+  vm.runInContext('recordSupplyMove(DB.supplies[0], { type: "in", qty: 1, unit_cost: 1e21 })', sandbox);
+  assert.equal(sandbox.DB.supplies[0].cost, 1000000000);
+  assert.equal(sandbox.DB.supply_moves[0].total_cost, 1000000000);
+});
+
+test('Pemakaian: resep tanpa bahan tersisa tidak dianggap berhasil', () => {
+  const items = [barang(1, 'Minyak', 5, 1, 1000)];
+  const recipes = [{ id: 1, service_name: 'A', items: [{ supply_id: 99, qty: 1 }] }]; // bahan sudah dihapus
+  const { sandbox, ctx } = stockSandbox({ supplies: items, recipes });
+  const plan = ctx('supplyUsePlan("A", 1)');
+  assert.equal(plan.found, true, 'resepnya tetap ada');
+  assert.equal(plan.items.length, 0, 'tidak ada bahan valid');
+  assert.equal(plan.ok, false, 'resep kosong tidak boleh dianggap cukup');
+  assert.equal(plan.total_cost, 0);
+  // applySupplyUse() wajib tidak mengubah apa pun
+  const moves = vm.runInContext('applySupplyUse(supplyUsePlan("A", 1), {})', sandbox);
+  assert.equal(moves.length, 0, 'pemakaian tanpa bahan valid tidak boleh menghasilkan pergerakan');
+  assert.equal(sandbox.DB.supplies[0].stock, 5);
+  assert.equal(sandbox.DB.supply_moves.length, 0);
+});
+
+test('Pemulihan storage: ID selalu baru & rujukan dipetakan (tidak ada ID bentrok)', () => {
+  const sb = mergeSandbox();
+  // Database sudah berisi id 1 (yang biasa terjadi), file darurat juga mulai dari 1.
+  const dbState = {
+    reservations: [{ id: 1, patient_name: 'Pasien Lama', reservation_date: '2026-09-01', total: 80000 }],
+    receipts: [{ id: 1, invoice_no: 'INV-20260901-001', patient_name: 'Pasien Lama', service_date: '2026-09-01', total: 80000 }],
+    expenses: [{ id: 1, date: '2026-09-01', category: 'cat_bensin', amount: 20000, description: 'bensin' }],
+    packages: [{ id: 1, patient_name: 'Pasien Lama', service_name: 'Newborn Care 5 Days', total_sessions: 5, used_sessions: [] }],
+    supplies: [{ id: 1, name: 'Lotion', stock: 5, cost: 1000 }],
+    supply_moves: [{ id: 1, supply_id: 1, type: 'in', qty: 5, date: '2026-09-01', at: 'x1' }],
+    supply_recipes: [],
+    _seq: { reservations: 1, receipts: 1, expenses: 1, packages: 1, supplies: 1, supply_moves: 1 }
+  };
+  const liveState = {
+    reservations: [{ id: 1, patient_name: 'Pasien Darurat', reservation_date: '2026-09-22', total: 100000, payment_status: 'unpaid' }],
+    receipts: [{ id: 1, invoice_no: 'INV-20260922-001', patient_name: 'Pasien Darurat', service_date: '2026-09-22', total: 100000 }],
+    expenses: [{ id: 5, date: '2026-09-22', category: 'cat_supplies', amount: 50000, description: 'Restok Minyak', supply_id: 9, supply_move_id: 4 }],
+    packages: [{ id: 1, patient_name: 'Pasien Darurat', service_name: 'Newborn Care 7 Days', total_sessions: 7, used_sessions: [{ date: '2026-09-22' }], receipt_id: 1, reservation_id: 1 }],
+    supplies: [{ id: 9, name: 'Minyak', stock: 2, cost: 2000 }],
+    supply_moves: [{ id: 4, supply_id: 9, type: 'in', qty: 10, date: '2026-09-22', at: 'x2', expense_id: 5, reservation_id: 1 }],
+    supply_recipes: [{ id: 1, service_name: 'Massage Ibu Hamil', items: [{ supply_id: 9, qty: 0.2 }] }],
+    broadcasts: [{ id: 1, name: 'Promo', recipient_count: 3, created_at: '2026-09-22T00:00:00Z' }],
+    _seq: { reservations: 1, receipts: 1, expenses: 5, packages: 1, supplies: 9, supply_moves: 4, supply_recipes: 1, broadcasts: 1 }
+  };
+  const out = mergeState(sb, dbState, liveState);
+  const st = out.state;
+  for (const [label, arr] of [
+    ['reservasi', st.reservations], ['kwitansi', st.receipts], ['pengeluaran', st.expenses],
+    ['paket', st.packages], ['barang', st.supplies], ['riwayat', st.supply_moves],
+    ['resep', st.supply_recipes], ['broadcast', st.broadcasts]
+  ]) {
+    assert.equal(hasDuplicateIds(arr), false, `ID ${label} bentrok setelah pemulihan: ` + arr.map((x) => x.id).join(','));
+  }
+  // ID baru tidak menabrak ID lama maupun ID dari file darurat
+  const newRes = st.reservations.find((r) => r.patient_name === 'Pasien Darurat');
+  assert.ok(newRes.id > 1, 'reservasi hasil pemulihan harus dapat ID baru: ' + newRes.id);
+  assert.equal(st.reservations.filter((r) => r.id === 1).length, 1);
+  // Paket sesi IKUT dipulihkan (dulu hilang) + rujukannya dipetakan
+  assert.equal(out.report.packages_added, 1, 'paket sesi tidak ikut tersalin');
+  const pkg = st.packages.find((p) => p.patient_name === 'Pasien Darurat');
+  assert.equal(pkg.reservation_id, newRes.id, 'rujukan paket → reservasi tidak dipetakan');
+  assert.equal(pkg.receipt_id, st.receipts.find((r) => r.patient_name === 'Pasien Darurat').id);
+  // Riwayat stok & pengeluaran saling tertaut dengan ID baru
+  const move = st.supply_moves.find((m) => m.id !== 1);
+  const expense = st.expenses.find((e) => e.id !== 1);
+  assert.equal(st.supplies.filter((s) => s.id === move.supply_id).length, 1, 'riwayat stok menunjuk barang yang tidak ada');
+  assert.equal(move.expense_id, expense.id, 'tautan riwayat → pengeluaran tidak dipetakan');
+  assert.equal(expense.supply_move_id, move.id, 'tautan pengeluaran → riwayat tidak dipetakan');
+  assert.equal(expense.supply_id, move.supply_id);
+  // Penghitung naik sehingga data baru berikutnya tidak menabrak
+  for (const key of ['reservations', 'receipts', 'expenses', 'packages', 'supplies', 'supply_moves', 'supply_recipes', 'broadcasts']) {
+    const maxId = Math.max(0, ...st[key].map((x) => x.id));
+    assert.ok(st._seq[key] >= maxId, `_seq.${key} (${st._seq[key]}) lebih kecil dari ID maksimum (${maxId})`);
+  }
+});
+
+test('Pemulihan storage: riwayat yatim dilewati, data kembar tidak digandakan', () => {
+  const sb = mergeSandbox();
+  const dbState = { expenses: [], reservations: [], receipts: [], packages: [], supplies: [], supply_moves: [], supply_recipes: [], _seq: {} };
+  const liveState = {
+    supplies: [{ id: 3, name: 'Minyak', stock: 1, cost: 100 }],
+    supply_moves: [
+      { id: 1, supply_id: 3, type: 'in', qty: 2, date: '2026-09-22', at: 'a' },
+      { id: 2, supply_id: 77, type: 'in', qty: 2, date: '2026-09-22', at: 'b' } // barang tidak ada di mana pun
+    ],
+    supply_recipes: [{ id: 1, service_name: 'A', items: [{ supply_id: 3, qty: 1 }, { supply_id: 77, qty: 1 }] }],
+    reservations: [], receipts: [], expenses: [], packages: [], broadcasts: [], _seq: {}
+  };
+  const out = mergeState(sb, dbState, liveState);
+  assert.equal(out.state.supply_moves.length, 1, 'riwayat tanpa barang ikut tersalin (yatim)');
+  assert.equal(out.state.supply_recipes[0].items.length, 1, 'bahan yang tidak ada tetap tertulis di resep');
+  // Pemulihan kedua kalinya tidak menggandakan apa pun
+  const out2 = mergeState(sb, out.state, liveState);
+  assert.equal(out2.state.supply_moves.length, 1, 'riwayat digandakan saat pemulihan diulang');
+  assert.equal(out2.state.supply_recipes.length, 1, 'resep digandakan saat pemulihan diulang');
+  assert.equal(out2.report.supply_moves_added, 0);
+});
+
+test('Barang nonaktif: tidak memicu peringatan / daftar belanja, tapi tetap terlihat', () => {
+  const items = [barang(1, 'Masih Dipakai', 1, 3, 10000), barang(2, 'Sudah Dihentikan', 0, 5, 20000, { active: false })];
+  const { ctx } = stockSandbox({ supplies: items });
+  const low = ctx('lowStockSupplies()');
+  assert.equal(low.length, 1, 'barang nonaktif tidak boleh memicu peringatan: ' + JSON.stringify(low.map((x) => x.name)));
+  assert.equal(low[0].name, 'Masih Dipakai');
+  // Nilai mentahnya tetap benar supaya kartu barang bisa memberi catatan
+  assert.equal(ctx('supplyLowStock(DB.supplies[1])'), true, 'stok barang nonaktif tetap tercatat di bawah minimum');
+  assert.equal(ctx('supplyLowStock(DB.supplies[0])'), true);
+});
+
+test('Resep dengan bahan nonaktif ditandai (bukan dipakai diam-diam)', () => {
+  const items = [barang(1, 'Aktif', 9, 1, 10000), barang(2, 'Discontinued', 9, 1, 5000, { active: false })];
+  const recipes = [{ id: 1, service_name: 'Layanan X', items: [{ supply_id: 1, qty: 1 }, { supply_id: 2, qty: 2 }] }];
+  const { ctx } = stockSandbox({ supplies: items, recipes });
+  const plan = ctx('supplyUsePlan("Layanan X", 1)');
+  assert.equal(plan.items.length, 2);
+  assert.equal(plan.inactive.length, 1, 'bahan nonaktif tidak ditandai');
+  assert.equal(plan.inactive[0].name, 'Discontinued');
+  assert.equal(plan.ok, false, 'rencana dengan bahan nonaktif tidak boleh dianggap siap');
+  // Tanpa bahan nonaktif, rencana normal
+  const bersih = [{ id: 2, service_name: 'Layanan Y', items: [{ supply_id: 1, qty: 1 }] }];
+  const sb2 = stockSandbox({ supplies: items, recipes: bersih });
+  const plan2 = sb2.ctx('supplyUsePlan("Layanan Y", 1)');
+  assert.equal(plan2.inactive.length, 0);
+  assert.equal(plan2.ok, true);
+});
+
+test('Galat AI vs galat WhatsApp dibedakan sumbernya', () => {
+  const sb = stockSandbox({ supplies: [barang(1, 'X', 1, 0, 1000)] });
+  sb.sandbox.DB.settings = { business_name: 'Adzkiya' };
+  vm.runInContext('recordAIError(new Error("WA send 401"), "stock_alert")', sb.sandbox);
+  assert.equal(sb.sandbox.DB.settings.ai_last_error, 'WA send 401');
+  assert.equal(sb.sandbox.DB.settings.ai_last_error_source, 'stock_alert');
+  // Tanpa sumber, dianggap galat AI
+  sb.sandbox._lastAIErrorSaved = { msg: null, src: null, at: 0 };
+  vm.runInContext('recordAIError(new Error("gemini 429"))', sb.sandbox);
+  assert.equal(sb.sandbox.DB.settings.ai_last_error_source, 'ai');
+  // Dibersihkan setelah AI berhasil
+  vm.runInContext('clearAIError()', sb.sandbox);
+  assert.equal(sb.sandbox.DB.settings.ai_last_error, null);
+  assert.equal(sb.sandbox.DB.settings.ai_last_error_source, null);
+});
+
 test('Sambungan endpoint: stok wajib token, otomatis, dan tersambung ke fitur lain', () => {
   // Semua endpoint buku stok wajib token admin
   for (const r of [
@@ -292,6 +489,22 @@ test('Sambungan endpoint: stok wajib token, otomatis, dan tersambung ke fitur la
   ]) {
     assert.ok(serverSrc.includes(r), 'endpoint tidak terpasang atau tanpa auth: ' + r);
   }
+  // Barang nonaktif dihormati (peringatan/daftar belanja) & bahan nonaktif ditolak
+  assert.match(serverSrc, /filter\(\(s\) => s\.active !== false && supplyLowStock\(s\)\)/, 'barang nonaktif masih memicu peringatan');
+  assert.match(serverSrc, /Resep ini masih memakai bahan yang sudah dinonaktifkan/, 'bahan nonaktif masih boleh dipakai tanpa peringatan');
+  // Jumlah sesi eksplisit divalidasi (dulu 0 → 1 sesi diam-diam)
+  assert.match(serverSrc, /Jumlah sesi harus angka ≥ 1/, 'jumlah sesi tidak divalidasi');
+  // Riwayat lama tanpa angka stok sebelumnya tidak boleh membuat stok 0
+  assert.match(serverSrc, /tidak menyimpan angka stok sebelumnya/, 'pembatalan riwayat lama masih bisa mengosongkan stok');
+  // Galat pengiriman WA diberi sumber supaya tidak terbaca sebagai galat AI
+  assert.match(serverSrc, /recordAIError\(e, 'stock_alert'\)/, 'galat peringatan stok tidak diberi sumber');
+  assert.match(serverSrc, /recordAIError\(e, 'reminder'\)/, 'galat pengingat tidak diberi sumber');
+  // Validasi angka & uang benar-benar dipakai di endpoint
+  assert.match(serverSrc, /const qtyRaw = parseNumberInput\(b\.qty\)/, 'pergerakan stok tidak memvalidasi jumlah');
+  assert.match(serverSrc, /Sisa stok harus berupa angka/, 'edit barang tidak menolak stok bukan angka');
+  assert.match(serverSrc, /if \(!plan\.items\.length\)/, 'pemakaian resep kosong tidak ditolak');
+  assert.match(serverSrc, /if \(!moves\.length\)/, 'pemakaian tanpa efek masih dianggap berhasil');
+  assert.match(serverSrc, /if \(r\.status === 'rejected'\) return;/, 'daftar tunggu pemakaian masih memuat reservasi yang ditolak');
   // Peringatan otomatis dijalankan berkala saat boot
   assert.match(serverSrc, /setInterval\(autoStockAlert, 30 \* 60 \* 1000\)/, 'scheduler peringatan stok tidak berjalan');
   assert.match(serverSrc, /if \(!supplyAlertDue\(\)\) return;/, 'scheduler tidak menghormati jeda anti-spam');
@@ -324,6 +537,15 @@ test('Sambungan data: normalisasi, backup, restore, dan pemulihan storage', () =
   const merge = serverSrc.slice(serverSrc.indexOf('function mergeTransactionalState'), serverSrc.indexOf('function startDbRetryLoop'));
   assert.match(merge, /supplies_added/, 'pemulihan storage tidak menyalin barang');
   assert.match(merge, /report\.supply_moves_added\+\+/, 'pemulihan storage tidak menyalin riwayat stok');
+  assert.match(merge, /report\.packages_added\+\+/, 'pemulihan storage tidak menyalin paket sesi');
+  assert.match(merge, /const nextSeq = \(key, \.\.\.sources\)/, 'pemulihan storage tidak menghitung ID berikutnya dengan aman');
+  // Semua jenis data harus memakai ID baru (id: <seq>) — pernah tidak, sehingga
+  // dua transaksi berbeda ber-ID sama dan tombol Setujui/Hapus bisa salah sasaran.
+  for (const marker of ['target.reservations.push({ ...r, id: resSeq })', 'target.receipts.push({ ...k, id: recSeq })',
+    'target.expenses.push({', 'target.broadcasts.push({ ...b, id: bcSeq })', 'target.packages.push({']) {
+    assert.ok(merge.includes(marker), 'salinan tanpa ID baru: ' + marker);
+  }
+  assert.match(merge, /expIdMap\.get\(oldExpenseId\)/, 'tautan riwayat stok → pengeluaran tidak dipetakan setelah ID berubah');
 });
 
 test('Keamanan: data stok tidak bocor ke endpoint publik', () => {

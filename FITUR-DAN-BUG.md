@@ -213,7 +213,7 @@ Ditambahkan halaman **📦 Buku Stok** (menu setelah Akunting) beserta auditnya
   entri yang salah saat riwayat dibatalkan.
 
 ### Hasil audit
-- Audit menyeluruh: **96 + 137 = 233 pemeriksaan, 0 masalah**.
+- Audit menyeluruh: **96 + 137 = 233 pemeriksaan, 0 masalah** (ronde 1, sebelum merge).
 - `npm test`: 102 lulus (3 dilewati karena jsdom tidak terpasang; dengan jsdom
   terpasang halaman Buku Stok ikut diuji render penuh di DOM).
 - Uji E2E tambahan memakai jsdom **melawan server sungguhan** (bukan fixture):
@@ -245,3 +245,155 @@ Ditambahkan halaman **📦 Buku Stok** (menu setelah Akunting) beserta auditnya
    **lunas + approved** dan mencatat jejak "Pembayaran diterima via kwitansi
    INV-…" di catatan reservasi. Reservasi berstatus **rejected tidak diubah**,
    dan tidak ada dokumen kedua yang dibuat (`test/api.test.js` + audit [21]).
+
+
+## Audit mendalam ronde 2 (setelah PR #3 di-merge ke `main`)
+
+Fokus: seluruh fitur buku stok yang baru, ditambah jalur pemulihan penyimpanan
+yang dipakai saat database mati — karena itu jalur yang paling berisiko
+kehilangan data produksi.
+
+### 4 bug nyata yang ditemukan & diperbaiki
+
+1. **Salah ketik angka bisa menghapus stok tanpa jejak.**
+   `POST /supplies/:id/move` dengan `{type:"adjust", qty:"abc"}` dan
+   `PATCH /supplies/:id` dengan `{stock:"abc"}` dijawab **200 sukses dengan stok
+   menjadi 0** — nilai bukan angka dibaca sebagai 0 (dan `"  "` juga, karena
+   `Number("  ") === 0`). Sekarang ditolak **400** dengan pesan jelas, stok tidak
+   berubah, dan `parseNumberInput()` menolak `""`, spasi, `null`, `true/false`,
+   array, serta objek.
+2. **Harga beli mustahil merusak laporan.** `cost: 1e21` tersimpan apa adanya
+   sehingga nilai persediaan, saran beli (2e27), HPP, dan margin mustahil.
+   Ditambahkan `clampMoney()` dengan batas **Rp 1 miliar** per satuan (dan
+   `Infinity`/`NaN` → 0, bukan angka raksasa).
+3. **Resep yang bahannya sudah dihapus dianggap "berhasil".** `POST
+   /supplies/use` membalas **200** dengan `total_cost: 0` dan **tanpa perubahan
+   stok**, tetapi reservasinya tetap ditandai `stock_applied_at` — jadi setelah
+   resep diperbaiki, pemakaiannya tidak bisa dicatat lagi. Sekarang **400**:
+   "Resep ... tidak punya bahan tersisa", dan reservasi tidak ditandai.
+4. **Daftar tunggu pemakaian bahan memuat booking yang ditolak.** Reservasi
+   berstatus `rejected` tetap muncul sebagai pekerjaan, dan sekali klik bisa
+   memotong stok untuk kunjungan yang dibatalkan. Sekarang `rejected` dilewati.
+
+### 2 bug serius di jalur pemulihan penyimpanan (Neon/database mati)
+
+Ini jalur yang dipakai saat muncul peringatan "Mode darurat (file)" lalu admin
+menekan **⬆️ Sinkronkan Data Darurat ke Database**.
+
+5. **ID bentrok setelah pemulihan.** Salinan memakai ID dari file darurat apa
+   adanya, padahal file darurat selalu mulai dari id 1 — sama seperti isi
+   database. Akibatnya dua reservasi/kwitansi/pengeluaran berbeda ber-ID sama
+   (terbukti: reservasi `1:Pasien Lama` + `1:Pasien Darurat`). Efek nyatanya:
+   tombol **Setujui/Tolak/Hapus bisa mengenai data yang salah**, dan pembatalan
+   riwayat stok bisa menghapus pengeluaran milik transaksi lain. Sekarang
+   **semua** jenis data (reservasi, kwitansi, pengeluaran, broadcast, paket,
+   barang, riwayat stok, resep) disalin dengan **ID baru**, dan rujukan
+   antar-data dipetakan ulang (termasuk tautan dua arah riwayat stok ↔
+   pengeluaran, serta riwayat → reservasi). Riwayat tanpa barangnya dilewati.
+6. **Paket sesi tidak ikut dipulihkan.** Sisa sesi yang tercatat selama database
+   mati hilang begitu admin menekan Sinkronkan (tidak ada di laporan maupun
+   salinan). Sekarang paket ikut disalin (dedupe: pasien + layanan + waktu
+   dibuat) dengan rujukan ke kwitansi/reservasi hasil pemulihan, dan jumlahnya
+   dilaporkan: "... , N paket sesi, M barang stok".
+
+### Yang diperiksa dan terbukti AMAN (bukan bug)
+
+- **Injeksi HTML (XSS) dari data stok.** Nama `'<img src=x onerror=…>'`, supplier
+  `'</div><script>…</script>'`, dan catatan berisi `<iframe>` disimpan server,
+  lalu dirender panel: **tidak ada satu pun skrip yang jalan** (5 payload diuji),
+  semuanya tampil sebagai teks. `showToast()` juga meng-escape judul & isi.
+- **Injeksi formula Excel.** Barang bernama `=1+1` dan `+SUM(A1:A9)` diekspor ke
+  Excel sebagai **teks** (tidak ada sel bertipe formula) — tidak bisa dijadikan
+  senjata ke akuntan/bank.
+- **Hapus pengeluaran restok dari tab Akunting**, lalu batalkan restoknya:
+  dibalas `ok: true`, stok kembali, `expense_removed: 0`, dan total beban tidak
+  ikut berubah (tidak ada pengeluaran yang salah terhapus).
+- **Tanpa token**: 12 endpoint buku stok membalas 401; data stok tidak muncul di
+  `/api/public-settings`; endpoint stok tidak menyentuh kredensial.
+- **`data.json` di repo publik**: 0 admin, 0 reservasi, 0 kwitansi, 0 data stok,
+  tidak ada data sensitif.
+- **Rate limit**: seluruh endpoint stok berada di belakang `apiLimiter` global
+  (`app.use('/api/', apiLimiter)` dipasang sebelum bagian BUKU STOK).
+
+### Catatan operasional (sengaja, bukan bug)
+
+- **Menghapus barang tidak menghapus pengeluaran restoknya.** Uang benar-benar
+  keluar, jadi beban itu tetap tercatat di P&L; yang hilang hanya riwayat stok &
+  keanggotaan resep (pesannya menyebutkan ini di konfirmasi panel).
+- **Restore dari file backup tidak memulihkan tautan `expense_id`** pada riwayat
+  stok (daftar pengeluaran tidak ikut di file restore), supaya "Batalkan" tidak
+  menghapus entri yang salah.
+
+### Hasil audit ronde 2
+
+- Audit menyeluruh: **102 + 149 = 251 pemeriksaan, 0 masalah**.
+- `npm test`: **107 lulus / 3 dilewati** (jsdom tidak terpasang). Dengan jsdom
+  terpasang, halaman Buku Stok ikut diuji render penuh di DOM.
+- `test/stock.test.js` bertambah 5 tes (19 total): validasi angka, batas harga,
+  resep kosong, ID baru pada pemulihan storage, dan pemulihan berulang.
+- E2E jsdom ↔ server sungguhan: **20 pemeriksaan, 0 masalah** (termasuk 5 payload
+  injeksi HTML dan validasi angka dari sisi panel).
+- Bukti bug disimpan sebagai tes regresi: `parseNumberInput`, `clampMoney`,
+  `supplyUsePlan(...).ok`, serta skenario ID bentrok pada `mergeTransactionalState`
+  (dua reservasi/kwitansi/pengeluaran ber-ID sama sebelum perbaikan).
+
+
+## Audit mendalam ronde 3 (lanjutan, setelah ronde 2)
+
+Fokus: perilaku sehari-hari yang belum diuji — barang yang sudah tidak dipakai,
+salah ketik jumlah sesi, dan pesan galat yang bisa menyesatkan admin.
+
+### 5 bug/perilaku menyesatkan yang ditemukan & diperbaiki
+
+1. **Field `active` barang tidak dipakai di mana pun.** Barang bisa ditandai
+   nonaktif (mis. produk yang sudah tidak dijual lagi), tetapi **tetap** memicu
+   peringatan "stok menipis", masuk daftar belanja, dan dihitung di dasbor —
+   artinya bot bisa mengirim peringatan WhatsApp tiap 24 jam untuk barang yang
+   tidak akan dibeli lagi, tanpa cara mematikannya. Sekarang: peringatan,
+   daftar belanja, jumlah "menipis", dan laporan **hanya** memakai barang aktif
+   (`lowStockSupplies()`), sedangkan daftar barang tetap menampilkan barang
+   nonaktif lengkap dengan badge 🚫 + tombol **♻️ Aktifkan / 🚫 Nonaktifkan**
+   (sebelumnya tidak ada cara mengubahnya dari panel sama sekali).
+2. **Resep yang masih memuat bahan nonaktif dipakai diam-diam.** Pemakaian bahan
+   akan memotong stok barang yang sudah dihentikan. Sekarang ditolak **400**
+   dengan menyebut nama barangnya: "Resep ini masih memakai bahan yang sudah
+   dinonaktifkan: X. Perbarui resepnya … atau aktifkan lagi barangnya."
+   Rencana pemakaian juga menandai bahan nonaktif (`plan.inactive`), dan
+   pemilih bahan/resep di panel memberi label "(nonaktif)".
+3. **Jumlah sesi `0` / `"abc"` diam-diam menjadi 1 sesi.** HPP & pengurangan
+   stok jadi tidak sesuai kenyataan. Sekarang **400**: "Jumlah sesi harus angka
+   ≥ 1 (contoh: 1 atau 3)." (Nilai negatif juga ditolak.)
+4. **Riwayat lama tanpa angka "stok sebelum" bisa mengosongkan stok.** Tombol
+   Batalkan pada riwayat yang tidak menyimpan `before` (mis. hasil impor dari
+   sumber lain) dulu menghitung `roundQty(undefined) = 0` sehingga stok barang
+   lenyap tanpa peringatan. Sekarang **400** dengan saran memakai "⚖️ Sesuaikan".
+   Diverifikasi dengan menyuntikkan riwayat semacam itu ke file data.
+5. **Kegagalan pengiriman WhatsApp terbaca sebagai "AI bermasalah".** Catatan
+   galat di panel dipakai bersama AI & pengiriman WA, jadi saat token WA
+   bermasalah panel menyuruh admin "klik Tes AI untuk menguji ulang" — padahal
+   AI-nya sehat. Sekarang galat diberi **sumber** (`ai`, `reminder`,
+   `stock_alert`, `stock_order`) dan panel menampilkan label yang tepat:
+   "❌ Kegagalan terakhir — 📦 Peringatan stok (WhatsApp)" + arahan ke halaman
+   yang benar. Status kesiapan AI tetap `ready` (tidak lagi ikut diragukan).
+
+### Peningkatan harness audit
+
+- Skrip audit kini mengenali **HTTP 429** (batas 240 permintaan/menit) sebagai
+  "dilewati karena rate limit", bukan kegagalan — supaya menjalankan dua skrip
+  audit beruntun tidak menghasilkan temuan palsu. Cara paling rapi tetap: satu
+  server segar per skrip audit.
+- Pemeriksaan ronde 2 yang menonaktifkan barang uji kini mengaktifkannya lagi,
+  karena sejak ronde 3 barang nonaktif memang tidak memicu peringatan.
+
+### Hasil audit ronde 3
+
+- Audit menyeluruh: **107 + 167 = 274 pemeriksaan, 0 masalah** (masing-masing
+  pada server yang baru di-restart).
+- `npm test`: **110 lulus / 3 dilewati** (jsdom tidak terpasang).
+- `test/stock.test.js`: **22 tes** (3 tes baru: barang nonaktif, resep dengan
+  bahan nonaktif, dan sumber galat AI vs WhatsApp).
+- E2E jsdom ↔ server sungguhan: **9 pemeriksaan, 0 masalah** — termasuk menekan
+  tombol Nonaktifkan/Aktifkan sungguhan lalu memeriksa badge, perubahan tombol,
+  hilangnya barang dari daftar peringatan, dan label sumber galat di kartu AI.
+- Diverifikasi tidak berubah: XSS data stok (5 payload), injeksi formula Excel,
+  hapus pengeluaran lalu batal-restok, 12 endpoint stok 401 tanpa token.

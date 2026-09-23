@@ -308,81 +308,202 @@ function mergeTransactionalState(dbStateInput, liveStateInput) {
     }
   };
 
-  // Kwitansi: kunci unik = invoice_no (kalau kosong pakai nama+tanggal).
-  const receiptKey = (k) => (k.invoice_no ? 'inv:' + k.invoice_no : 'nm:' + (k.patient_name || '') + '|' + (k.service_date || ''));
-  const receiptKeys = new Set(target.receipts.map(receiptKey));
-  for (const k of live.receipts) {
-    const key = receiptKey(k);
-    if (receiptKeys.has(key)) continue;
-    receiptKeys.add(key);
-    target.receipts.push(k);
-    report.receipts_added++;
-  }
+  // Urutan penting: data yang saling merujuk disalin lebih dulu supaya
+  // rujukannya bisa dipetakan (reservasi → paket, barang → riwayat → pengeluaran).
+  //
+  // SEMUA salinan diberi ID BARU, tidak memakai ID dari file darurat. File
+  // darurat selalu mulai dari id 1, begitu pula isi database, jadi memakai ID
+  // apa adanya membuat dua transaksi berbeda ber-ID sama — akibatnya tombol
+  // Setujui/Tolak/Hapus bisa mengenai data yang salah, dan pembatalan riwayat
+  // stok bisa menghapus pengeluaran milik transaksi lain.
+  // Hitung ID berikutnya dengan aman: sumbernya boleh berupa angka (penghitung)
+  // atau array objek ber-id. Campur keduanya tanpa konversi yang benar akan
+  // menghasilkan NaN — dan seluruh ID hasil salinan menjadi NaN.
+  const nextSeq = (key, ...sources) => {
+    let max = Number(target._seq[key]) || 0;
+    for (const s of sources) {
+      if (Array.isArray(s)) {
+        for (const x of s) {
+          const id = Number(x && typeof x === 'object' ? x.id : x);
+          if (Number.isFinite(id)) max = Math.max(max, id);
+        }
+        continue;
+      }
+      const n = Number(s);
+      if (Number.isFinite(n)) max = Math.max(max, n);
+    }
+    return max;
+  };
 
-  // Reservasi: dedupe sama seperti /api/admin/restore (nama + tanggal +
-  // total dalam toleransi 1 rupiah).
+  // ---- 1) Reservasi (dedupe: nama + tanggal + total) ----
   const resKey = (r) => (r.patient_name || '') + '|' + (r.reservation_date || '') + '|' + Math.round(r.total || 0);
   const resKeys = new Set(target.reservations.map(resKey));
+  const resIdMap = new Map();
+  let resSeq = nextSeq('reservations', target.reservations, (live._seq || {}).reservations || 0, live.reservations);
   for (const r of live.reservations) {
     const key = resKey(r);
     if (resKeys.has(key)) continue;
     resKeys.add(key);
-    target.reservations.push(r);
+    resSeq += 1;
+    resIdMap.set(r.id, resSeq);
+    target.reservations.push({ ...r, id: resSeq });
     report.reservations_added++;
   }
+  target._seq.reservations = Math.max(target._seq.reservations || 0, resSeq);
 
-  // Pengeluaran: dedupe tanggal + kategori + jumlah + keterangan.
+  // ---- 2) Kwitansi (dedupe: invoice_no, atau nama + tanggal) ----
+  const receiptKey = (k) => (k.invoice_no ? 'inv:' + k.invoice_no : 'nm:' + (k.patient_name || '') + '|' + (k.service_date || ''));
+  const receiptKeys = new Set(target.receipts.map(receiptKey));
+  const recIdMap = new Map();
+  let recSeq = nextSeq('receipts', target.receipts, (live._seq || {}).receipts || 0, live.receipts);
+  for (const k of live.receipts) {
+    const key = receiptKey(k);
+    if (receiptKeys.has(key)) continue;
+    receiptKeys.add(key);
+    recSeq += 1;
+    recIdMap.set(k.id, recSeq);
+    target.receipts.push({ ...k, id: recSeq });
+    report.receipts_added++;
+  }
+  target._seq.receipts = Math.max(target._seq.receipts || 0, recSeq);
+
+  // ---- 3) Paket sesi (dedupe: pasien + layanan + waktu dibuat) ----
+  // Sebelumnya paket TIDAK ikut disalin sama sekali, jadi sisa sesi yang
+  // tercatat saat database mati hilang setelah pemulihan.
+  const pkgKey = (x) => [(x.patient_name || '').toLowerCase(), (x.service_name || '').toLowerCase(), x.created_at || ''].join('|');
+  const pkgKeys = new Set(target.packages.map(pkgKey));
+  let pkgSeq = nextSeq('packages', target.packages, (live._seq || {}).packages || 0, live.packages);
+  report.packages_added = 0;
+  for (const x of live.packages) {
+    const key = pkgKey(x);
+    if (pkgKeys.has(key)) continue;
+    pkgKeys.add(key);
+    pkgSeq += 1;
+    target.packages.push({
+      ...x,
+      id: pkgSeq,
+      receipt_id: x.receipt_id ? (recIdMap.get(x.receipt_id) || null) : (x.receipt_id || null),
+      reservation_id: x.reservation_id ? (resIdMap.get(x.reservation_id) || null) : (x.reservation_id || null)
+    });
+    report.packages_added++;
+  }
+  target._seq.packages = Math.max(target._seq.packages || 0, pkgSeq);
+
+  // ---- 4) Buku stok: barang → riwayat → resep ----
+  // Barang disalin dengan ID BARU, bukan menyalin ID dari file darurat.
+  // Kalau ID disalin apa adanya, sebuah barang bisa berbenturan dengan ID
+  // barang yang sudah ada di database (data lama: id 1 "Lotion", file darurat:
+  // id 1 "Minyak") sehingga dua barang ber-ID sama — riwayat, resep, dan
+  // perhitungan HPP jadi salah menempel ke barang yang keliru.
+  const supKey = (s) => String((s && s.name) || '').trim().toLowerCase();
+  const byName = new Map(target.supplies.map((s) => [supKey(s), s]));
+  const supplyIdMap = new Map(); // id di file darurat -> id di database
+  let supplySeq = nextSeq('supplies', target.supplies, (live._seq || {}).supplies || 0, live.supplies);
+  for (const s of live.supplies) {
+    const key = supKey(s);
+    if (!key) continue;
+    const existing = byName.get(key);
+    if (existing) {
+      // Barang yang sama sudah ada di database → pakai milik database
+      // (stoknya yang sedang dipakai sehari-hari), tapi riwayat dari file
+      // darurat tetap diarahkan ke barang itu.
+      supplyIdMap.set(s.id, existing.id);
+      continue;
+    }
+    supplySeq += 1;
+    const copy = { ...s, id: supplySeq };
+    target.supplies.push(copy);
+    byName.set(key, copy);
+    supplyIdMap.set(s.id, copy.id);
+    report.supplies_added++;
+  }
+  target._seq.supplies = Math.max(target._seq.supplies || 0, supplySeq);
+
+  // Riwayat: tautkan ke ID barang yang benar; dilewati kalau barangnya tidak
+  // ada di kedua sisi (tidak boleh meninggalkan riwayat yatim).
+  let moveSeq = nextSeq('supply_moves', target.supply_moves, (live._seq || {}).supply_moves || 0, live.supply_moves);
+  const moveKey = (m) => [m.supply_id, m.at || '', m.type || '', m.qty, m.date || ''].join('|');
+  const moveKeys = new Set(target.supply_moves.map(moveKey));
+  const copiedMoves = []; // untuk memetakan expense_id setelah pengeluaran disalin
+  for (const m of live.supply_moves) {
+    const mapped = supplyIdMap.get(m.supply_id);
+    if (!mapped) continue;
+    moveSeq += 1;
+    const move = { ...m, supply_id: mapped, id: moveSeq, reservation_id: m.reservation_id ? (resIdMap.get(m.reservation_id) || null) : null };
+    const key = moveKey(move);
+    if (moveKeys.has(key)) continue;
+    moveKeys.add(key);
+    const oldExpenseId = move.expense_id || null;
+    move.expense_id = null;
+    target.supply_moves.push(move);
+    copiedMoves.push({ move, oldExpenseId });
+    report.supply_moves_added++;
+  }
+  target._seq.supply_moves = Math.max(target._seq.supply_moves || 0, moveSeq);
+
+  // Resep: dedupe per nama layanan + bahan yang sudah dihapus dibuang, supaya
+  // resep hasil pemulihan tidak menunjuk barang yang tidak ada.
+  let recipeSeq = nextSeq('supply_recipes', target.supply_recipes, (live._seq || {}).supply_recipes || 0, live.supply_recipes);
+  const recipeKeys = new Set(target.supply_recipes.map((r) => String((r && r.service_name) || '').trim().toLowerCase()));
+  for (const r of live.supply_recipes) {
+    const key = String((r && r.service_name) || '').trim().toLowerCase();
+    if (!key || recipeKeys.has(key)) continue;
+    const items = ((r && r.items) || [])
+      .map((it) => ({ supply_id: supplyIdMap.get(it && it.supply_id) || (it && it.supply_id), qty: Number(it && it.qty) || 0 }))
+      .filter((it) => it.supply_id && it.qty > 0 && target.supplies.some((s) => s.id === it.supply_id));
+    if (!items.length) continue;
+    recipeSeq += 1;
+    recipeKeys.add(key);
+    target.supply_recipes.push({ ...r, id: recipeSeq, items });
+    report.supply_recipes_added++;
+  }
+  target._seq.supply_recipes = Math.max(target._seq.supply_recipes || 0, recipeSeq);
+
+  // ---- 5) Pengeluaran (dedupe: tanggal + kategori + jumlah + keterangan) ----
+  // Restok yang tertaut ke riwayat stok ikut dipetakan, supaya "Batalkan
+  // restok" tidak menghapus pengeluaran milik transaksi lain.
   const expKey = (e) => (e.date || '') + '|' + (e.category || '') + '|' + (e.amount || 0) + '|' + (e.description || '');
   const expKeys = new Set(target.expenses.map(expKey));
+  const expIdMap = new Map();
+  let expSeq = nextSeq('expenses', target.expenses, (live._seq || {}).expenses || 0, live.expenses);
   for (const e of live.expenses) {
     const key = expKey(e);
     if (expKeys.has(key)) continue;
     expKeys.add(key);
-    target.expenses.push(e);
+    expSeq += 1;
+    expIdMap.set(e.id, expSeq);
+    target.expenses.push({
+      ...e,
+      id: expSeq,
+      supply_id: e.supply_id ? (supplyIdMap.get(e.supply_id) || null) : (e.supply_id || null),
+      supply_move_id: null
+    });
     report.expenses_added++;
   }
+  target._seq.expenses = Math.max(target._seq.expenses || 0, expSeq);
+  // Tautan dua arah riwayat stok ↔ pengeluaran dipasang setelah keduanya punya
+  // ID baru, sehingga "Batalkan restok" menghapus pengeluaran yang benar.
+  copiedMoves.forEach(({ move, oldExpenseId }) => {
+    if (!oldExpenseId || !expIdMap.has(oldExpenseId)) return;
+    const expense = target.expenses.find((e) => e.id === expIdMap.get(oldExpenseId));
+    if (!expense) return;
+    move.expense_id = expense.id;
+    expense.supply_move_id = move.id;
+  });
 
-  // Broadcast: riwayat kampanye WhatsApp.
+  // ---- 6) Broadcast (riwayat kampanye WhatsApp) ----
   const bcKey = (b) => (b.created_at || '') + '|' + (b.name || '') + '|' + (b.recipient_count || 0);
   const bcKeys = new Set(target.broadcasts.map(bcKey));
+  let bcSeq = nextSeq('broadcasts', target.broadcasts, (live._seq || {}).broadcasts || 0, live.broadcasts);
   for (const b of live.broadcasts) {
     const key = bcKey(b);
     if (bcKeys.has(key)) continue;
     bcKeys.add(key);
-    target.broadcasts.push(b);
+    bcSeq += 1;
+    target.broadcasts.push({ ...b, id: bcSeq });
     report.broadcasts_added++;
   }
-
-  // Buku stok: barang (dedupe per nama), riwayat pergerakan (dedupe per
-  // barang + waktu + jenis + jumlah), resep (dedupe per nama layanan).
-  // Tanpa ini, data stok yang dicatat saat database sedang mati akan hilang
-  // begitu admin menekan "Sinkronkan Data Darurat ke Database".
-  const supKey = (s) => String(s && s.name || '').trim().toLowerCase();
-  const supKeys = new Set(target.supplies.map(supKey));
-  for (const s of live.supplies) {
-    const key = supKey(s);
-    if (!key || supKeys.has(key)) continue;
-    supKeys.add(key);
-    target.supplies.push(s);
-    report.supplies_added++;
-  }
-  const moveKey = (m) => [m.supply_id, m.at || '', m.type || '', m.qty, m.date || ''].join('|');
-  const moveKeys = new Set(target.supply_moves.map(moveKey));
-  for (const m of live.supply_moves) {
-    const key = moveKey(m);
-    if (moveKeys.has(key)) continue;
-    moveKeys.add(key);
-    target.supply_moves.push(m);
-    report.supply_moves_added++;
-  }
-  const recipeKeys = new Set(target.supply_recipes.map((r) => String(r && r.service_name || '').trim().toLowerCase()));
-  for (const r of live.supply_recipes) {
-    const key = String(r && r.service_name || '').trim().toLowerCase();
-    if (!key || recipeKeys.has(key)) continue;
-    recipeKeys.add(key);
-    target.supply_recipes.push(r);
-    report.supply_recipes_added++;
-  }
+  target._seq.broadcasts = Math.max(target._seq.broadcasts || 0, bcSeq);
 
   // Kategori pengeluaran & token kwitansi: hanya disalin kalau database
   // belum punya (tidak menimpa apa pun).
@@ -426,7 +547,10 @@ function mergeTransactionalState(dbStateInput, liveStateInput) {
   report.db_after = {
     reservations: target.reservations.length,
     receipts: target.receipts.length,
-    expenses: target.expenses.length
+    expenses: target.expenses.length,
+    packages: target.packages.length,
+    supplies: target.supplies.length,
+    supply_moves: target.supply_moves.length
   };
   return { state: target, report };
 }
@@ -969,7 +1093,7 @@ function ensureNewSettings() {
                 console.log(`[reminder] terkirim ke ${item.patient_name} (${item.lead_hours} jam sebelum ${item.date} ${item.time})`);
               } catch (e) {
                 console.warn('[reminder] gagal kirim:', sanitizeAIError(e));
-                recordAIError(e);
+                recordAIError(e, 'reminder');
                 break; // kemungkinan kredensial/limit bermasalah: berhenti dulu
               }
             }
@@ -990,7 +1114,7 @@ function ensureNewSettings() {
           console.log(`[stok] peringatan stok menipis terkirim ke ${result.sent_to} (${result.count} barang)`);
         } catch (e) {
           console.warn('[stok] gagal kirim peringatan:', sanitizeAIError(e));
-          recordAIError(e);
+          recordAIError(e, 'stock_alert');
         }
       };
       setTimeout(autoStockAlert, 45000);
@@ -2159,6 +2283,10 @@ const SUPPLY_CATEGORIES = [
 ];
 const SUPPLY_UNITS = ['pcs', 'botol', 'sachet', 'box', 'pack', 'roll', 'ml', 'gram', 'liter'];
 const SUPPLY_QTY_MAX = 1000000;
+// Batas atas harga satuan (Rp 1 miliar). Tanpa batas, nilai seperti 1e21
+// (dari salah ketik / skrip) akan terbawa ke nilai persediaan, saran beli,
+// HPP, dan laporan margin — angka yang mustahil dan merusak laporan.
+const SUPPLY_MONEY_MAX = 1000000000;
 
 // Bulatkan jumlah ke 3 desimal supaya 0.1 + 0.2 tidak menjadi 0.30000000004
 // (satuan ml/gram butuh pecahan, satuan pcs tetap bulat dalam praktiknya).
@@ -2171,6 +2299,23 @@ function clampQty(n) {
   const v = roundQty(n);
   if (!Number.isFinite(v) || v < 0) return 0;
   return Math.min(v, SUPPLY_QTY_MAX);
+}
+function clampMoney(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n) || n < 0) return 0;
+  return Math.min(Math.round(n), SUPPLY_MONEY_MAX);
+}
+// Angka dari input pengguna: "" / null / "abc" HARUS ditolak, bukan dianggap 0.
+// Tanpa ini, salah ketik pada "Sesuaikan stok" akan menulis stok 0 tanpa
+// peringatan (dan tanpa riwayat yang menjelaskan sebabnya).
+function parseNumberInput(v) {
+  if (v === null || v === undefined || typeof v === 'boolean') return null;
+  // String dipangkas dulu: "  " (spasi saja) juga berarti "belum diisi", dan
+  // Number("  ") bernilai 0 — angka 0 yang tidak pernah diketik admin.
+  const raw = typeof v === 'string' ? v.trim() : v;
+  if (raw === '' || Array.isArray(raw) || typeof raw === 'object') return null;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : null;
 }
 function supplyStock(item) {
   return roundQty(item && item.stock);
@@ -2201,8 +2346,13 @@ function supplyById(id) {
   if (!Number.isFinite(n)) return null;
   return (DB.supplies || []).find((s) => s.id === n) || null;
 }
+// Hanya barang yang MASIH DIPAKAI (active !== false) yang boleh memicu
+// peringatan / masuk daftar belanja. Barang yang sudah dihentikan (mis. produk
+// yang tidak dipakai lagi) tetap tersimpan riwayatnya, tapi tidak boleh
+// membuat bot mengirim "stok menipis" setiap 24 jam untuk barang yang tidak
+// akan dibeli lagi.
 function lowStockSupplies() {
-  return (DB.supplies || []).filter(supplyLowStock).map((s) => ({
+  return (DB.supplies || []).filter((s) => s.active !== false && supplyLowStock(s)).map((s) => ({
     id: s.id,
     name: s.name,
     unit: s.unit || '',
@@ -2251,12 +2401,13 @@ function supplyUsePlan(serviceName, sessions) {
     }
     const costPerUnit = Number(s.cost) || 0;
     const cost = Math.round(need * costPerUnit);
-    items.push({ supply_id: s.id, name: s.name, unit: s.unit || '', qty: need, cost_per_unit: costPerUnit, cost });
+    items.push({ supply_id: s.id, name: s.name, unit: s.unit || '', qty: need, cost_per_unit: costPerUnit, cost, inactive: s.active === false });
     if (supplyStock(s) < need) {
-      missing.push({ supply_id: s.id, name: s.name, unit: s.unit || '', need, stock: supplyStock(s) });
+      missing.push({ supply_id: s.id, name: s.name, unit: s.unit || '', need, stock: supplyStock(s), inactive: s.active === false });
     }
     total += cost;
   });
+  const inactive = items.filter((it) => it.inactive);
   return {
     found: true,
     recipe_id: recipe.id,
@@ -2264,8 +2415,9 @@ function supplyUsePlan(serviceName, sessions) {
     sessions: n,
     items,
     missing,
+    inactive,
     total_cost: Math.round(total),
-    ok: missing.length === 0 && items.length > 0,
+    ok: missing.length === 0 && items.length > 0 && inactive.length === 0,
     note: recipe.note || ''
   };
 }
@@ -2283,8 +2435,8 @@ function recordSupplyMove(supply, opts) {
   supply.stock = after;
   supply.updated_at = new Date().toISOString();
   const givenCost = Number(o.unit_cost);
-  if (Number.isFinite(givenCost) && givenCost > 0) supply.cost = Math.round(givenCost);
-  const unitCost = (Number.isFinite(givenCost) && givenCost > 0) ? Math.round(givenCost) : (Number(supply.cost) || 0);
+  if (Number.isFinite(givenCost) && givenCost > 0) supply.cost = clampMoney(givenCost);
+  const unitCost = (Number.isFinite(givenCost) && givenCost > 0) ? clampMoney(givenCost) : clampMoney(supply.cost);
   const delta = type === 'adjust' ? Math.abs(after - before) : qty;
   const move = {
     id: nextId('supply_moves'),
@@ -2519,7 +2671,10 @@ app.get('/api/admin/supplies', auth, (req, res) => {
     return {
       ...s,
       stock: supplyStock(s),
-      low: supplyLowStock(s),
+      // `low` = memicu peringatan (hanya barang aktif); `low_raw` = stok di
+      // bawah minimum apa pun statusnya (ditampilkan di kartu barang).
+      low: lowStockSupplies().some((x) => x.id === s.id),
+      low_raw: supplyLowStock(s),
       value: Math.round(supplyStock(s) * (Number(s.cost) || 0)),
       suggested_qty: restockSuggestion(s),
       used_30d: u.used,
@@ -2538,7 +2693,8 @@ app.get('/api/admin/supplies', auth, (req, res) => {
   res.json({
     count: withMeta.length,
     total_items: all.length,
-    low_count: all.filter(supplyLowStock).length,
+    low_count: lowStockSupplies().length,
+    inactive_count: all.filter((s) => s.active === false).length,
     stock_value: supplyStockValue(all),
     used_cost_this_month: cost.material[month] || 0,
     purchased_cost_this_month: cost.purchase[month] || 0,
@@ -2556,9 +2712,16 @@ app.post('/api/admin/supplies', auth, (req, res) => {
   if ((DB.supplies || []).some((s) => String(s.name || '').trim().toLowerCase() === name.toLowerCase())) {
     return res.status(409).json({ error: 'Barang dengan nama ini sudah ada' });
   }
-  const stock = clampQty(b.stock);
-  const minStock = clampQty(b.min_stock);
-  const harga = Math.max(0, Math.round(Number(b.cost) || 0));
+  const stockRaw = parseNumberInput(b.stock === undefined ? 0 : b.stock);
+  if (stockRaw === null || stockRaw < 0) return res.status(400).json({ error: 'Stok awal harus berupa angka ≥ 0' });
+  const minRaw = parseNumberInput(b.min_stock === undefined ? 0 : b.min_stock);
+  if (minRaw === null || minRaw < 0) return res.status(400).json({ error: 'Batas minimum harus berupa angka ≥ 0' });
+  if (b.cost !== undefined && b.cost !== '' && parseNumberInput(b.cost) === null) {
+    return res.status(400).json({ error: 'Harga beli harus berupa angka ≥ 0' });
+  }
+  const stock = clampQty(stockRaw);
+  const minStock = clampQty(minRaw);
+  const harga = clampMoney(b.cost);
   const item = {
     id: nextId('supplies'),
     name,
@@ -2584,7 +2747,7 @@ app.post('/api/admin/supplies', auth, (req, res) => {
     if (b.create_expense === true) expense = createSupplyExpense(item, move);
   }
   save();
-  res.json({ ok: true, supply: { ...item, low: supplyLowStock(item) }, move, expense, low_count: lowStockSupplies().length });
+  res.json({ ok: true, supply: { ...item, low: item.active !== false && supplyLowStock(item), low_raw: supplyLowStock(item) }, move, expense, low_count: lowStockSupplies().length });
 });
 
 app.patch('/api/admin/supplies/:id', auth, (req, res) => {
@@ -2599,26 +2762,41 @@ app.patch('/api/admin/supplies/:id', auth, (req, res) => {
   }
   if (typeof b.category === 'string') item.category = b.category.slice(0, 80);
   if (typeof b.unit === 'string' && b.unit.trim()) item.unit = b.unit.trim().slice(0, 20);
-  if (b.min_stock !== undefined) item.min_stock = clampQty(b.min_stock);
-  if (b.cost !== undefined) item.cost = Math.max(0, Math.round(Number(b.cost) || 0));
+  if (b.min_stock !== undefined) {
+    const minRaw = parseNumberInput(b.min_stock);
+    if (minRaw === null || minRaw < 0) return res.status(400).json({ error: 'Batas minimum harus berupa angka ≥ 0' });
+    item.min_stock = clampQty(minRaw);
+  }
+  if (b.cost !== undefined) {
+    const costRaw = parseNumberInput(b.cost);
+    if (costRaw === null || costRaw < 0) return res.status(400).json({ error: 'Harga beli harus berupa angka ≥ 0' });
+    item.cost = clampMoney(costRaw);
+  }
   if (typeof b.supplier === 'string') item.supplier = b.supplier.slice(0, 120);
   if (typeof b.supplier_wa === 'string') item.supplier_wa = b.supplier_wa.slice(0, 30);
   if (typeof b.note === 'string') item.note = b.note.slice(0, 300);
   if (b.active !== undefined) item.active = !!b.active;
   let move = null;
   // Perubahan stok dari form edit pun dicatat sebagai penyesuaian supaya
-  // tidak ada angka yang berubah tanpa jejak.
-  if (b.stock !== undefined && clampQty(b.stock) !== supplyStock(item)) {
-    move = recordSupplyMove(item, {
-      type: 'adjust',
-      qty: clampQty(b.stock),
-      date: b.date,
-      note: b.stock_note || 'Penyesuaian dari edit barang'
-    });
+  // tidak ada angka yang berubah tanpa jejak. Nilai yang bukan angka
+  // ditolak — dulu "abc" dibaca sebagai 0 sehingga stok bisa hilang diam-diam.
+  if (b.stock !== undefined) {
+    const stockRaw = parseNumberInput(b.stock);
+    if (stockRaw === null || stockRaw < 0) {
+      return res.status(400).json({ error: 'Sisa stok harus berupa angka ≥ 0' });
+    }
+    if (clampQty(stockRaw) !== supplyStock(item)) {
+      move = recordSupplyMove(item, {
+        type: 'adjust',
+        qty: clampQty(stockRaw),
+        date: b.date,
+        note: b.stock_note || 'Penyesuaian dari edit barang'
+      });
+    }
   }
   item.updated_at = new Date().toISOString();
   save();
-  res.json({ ok: true, supply: { ...item, low: supplyLowStock(item) }, move, low_count: lowStockSupplies().length });
+  res.json({ ok: true, supply: { ...item, low: item.active !== false && supplyLowStock(item), low_raw: supplyLowStock(item) }, move, low_count: lowStockSupplies().length });
 });
 
 app.delete('/api/admin/supplies/:id', auth, (req, res) => {
@@ -2654,7 +2832,9 @@ app.post('/api/admin/supplies/:id/move', auth, (req, res) => {
   if (!['in', 'out', 'adjust'].includes(type)) {
     return res.status(400).json({ error: 'Jenis pergerakan harus salah satu dari: in, out, adjust' });
   }
-  const qty = clampQty(b.qty);
+  const qtyRaw = parseNumberInput(b.qty);
+  if (qtyRaw === null) return res.status(400).json({ error: 'Jumlah harus berupa angka (contoh: 3 atau 0.5)' });
+  const qty = clampQty(qtyRaw);
   if (type !== 'adjust' && qty <= 0) return res.status(400).json({ error: 'Jumlah harus lebih dari 0' });
   if (type === 'out' && qty > supplyStock(item)) {
     return res.status(400).json({
@@ -2662,9 +2842,12 @@ app.post('/api/admin/supplies/:id/move', auth, (req, res) => {
       stock: supplyStock(item)
     });
   }
-  const unitCostRaw = (b.unit_cost === undefined || b.unit_cost === null || b.unit_cost === '')
-    ? (Number(item.cost) || 0)
-    : Math.max(0, Math.round(Number(b.unit_cost) || 0));
+  let unitCostRaw = Number(item.cost) || 0;
+  if (!(b.unit_cost === undefined || b.unit_cost === null || b.unit_cost === '')) {
+    const costRaw = parseNumberInput(b.unit_cost);
+    if (costRaw === null || costRaw < 0) return res.status(400).json({ error: 'Harga beli harus berupa angka ≥ 0' });
+    unitCostRaw = clampMoney(costRaw);
+  }
   const move = recordSupplyMove(item, {
     type,
     qty,
@@ -2683,7 +2866,7 @@ app.post('/api/admin/supplies/:id/move', auth, (req, res) => {
   save();
   res.json({
     ok: true,
-    supply: { ...item, low: supplyLowStock(item), stock: supplyStock(item) },
+    supply: { ...item, low: item.active !== false && supplyLowStock(item), low_raw: supplyLowStock(item), stock: supplyStock(item) },
     move,
     expense,
     low_stock: lowStockSupplies()
@@ -2692,6 +2875,9 @@ app.post('/api/admin/supplies/:id/move', auth, (req, res) => {
 
 app.get('/api/admin/supplies/moves', auth, (req, res) => {
   const sid = req.query.supply_id ? parseInt(req.query.supply_id, 10) : null;
+  if (req.query.supply_id && !Number.isFinite(sid)) {
+    return res.status(400).json({ error: 'Parameter supply_id harus angka' });
+  }
   const month = String(req.query.month || '');
   const limit = Math.max(1, Math.min(500, parseInt(req.query.limit || '100', 10) || 100));
   let rows = (DB.supply_moves || []).slice();
@@ -2722,7 +2908,20 @@ app.delete('/api/admin/supplies/moves/:id', auth, (req, res) => {
   let after = before;
   if (move.type === 'in') after = roundQty(before - (Number(move.qty) || 0));
   else if (move.type === 'out') after = roundQty(before + (Number(move.qty) || 0));
-  else after = roundQty(move.before);
+  else {
+    // Penyesuaian dikembalikan ke angka stok SEBELUM penyesuaian. Riwayat lama
+    // (impor/restore dari sumber lain) mungkin belum punya `before` — tanpa
+    // penjagaan ini roundQty(undefined) = 0 dan stok barang bisa lenyap
+    // diam-diam hanya karena menekan tombol "Batalkan".
+    const beforeRaw = Number(move.before);
+    if (!Number.isFinite(beforeRaw)) {
+      return res.status(400).json({
+        error: 'Riwayat ini tidak menyimpan angka stok sebelumnya, jadi tidak bisa dibatalkan otomatis. Pakai "⚖️ Sesuaikan" untuk memperbaiki angka stok.',
+        stock: before
+      });
+    }
+    after = roundQty(beforeRaw);
+  }
   if (after < 0) {
     return res.status(400).json({
       error: 'Tidak bisa dibatalkan — stok sudah terpakai. Pakai "Sesuaikan" untuk memperbaiki angka stok.',
@@ -2741,7 +2940,7 @@ app.delete('/api/admin/supplies/moves/:id', auth, (req, res) => {
   save();
   res.json({
     ok: true,
-    supply: { ...item, low: supplyLowStock(item), stock: supplyStock(item) },
+    supply: { ...item, low: item.active !== false && supplyLowStock(item), low_raw: supplyLowStock(item), stock: supplyStock(item) },
     expense_removed: expenseRemoved,
     low_stock: lowStockSupplies()
   });
@@ -2799,7 +2998,7 @@ app.post('/api/admin/supplies/shopping-list/send', auth, async (req, res) => {
     await sendWAReply(phone, text);
     res.json({ ok: true, sent_to: phone, count: items.length, text });
   } catch (e) {
-    recordAIError(e);
+    recordAIError(e, 'stock_order');
     res.status(500).json({ error: 'Gagal mengirim daftar belanja: ' + sanitizeAIError(e) });
   }
 });
@@ -2832,7 +3031,7 @@ app.post('/api/admin/supplies/alerts/send', auth, async (req, res) => {
     save();
     res.json({ ok: true, ...result });
   } catch (e) {
-    recordAIError(e);
+    recordAIError(e, 'stock_alert');
     const msg = sanitizeAIError(e);
     const code = /belum (diisi|dikonfigurasi)/i.test(msg) ? 400 : 500;
     res.status(code).json({ error: 'Gagal mengirim peringatan stok: ' + msg });
@@ -2935,10 +3134,39 @@ app.post('/api/admin/supplies/use', auth, (req, res) => {
     }
   }
   if (!serviceName) return res.status(400).json({ error: 'Nama layanan atau reservasi wajib diisi' });
+  // Jumlah sesi eksplisit harus angka ≥ 1. Dulu "0"/"abc" diam-diam menjadi
+  // 1 sesi, sehingga HPP yang tercatat tidak sesuai kenyataan.
+  if (b.sessions !== undefined && b.sessions !== null && b.sessions !== '') {
+    const sRaw = parseNumberInput(b.sessions);
+    if (sRaw === null || sRaw < 1) {
+      return res.status(400).json({ error: 'Jumlah sesi harus angka ≥ 1 (contoh: 1 atau 3).' });
+    }
+  }
   const plan = supplyUsePlan(serviceName, b.sessions || (reservation
     ? (Array.isArray(reservation.slots) && reservation.slots.length ? reservation.slots.length : (reservation.qty || 1))
     : 1));
   if (!plan.found) return res.status(404).json({ error: 'Belum ada resep bahan untuk layanan "' + serviceName + '"' });
+  // Resep yang seluruh bahannya sudah dihapus dulu mengembalikan 200 "berhasil"
+  // tanpa efek apa pun (stok tidak berkurang, HPP 0) — dan reservasinya tetap
+  // ditandai sudah dicatat, sehingga tidak bisa dicoba lagi setelah resep
+  // diperbaiki. Sekarang ditolak dengan pesan yang jelas.
+  if (!plan.items.length) {
+    return res.status(400).json({
+      error: 'Resep "' + serviceName + '" tidak punya bahan tersisa (barangnya mungkin sudah dihapus). Perbaiki resepnya di halaman Buku Stok.',
+      plan
+    });
+  }
+  // Bahan yang sudah dinonaktifkan biasanya berarti resepnya belum diperbarui.
+  // Menolak (dengan tindakan yang jelas) lebih aman daripada memotong stok
+  // barang yang sudah tidak dipakai lagi.
+  if (plan.inactive && plan.inactive.length) {
+    return res.status(400).json({
+      error: 'Resep ini masih memakai bahan yang sudah dinonaktifkan: '
+        + plan.inactive.map((m) => m.name).join(', ')
+        + '. Perbarui resepnya di halaman Buku Stok, atau aktifkan lagi barangnya.',
+      plan
+    });
+  }
   if (plan.missing.length) {
     return res.status(400).json({
       error: 'Stok tidak cukup: ' + plan.missing.map((m) => m.name + ' butuh ' + m.need + ' ' + (m.unit || '') + ' (sisa ' + m.stock + ')').join('; '),
@@ -2949,6 +3177,9 @@ app.post('/api/admin/supplies/use', auth, (req, res) => {
     ? String(b.date)
     : ((reservation && reservation.reservation_date) || todayJakarta());
   const moves = applySupplyUse(plan, { date, reservation_id: reservation ? reservation.id : null, note: b.note, batch: b.batch });
+  if (!moves.length) {
+    return res.status(400).json({ error: 'Tidak ada bahan yang tercatat — periksa resep layanan ini.', plan });
+  }
   if (reservation) {
     reservation.stock_applied_at = new Date().toISOString();
     reservation.stock_cost = plan.total_cost;
@@ -2973,6 +3204,10 @@ app.get('/api/admin/supplies/pending-uses', auth, (req, res) => {
   const rows = [];
   DB.reservations.forEach((r) => {
     if (r.stock_applied_at) return;
+    // Booking yang ditolak/dibatalkan tidak perlu dicatat pemakaian bahannya —
+    // layanannya tidak dikerjakan, jadi muncul di daftar ini hanya jadi
+    // pekerjaan palsu (dan berisiko memotong stok untuk kunjungan yang batal).
+    if (r.status === 'rejected') return;
     const date = (Array.isArray(r.slots) && r.slots[0] && r.slots[0].date) || r.reservation_date || '';
     if (!date || date < from) return;
     const names = (r.items && r.items.length ? r.items.map((i) => i.name) : [r.service_name]).filter(Boolean);
@@ -3090,7 +3325,7 @@ app.get('/api/admin/supplies/report', auth, (req, res) => {
     material_total: cost.material_total,
     stock_value: supplyStockValue(),
     items_count: (DB.supplies || []).length,
-    low_count: (DB.supplies || []).filter(supplyLowStock).length,
+    low_count: lowStockSupplies().length,
     recipes_count: (DB.supply_recipes || []).length,
     services,
     items
@@ -3315,7 +3550,7 @@ app.post('/api/admin/reminders/send', auth, async (req, res) => {
     markReminderSent(key);
     res.json({ ok: true, sent_to: item.whatsapp });
   } catch (e) {
-    recordAIError(e);
+    recordAIError(e, 'reminder');
     res.status(500).json({ error: 'Gagal mengirim pengingat: ' + sanitizeAIError(e) });
   }
 });
@@ -5106,7 +5341,7 @@ app.get('/api/admin/accounting/summary', auth, (req, res) => {
     supply: {
       stock_value: supplyStockValue(),
       items_count: (DB.supplies || []).length,
-      low_count: (DB.supplies || []).filter(supplyLowStock).length,
+      low_count: lowStockSupplies().length,
       purchase_total: supply.purchase_total,
       material_total: supply.material_total,
       by_month: supplyByMonth
@@ -6485,7 +6720,7 @@ app.post('/api/admin/storage/sync-to-db', auth, async (req, res) => {
   }
   try {
     const report = await switchStorageToDatabase(null, null, { ensureAdmin: req.admin });
-    console.log(`[storage] Sinkron ke database selesai: +${report.reservations_added} reservasi, +${report.receipts_added} kwitansi, +${report.expenses_added} pengeluaran`);
+    console.log(`[storage] Sinkron ke database selesai: +${report.reservations_added} reservasi, +${report.receipts_added} kwitansi, +${report.expenses_added} pengeluaran, +${report.packages_added || 0} paket, +${report.supplies_added || 0} barang stok`);
     res.json({
       ok: true,
       message: 'Data darurat sudah digabungkan ke database. Mulai sekarang semua perubahan disimpan ke database.',
@@ -6619,7 +6854,7 @@ function buildBackupPayload() {
         ai_assistant_app_secret, ai_assistant_verify_token,
         owner_signature_b64, owner_signature_mime,
         ai_assistant_conversations,
-        ai_last_error, ai_last_error_at, ai_openrouter_free_only, ai_openrouter_free_only_at,
+        ai_last_error, ai_last_error_at, ai_last_error_source, ai_openrouter_free_only, ai_openrouter_free_only_at,
         reminder_sent_keys,
         // Timestamp peringatan stok terakhir tidak perlu dibawa ke perangkat
         // lain — kalau ikut tersalin, peringatan bisa "terdiam" 24 jam di
@@ -8197,6 +8432,7 @@ app.get('/api/admin/ai/config', auth, (req, res) => {
     readiness: aiReadiness(),
     last_error: s.ai_last_error || null,
     last_error_at: s.ai_last_error_at || null,
+    last_error_source: s.ai_last_error_source || 'ai',
     prefer_fast_model: s.ai_prefer_fast_model !== false,
     hedge_openrouter: s.ai_hedge_openrouter !== false,
     openrouter_free_only: s.ai_openrouter_free_only === true,
@@ -8326,17 +8562,26 @@ function aiReadiness() {
     openrouter_health: openRouterHealth.status
   };
 }
-let _lastAIErrorSaved = { msg: null, at: 0 };
-function recordAIError(err) {
+let _lastAIErrorSaved = { msg: null, src: null, at: 0 };
+// Catat kegagalan terakhir untuk dilihat admin di panel.
+//
+// `source` WAJIB diisi untuk kegagalan yang BUKAN dari AI (pengiriman
+// pengingat WhatsApp, peringatan stok, daftar belanja). Panel menampilkan
+// catatan ini di kartu AI, jadi tanpa penanda sumber, kegagalan kirim WA akan
+// terbaca sebagai "AI bermasalah" dan admin menguji ulang AI (yang sebenarnya
+// sehat) alih-alih memperbaiki kredensial WhatsApp-nya.
+function recordAIError(err, source) {
   if (!DB.settings) return;
   const msg = sanitizeAIError(err).slice(0, 300);
+  const src = String(source || 'ai').slice(0, 30);
   const now = Date.now();
   // Throttle: kegagalan yang sama dalam 30 detik tidak ditulis ulang supaya
   // permintaan yang gagal beruntun tidak membebani database.
-  if (_lastAIErrorSaved.msg === msg && now - _lastAIErrorSaved.at < 30000) return;
-  _lastAIErrorSaved = { msg, at: now };
+  if (_lastAIErrorSaved.msg === msg && _lastAIErrorSaved.src === src && now - _lastAIErrorSaved.at < 30000) return;
+  _lastAIErrorSaved = { msg, src, at: now };
   DB.settings.ai_last_error = msg;
   DB.settings.ai_last_error_at = new Date(now).toISOString();
+  DB.settings.ai_last_error_source = src;
   save();
 }
 function clearAIError() {
@@ -8344,6 +8589,7 @@ function clearAIError() {
   if (DB.settings.ai_last_error) {
     DB.settings.ai_last_error = null;
     DB.settings.ai_last_error_at = null;
+    DB.settings.ai_last_error_source = null;
     save();
   }
 }
