@@ -1,0 +1,52 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "functions": {
+    "api/index.js": {
+      "includeFiles": "**"
+    }
+  },
+  "rewrites": [
+    { "source": "/api/(.*)", "destination": "/api/index.js" },
+    { "source": "/health", "destination": "/api/index.js" },
+    { "source": "/manifest.webmanifest", "destination": "/api/index.js" },
+    { "source": "/sitemap.xml", "destination": "/api/index.js" },
+    { "source": "/robots.txt", "destination": "/api/index.js" },
+    { "source": "/kwitansi/(.*)", "destination": "/api/index.js" },
+    { "source": "/kwitansi-share.html", "destination": "/api/index.js" }
+  ],
+  "redirects": [
+    { "source": "/admin", "destination": "/admin.html", "permanent": false }
+  ],
+  "headers": [
+    {
+      "source": "/admin.html",
+      "headers": [
+        { "key": "X-Robots-Tag", "value": "noindex, nofollow, noarchive" },
+        { "key": "X-Frame-Options", "value": "DENY" },
+        { "key": "Content-Security-Policy", "value": "frame-ancestors 'none'" },
+        { "key": "Cache-Control", "value": "no-cache" }
+      ]
+    },
+    {
+      "source": "/sw.js",
+      "headers": [
+        { "key": "Cache-Control", "value": "public, max-age=0, must-revalidate" }
+      ]
+    },
+    {
+      "source": "/css/(.*)",
+      "headers": [
+        { "key": "Cache-Control", "value": "public, max-age=86400" }
+      ]
+    },
+    {
+      "source": "/js/(.*)",
+      "headers": [
+        { "key": "Cache-Control", "value": "public, max-age=86400" }
+      ]
+    }
+  ],
+  "crons": [
+    { "path": "/api/cron/reminders", "schedule": "3 2 * * *" }
+  ]
+}

@@ -4,9 +4,11 @@ Website reservasi + panel admin untuk layanan home-service ibu & anak
 (Nusawungu, Cilacap). Frontend statis, backend Express, data di
 PostgreSQL/MySQL (atau file untuk mode darurat).
 
-- **Produksi (API + panel + situs):** https://adzkiyamombabycareweb-production.up.railway.app
-- **Cermin GitHub Pages:** https://putra1996.github.io/Adzkiyamombabycareweb/
+- **Produksi (Vercel — frontend + API dalam satu domain):** https://adzkiyamombabycareweb.vercel.app
+- **Cermin GitHub Pages:** https://putra1996.github.io/Adzkiyamombabycareweb/ (memanggil API Vercel)
 - **Panel admin:** `/admin` (akun dibuat dari env `ADMIN_EMAIL` / `ADMIN_PASSWORD`)
+- ℹ️ Dahulu produksi berjalan di Railway; layanan tersebut sudah tidak aktif
+  (domain `…railway.app` mati) dan seluruh peran produksinya kini di Vercel.
 
 ## 📚 Dokumentasi
 
@@ -14,7 +16,7 @@ PostgreSQL/MySQL (atau file untuk mode darurat).
 |---|---|
 | **[PANDUAN-AI-WA.md](PANDUAN-AI-WA.md)** | Cara setting AI (Gemini/OpenRouter) & mendapatkan token WhatsApp Business API |
 | [SECURITY.md](SECURITY.md) | Perlindungan data pasien + checklist wajib admin |
-| [DEPLOYMENT.md](DEPLOYMENT.md) | Deploy Railway + GitHub Pages, penanganan penyimpanan |
+| [DEPLOYMENT.md](DEPLOYMENT.md) | Deploy Vercel (+ Railway lama) & GitHub Pages, penanganan penyimpanan |
 | [FITUR-DAN-BUG.md](FITUR-DAN-BUG.md) | Catatan fitur, bug, & hasil audit |
 | [tools/README.md](tools/README.md) | Skrip audit menyeluruh (233 pemeriksaan) untuk dijalankan sebelum rilis |
 
@@ -30,6 +32,18 @@ PostgreSQL/MySQL (atau file untuk mode darurat).
 - **Pengingat otomatis**: H-24 jam & H-2 jam via WhatsApp API (atau kirim sekali klik) + notifikasi HP.
 - **PWA**: bisa dipasang di layar utama & menerima notifikasi reservasi.
 - **Keamanan**: token admin, rate limit, backup terenkripsi (AES-256-GCM + scrypt), tanda tangan webhook, dan pemulihan penyimpanan — lihat [SECURITY.md](SECURITY.md).
+
+## ☁️ Arsitektur deployment
+
+- **Vercel** menjalankan SATU proyek: file statis `public/` dilayani CDN, dan
+  `api/index.js` (membungkus `server.js`) menjalankan seluruh API Express —
+  rute `/api/*`, `/health`, `/manifest.webmanifest`, `/sitemap.xml`,
+  `/robots.txt`, dan `/kwitansi/*` di-rewrite ke function lewat `vercel.json`.
+  Data wajib memakai `DATABASE_URL` (Postgres/MySQL) karena filesystem Vercel
+  tidak persisten. Cron pengingat: `vercel.json → crons` (paket Hobby = 1x/hari).
+- **GitHub Pages (docs/)** hanyalah cermin statis; semua fetch diarahkan ke API
+  Vercel oleh `js/api-config.js`. Jalankan `npm run build:pages` setiap kali
+  `public/` berubah, lalu commit folder `docs/`.
 
 ## 🧰 Teknologi
 

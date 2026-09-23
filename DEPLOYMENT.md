@@ -1,19 +1,73 @@
 # Deployment Adzkiya Mom & Baby Care
 
-Aplikasi memakai arsitektur terpisah:
+**Produksi saat ini: Vercel** — frontend statis (`public/`) dan API Express
+(`api/index.js` membungkus `server.js`) berjalan dalam SATU domain:
 
-- **Frontend publik + admin:** GitHub Pages dari folder `docs/`
-- **API:** Node.js/Express di Render
-- **Database:** PostgreSQL terkelola di Render
-
-URL produksi yang diharapkan:
-
-- Website: <https://putra1996.github.io/Adzkiyamombabycareweb/>
-- Admin: <https://putra1996.github.io/Adzkiyamombabycareweb/admin.html>
-- API: <https://adzkiya-mom-baby-care-api-putra1996.onrender.com>
-- Health check: <https://adzkiya-mom-baby-care-api-putra1996.onrender.com/health>
+- Website & API: <https://adzkiyamombabycareweb.vercel.app>
+- Health check: <https://adzkiyamombabycareweb.vercel.app/health>
+- Admin: <https://adzkiyamombabycareweb.vercel.app/admin>
+- Cermin statis (GitHub Pages, memanggil API Vercel):
+  <https://putra1996.github.io/Adzkiyamombabycareweb/>
 
 > Admin GitHub Pages tidak menyimpan data sendiri. Login, reservasi, kalender, bukti pembayaran, kwitansi, pengaturan, backup, dan rekap semuanya memakai API dan database yang sama.
+
+Riwayat: produksi pernah berjalan di Render (blueprint `render.yaml`) lalu
+Railway (`…railway.app`) — keduanya sudah tidak aktif. Panduan lama tetap
+dibiarkan di bawah sebagai referensi.
+
+## 0. Produksi di Vercel (saat ini)
+
+### 0.1 Cara kerjanya
+
+- `public/` dilayani sebagai situs statis oleh CDN Vercel.
+- `vercel.json` me-rewrite `/api/*`, `/health`, `/manifest.webmanifest`,
+  `/sitemap.xml`, `/robots.txt`, `/kwitansi/*`, dan `/kwitansi-share.html` ke
+  Vercel Function `api/index.js` (path asli dipertahankan, jadi Express di
+  `server.js` bekerja persis seperti di Railway).
+- `api/index.js` memicu boot (muat database, seed admin & pengaturan) saat
+  request pertama, lalu meneruskan request ke aplikasi Express.
+- `/admin` di-redirect ke `/admin.html` (statis) dengan header keamanan dari
+  `vercel.json → headers`.
+- Cron pengingat otomatis: `vercel.json → crons` memanggil
+  `/api/cron/reminders` (dilindungi env `CRON_SECRET`).
+
+### 0.2 Environment variables yang WAJIB diisi di Vercel
+
+Project Settings → Environment Variables (semua environment):
+
+| Variabel | Nilai |
+|---|---|
+| `DATABASE_URL` | Connection string **Postgres/MySQL** (mis. Neon). WAJIB — filesystem Vercel tidak persisten, tanpa ini data hilang. |
+| `JWT_SECRET` | Minimal 32 karakter acak (menandatangani token admin & link kwitansi). |
+| `ADMIN_EMAIL` | Email login admin. |
+| `ADMIN_PASSWORD` | Password awal admin, minimal 12 karakter. Ganti lewat panel setelah login pertama. |
+| `ADMIN_NAME` | (opsional) Nama admin. |
+| `CRON_SECRET` | (opsional tapi disarankan) Kunci untuk `/api/cron/reminders`; Vercel mengirimkannya sebagai `Authorization: Bearer <nilai>`. |
+| `ALLOWED_ORIGINS` | (opsional) Isi `https://putra1996.github.io` bila ingin mengunci CORS untuk cermin GitHub Pages. Same-origin Vercel tidak butuh CORS. |
+| `NODEJS_HELPERS` | (opsional) Isi `0` bila terjadi masalah parsing body pada upload/multipart — mematikan "helpers" bawaan runtime Node Vercel. |
+
+### 0.3 Batas platform yang perlu diketahui
+
+- **Body request maks 4,5 MB.** Batas unggah bukti transfer otomatis
+  diturunkan menjadi 4 MB saat berjalan di Vercel (`UPLOAD_MAX_BYTES` di
+  `server.js`) supaya pengguna menerima pesan server yang jelas, bukan 413.
+- **Cron paket Hobby hanya 1×/hari.** Jadwal di `vercel.json`
+  (`3 2 * * *` ≈ 09.03 WIB) cukup untuk pengingat H-24, tetapi pengingat H-2
+  bisa terlambat beberapa jam. Naik ke paket Pro lalu ubah jadwal menjadi
+  per jam untuk pengingat tepat waktu.
+- **Waktu eksekusi function** default cukup untuk seluruh endpoint termasuk
+  chat AI & export Excel.
+- `includeFiles: "**"` pada `vercel.json → functions` memastikan `public/`
+  (404.html dsb.) ikut ke dalam bundle function. Bila Vercel menolak properti
+  itu di masa depan, hapus barisnya — Node File Trace umumnya sudah
+  menelusuri file yang dibaca `server.js`.
+
+### 0.4 Cek kesehatan setelah deploy
+
+1. `GET /health` → `{"ok":true,"storage":"postgres",...}` (bukan `"file"`).
+2. `GET /api/services` → katalog layanan terisi.
+3. Buka `/` → kartu layanan, testimoni, jam operasional tampil.
+4. Buka `/admin` → login dengan `ADMIN_EMAIL`/`ADMIN_PASSWORD`.
 
 ## 1. Deploy frontend di GitHub Pages
 
@@ -25,11 +79,17 @@ URL produksi yang diharapkan:
 
 Folder `docs/` sudah berisi `admin.html` dan konfigurasi API di `docs/js/api-config.js`.
 
-Jika Render memberikan hostname yang berbeda, ubah satu baris berikut lalu deploy ulang Pages:
+`js/api-config.js` memilih API otomatis: origin `github.io` memakai
+`https://adzkiyamombabycareweb.vercel.app`, host lain memakai same-origin.
+Untuk API lain, override satu baris berikut lalu deploy ulang Pages:
 
 ```js
-window.ADZKIYA_API_BASE = 'https://HOSTNAME-API.onrender.com';
+window.ADZKIYA_API_BASE = 'https://HOSTNAME-API.contoh.dev';
 ```
+
+Setiap kali `public/` berubah, jalankan `npm run build:pages` lalu commit
+folder `docs/` (file `manifest.webmanifest` dan `robots.txt` statis untuk
+GitHub Pages juga dibuat oleh skrip ini).
 
 ## 2. Provision API dan PostgreSQL di Render
 
