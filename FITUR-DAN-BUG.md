@@ -245,3 +245,122 @@ Ditambahkan halaman **📦 Buku Stok** (menu setelah Akunting) beserta auditnya
    **lunas + approved** dan mencatat jejak "Pembayaran diterima via kwitansi
    INV-…" di catatan reservasi. Reservasi berstatus **rejected tidak diubah**,
    dan tidak ada dokumen kedua yang dibuat (`test/api.test.js` + audit [21]).
+
+---
+
+## Audit deployment: vercel.app "banyak fitur yang hilang" (23 September 2026)
+
+Laporan: situs `https://adzkiyamombabycareweb.vercel.app` kehilangan banyak
+fitur — kartu layanan kosong, testimoni "Loading reviews…", jam operasional
+"Loading…", media sosial kosong, logo mati, reservasi tidak bisa dikirim,
+kalender kosong, panel admin & chat AI mati, PWA mati.
+
+### Akar masalah (semuanya terkait deployment, bukan hilangnya kode)
+
+1. **Vercel hanya menyajikan `public/` sebagai situs statis.** Repo tidak punya
+   `vercel.json` maupun folder `api/`, dan `server.js` tidak diekspor sebagai
+   aplikasi (hanya `app.listen()` di dalam async IIFE) sehingga deteksi Express
+   Vercel tidak jalan. Akibatnya SEMUA rute dinamis (`/api/*`, `/health`,
+   `/manifest.webmanifest`, `/sitemap.xml`, `/robots.txt`, `/admin`,
+   `/kwitansi/*`) balas 404 — backend tidak pernah berjalan di vercel.app.
+2. **Backend Railway yang dirujuk `js/api-config.js` sudah mati.** Domain
+   `adzkiyamombabycareweb-production.up.railway.app` membalas halaman
+   "The train has not arrived at the station" (deployment Railway terakhir
+   2026-09-22, status selanjutnya `inactive`). Jadi mirror GitHub Pages pun
+   rusak dengan gejala yang sama, dan situs statis Vercel ikut memanggil host
+   mati itu.
+3. **Kesalahan konfigurasi repo membuat Vercel salah mengira ini proyek
+   statis:** ada folder `public/` (konvensi output statis Vercel) tanpa
+   kandidat entrypoint yang dikenali.
+
+### Perbaikan deployment
+
+- **`api/index.js`** — entry Vercel Function (Fluid compute): memastikan
+  `NODE_ENV=production` terisi di runtime Vercel (tanpa itu SSL Neon mati &
+  server jatuh ke mode file), memicu `ensureBooted()` (muat DB + seed admin &
+  pengaturan) saat request pertama, lalu meneruskan request ke aplikasi
+  Express dari `server.js`.
+- **`server.js`** kini bisa dijalankan dua cara: server biasa (Railway/lokal,
+  perilaku lama persis sama) dan mode Vercel (`VERCEL=1`: TIDAK `app.listen()`,
+  diekspor lewat `module.exports`, boot dipicu manual). Timer latar
+  (pengingat, peringatan stok, pemanasan AI) dipisah ke
+  `startBackgroundJobs()` yang idempoten. File state mode file di Vercel
+  diarahkan ke `/tmp` (filesystem root read-only).
+- **`vercel.json`** — rewrite `/api/*`, `/health`, `/manifest.webmanifest`,
+  `/sitemap.xml`, `/robots.txt`, `/kwitansi/*`, `/kwitansi-share.html` ke
+  function; `/admin` → `/admin.html` (statis) dengan header keamanan
+  (X-Robots-Tag noindex, X-Frame-Options DENY, CSP frame-ancestors);
+  cache header CSS/JS; cron pengingat `/api/cron/reminders`
+  (paket Hobby = 1×/hari; H-2 tepat waktu butuh paket Pro per jam).
+- **`public/js/api-config.js`** — memilih API otomatis: vercel.app & localhost
+  = same-origin; github.io = API Vercel (bukan lagi Railway yang mati);
+  override manual tetap didukung.
+- **`kwitansi-share.html`** — fetch kwitansi & logo kini lewat API base
+  (sebelumnya path absolut, mati di semua host non-Railway).
+- **`build-gh-pages.js` + `docs/`** — mirror GitHub Pages kini membawa
+  `kwitansi-share.html`, manifest PWA statis (`docs/manifest.webmanifest`,
+  ikon `img/logo.png`, `start_url './'`), `robots.txt` tanpa Sitemap ke host
+  mati, dan registrasi service worker relatif (`sw.js`). Blok "embedded data"
+  yang mati (penanda `SERVICES_DATA` tidak pernah ada) dihapus.
+
+### Bug serius yang ditemukan & diperbaiki di lapisan data
+
+4. **Multi-instance = reservasi pasien bisa HILANG (last-write-wins).**
+   State disimpan sebagai satu blob JSON (`app_state`). Dua instance
+   (di Vercel hal ini normal) yang sama-sama menyimpan akan saling menimpa:
+   dibuktikan dengan 2 proses + 1 PostgreSQL — reservasi instance A lenyap
+   begitu instance B menyimpan (bahkan mendapat ID kembar). Sekarang:
+   - tabel `app_state` diberi kolom `rev` (**optimistic locking**): tulisan
+     hanya lolos bila revisi masih sama; bila kalah, state terbaru dimuat,
+     **digabungkan dengan dedupe** (`mergeTransactionalState`), ID ganda
+     dinomori ulang, lalu ditulis ulang (maks 6 percobaan);
+   - GET `/api/*` me-refresh state dari DB maksimal sekali per 5 detik agar
+     instance tua tetap melihat data terbaru;
+   - hasil gabungan dimuat balik ke memori secara in-place (referensi lama
+     tetap sah);
+   - settings/admin ikut aturan "yang berubah sejak muatan terakhir menang".
+   Terkunci oleh `test/pg-multiinstance.test.js` (aktif bila env
+   `TEST_PG_URL` diisi; dilewati otomatis tanpa PostgreSQL).
+
+### Bug kecil yang ikut diperbaiki
+
+5. **Batas unggah di Vercel.** Platform membatasi body request 4,5 MB;
+   batas server diturunkan otomatis menjadi 4 MB saat `VERCEL` aktif agar
+   pengguna menerima pesan jelas dari server, bukan 413 misterius.
+6. **`seed-logo.b64` tidak ikut bundle Vercel** (pembacaan `fs` tidak
+   ditelusuri Node File Trace) → `/api/logo` bisa 404 di function. Kini ada
+   `seed-logo.js` (logo yang sama sebagai modul `require()`, yang pasti
+   ditelusuri), plus `includeFiles: "**"` di `vercel.json` untuk file
+   statis lain yang dibaca `sendFile`.
+7. **Timer level-modul menahan proses test/tool** yang me-`require`
+   `server.js` tanpa listen — `setInterval` kebersihan kini `unref()`.
+8. **Repo kotor & bocor data lama:** ±1.400 berkas isi `node_modules`
+   ter-commit di root repo (glob/, semver/, jszip/, typings/ mysql2, dsb.),
+   `data.json` (197 KB) dan `data/app.db*` (SQLite Juni 2026 berisi 1 akun
+   admin + 2 reservasi contoh) ter-track walau di-`.gitignore`. Semuanya
+   dikeluarkan dari Git; `data.json` dulu dipakai logo oleh build Pages —
+   kini logo cukup dari `seed-logo` (docs/img/logo.png tetap ada).
+
+### Verifikasi
+
+- `npm test`: **110 tes — 106 lulus, 0 gagal, 4 dilewati** (3 menunggu jsdom,
+  1 menunggu `TEST_PG_URL`).
+- Audit menyeluruh: **96 + 137 = 233 pemeriksaan, 0 masalah** (server segar +
+  `tools/audit-ai-stub.js`, sesuai `tools/README.md`).
+- Uji baru `test/deployment.test.js`: vercel.json menutup semua rute dinamis,
+  cron aman Hobby, mode `VERCEL=1` tidak `listen()` saat require dan aplikasi
+  penuh (health, katalog, reservasi, login admin, cron, halaman statis)
+  berfungsi setelah `ensureBooted()`.
+- Simulasi 2 instance + PostgreSQL sungguhan: tulisan A tidak tertimpa B,
+  kedua instance melihat kedua reservasi, ID unik, tanpa "save gagal".
+
+### Yang perlu dilakukan pemilik (di luar repo)
+
+- Di Vercel Project Settings → Environment Variables, isi: `DATABASE_URL`
+  (wajib), `JWT_SECRET`, `ADMIN_EMAIL`, `ADMIN_PASSWORD`, opsional
+  `CRON_SECRET` & `ALLOWED_ORIGINS=https://putra1996.github.io`.
+  Panduan lengkap: `DEPLOYMENT.md` §0.
+- **Ganti password admin** bila pernah memakai password lama yang sama dengan
+  akun di `data/app.db` yang sempat ter-commit (hash bcrypt password 8 karakter
+  umum). Data reservasi di berkas itu adalah data contoh Juni 2026, tetap
+  hapus dari riwayat Git bila dianggap sensitif.

@@ -127,7 +127,7 @@
 // (reservasi baru & pengingat jadwal) dan bisa dipasang seperti aplikasi.
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', function () {
-    navigator.serviceWorker.register('/sw.js').catch(function (e) {
+    navigator.serviceWorker.register('sw.js').catch(function (e) {
       console.warn('Service worker gagal didaftarkan:', e.message);
     });
   });

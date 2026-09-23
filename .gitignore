@@ -6,5 +6,15 @@ npm-debug.log*
 backups/
 public/uploads/
 data.json
-index.js
-promise.js
+/index.js
+/promise.js
+
+# Database lokal/legacy (SQLite) — jangan pernah di-commit.
+data/
+*.db
+*.db-shm
+*.db-wal
+
+# Sisa instalasi npm yang salah tempat di root repo (maret 2026):
+# paket dependencies harus tetap di dalam node_modules/ (sudah diabaikan).
+/pyproject.toml

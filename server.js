@@ -98,6 +98,12 @@ function shiftMonthStr(monthStr, deltaMonths) {
 
 const app = express();
 const PORT = parseInt(process.env.PORT || '3000', 10);
+// ---- RUNTIME: Vercel Function vs server biasa (Railway/local) ----
+// Vercel menyuntikkan env VERCEL=1. Di sana server.js TIDAK boleh memanggil
+// app.listen() sendiri — ia dipakai sebagai request handler oleh api/index.js,
+// dan boot (muat state, seed admin/pengaturan) dipicu saat request pertama
+// masuk lewat ensureBooted() (lihat bagian boot di bawah file ini).
+const RUNNING_ON_VERCEL = process.env.VERCEL === '1' || process.env.VERCEL === 'true';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 if (IS_PRODUCTION) app.set('trust proxy', 1);
 const JWT_SECRET = process.env.JWT_SECRET || 'adzkiya_local_development_secret';
@@ -135,6 +141,13 @@ function detectDataFile() {
     const dir = volumePath.replace(/\/+$/, '');
     return { file: path.join(dir, 'adzkiya-state.json'), source: 'Railway volume (' + dir + ')', persistent: true };
   }
+  if (RUNNING_ON_VERCEL) {
+    // Filesystem Vercel hanya bisa ditulis di /tmp dan isinya TIDAK persisten
+    // antar instance/invocation. Tanpa cabang ini, writeFile ke data.json di
+    // root selalu gagal (filesystem read-only) sehingga SEMUA penyimpanan
+    // mode file gagal diam-diam. Set DATABASE_URL agar data benar-benar aman.
+    return { file: '/tmp/adzkiya-state.json', source: 'Vercel /tmp (ephemeral)', persistent: false };
+  }
   return { file: path.join(__dirname, 'data.json'), source: 'filesystem container', persistent: false };
 }
 const DATA_FILE_INFO = detectDataFile();
@@ -150,6 +163,21 @@ let DB = {
 };
 
 let pool = null;
+// ---- Revisi state (optimistic locking untuk platform multi-instance) ----
+// Di Vercel Function, BISA ada lebih dari satu instance yang hidup. Tanpa
+// pengaman ini, dua instance masing-masing menulis snapshot penuh dari
+// memorinya sendiri → yang terakhir menulis MENIMPA tulisan instance lain
+// (reservasi pasien bisa hilang tanpa jejak). dbStateRev = nomor revisi
+// blob yang sedang dimuat memori ini; setiap penulisan mensyaratkan rev
+// sama, kalau tidak → muat ulang, gabungkan (dedupe), tulis ulang.
+let dbStateRev = 0;
+// Baseline JSON settings/admins saat terakhir dimuat/ditulis oleh instance
+// ini — dipakai untuk memutuskan siapa yang menang saat konflik.
+const loadedBaseline = { settings: 'null', admins: '[]' };
+function refreshLoadedBaseline(stateObj) {
+  loadedBaseline.settings = JSON.stringify((stateObj && stateObj.settings) != null ? stateObj.settings : null);
+  loadedBaseline.admins = JSON.stringify((stateObj && stateObj.admins) || []);
+}
 // Pesan error terakhir saat mencoba connect ke DB (disanitasi — tanpa
 // URL/kredensial). Ditampilkan di /health supaya kasus "DATABASE_URL
 // ada tapi gagal connect" bisa didiagnosa tanpa buka log Railway.
@@ -260,11 +288,17 @@ async function openDbPoolAndReadState(connStr, kindOverride) {
       CREATE TABLE IF NOT EXISTS app_state (
         id INTEGER PRIMARY KEY,
         data JSONB NOT NULL,
+        rev BIGINT NOT NULL DEFAULT 0,
         updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
       )
     `);
-    const result = await newPool.query('SELECT data FROM app_state WHERE id = 1');
-    return { pool: newPool, state: result.rows.length ? result.rows[0].data : null };
+    await newPool.query('ALTER TABLE app_state ADD COLUMN IF NOT EXISTS rev BIGINT NOT NULL DEFAULT 0');
+    const result = await newPool.query('SELECT data, rev FROM app_state WHERE id = 1');
+    return {
+      pool: newPool,
+      state: result.rows.length ? result.rows[0].data : null,
+      rev: result.rows.length ? (Number(result.rows[0].rev) || 0) : 0
+    };
   }
   if (kind === 'mysql') {
     const newPool = mysql.createPool(conn);
@@ -275,14 +309,22 @@ async function openDbPoolAndReadState(connStr, kindOverride) {
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
       )
     `);
-    const [rows] = await newPool.execute('SELECT data FROM app_state WHERE id = 1');
+    const [revCol] = await newPool.execute(
+      "SELECT COUNT(*) AS n FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'app_state' AND COLUMN_NAME = 'rev'"
+    );
+    if (!Number(revCol[0].n)) await newPool.execute('ALTER TABLE app_state ADD COLUMN rev BIGINT NOT NULL DEFAULT 0');
+    const [rows] = await newPool.execute('SELECT data, rev FROM app_state WHERE id = 1');
     let state = null;
     if (rows.length) {
       try { state = JSON.parse(rows[0].data); } catch { state = null; }
     }
-    return { pool: newPool, state };
+    return {
+      pool: newPool,
+      state,
+      rev: rows.length ? (Number(rows[0].rev) || 0) : 0
+    };
   }
-  return { pool: null, state: null };
+  return { pool: null, state: null, rev: 0 };
 }
 
 // Gabungkan data transaksional dari state "darurat" (file) ke state
@@ -472,11 +514,17 @@ async function initStorage() {
         CREATE TABLE IF NOT EXISTS app_state (
           id INTEGER PRIMARY KEY,
           data JSONB NOT NULL,
+          rev BIGINT NOT NULL DEFAULT 0,
           updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
         )
       `);
-      const result = await pool.query('SELECT data FROM app_state WHERE id = 1');
-      if (result.rows.length) DB = result.rows[0].data;
+      // Tabel lama belum punya kolom rev (optimistic locking antar instance).
+      await pool.query('ALTER TABLE app_state ADD COLUMN IF NOT EXISTS rev BIGINT NOT NULL DEFAULT 0');
+      const result = await pool.query('SELECT data, rev FROM app_state WHERE id = 1');
+      if (result.rows.length) {
+        DB = result.rows[0].data;
+        dbStateRev = Number(result.rows[0].rev) || 0;
+      }
       pgOk = true;
     } catch (err) {
       console.error('[storage] Postgres unreachable, falling back to file mode: ' + sanitizeDbError(err));
@@ -495,11 +543,21 @@ async function initStorage() {
       CREATE TABLE IF NOT EXISTS app_state (
         id INT PRIMARY KEY,
         data LONGTEXT NOT NULL,
+        rev BIGINT NOT NULL DEFAULT 0,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
       )
     `);
-    const [rows] = await pool.execute('SELECT data FROM app_state WHERE id = 1');
-    if (rows.length) DB = JSON.parse(rows[0].data);
+    // Tabel lama belum punya kolom rev — MySQL tidak punya ADD COLUMN IF
+    // NOT EXISTS, cek information_schema dulu.
+    const [revCol] = await pool.execute(
+      "SELECT COUNT(*) AS n FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'app_state' AND COLUMN_NAME = 'rev'"
+    );
+    if (!Number(revCol[0].n)) await pool.execute('ALTER TABLE app_state ADD COLUMN rev BIGINT NOT NULL DEFAULT 0');
+    const [rows] = await pool.execute('SELECT data, rev FROM app_state WHERE id = 1');
+    if (rows.length) {
+      DB = JSON.parse(rows[0].data);
+      dbStateRev = Number(rows[0].rev) || 0;
+    }
   } else {
     try {
       if (fs.existsSync(DATA_FILE)) DB = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
@@ -509,6 +567,7 @@ async function initStorage() {
   }
 
   normalizeState();
+  refreshLoadedBaseline(DB);
   console.log(`[storage] ${DATABASE_KIND}: ${DB.reservations.length} reservasi, ${DB.receipts.length} kwitansi`);
   // Peringatan keras: di production, storage 'file' berarti seluruh data
   // (reservasi, kwitansi, pengaturan, TTD pemilik) HANYA tersimpan di
@@ -531,32 +590,209 @@ async function initStorage() {
   if (DATABASE_KIND !== 'file' && !pool) startDbRetryLoop();
 }
 
-async function persistSnapshot(json) {
+async function readCurrentDbState() {
+  // Baca blob state TERBARU dari database + nomor revisinya. Dipakai untuk
+  // mendeteksi tulisan instance lain (optimistic locking) dan refresh bacaan.
+  if (!pool) return null;
+  const kind = activeDatabaseKind();
+  if (kind === 'postgres') {
+    const result = await pool.query('SELECT data, rev FROM app_state WHERE id = 1');
+    if (!result.rows.length) return { state: null, rev: 0 };
+    return { state: result.rows[0].data, rev: Number(result.rows[0].rev) || 0 };
+  }
+  if (kind === 'mysql') {
+    const [rows] = await pool.execute('SELECT data, rev FROM app_state WHERE id = 1');
+    if (!rows.length) return { state: null, rev: 0 };
+    let state = null;
+    try { state = JSON.parse(rows[0].data); } catch { state = null; }
+    return { state, rev: Number(rows[0].rev) || 0 };
+  }
+  return null;
+}
+
+async function persistSnapshot(json, expectRev) {
   // activeDatabaseKind() — bukan DATABASE_KIND — supaya tulisan mengikuti
   // koneksi yang sedang dipakai (termasuk koneksi yang dipasang dari panel).
+  // Conditional write: baris hanya ditulis bila rev database masih SAMA
+  // dengan rev yang dimuat memori ini. Bila instance lain sudah menulis
+  // lebih dulu, UPDATE menyentuh 0 baris → dilempar STORAGE_WRITE_CONFLICT
+  // dan pemanggil (persistWithRetry) akan menggabungkan ulang.
   const kind = activeDatabaseKind();
   if (kind === 'postgres' && pool) {
-    await pool.query(
-      `INSERT INTO app_state (id, data, updated_at) VALUES (1, $1::jsonb, CURRENT_TIMESTAMP)
-       ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = CURRENT_TIMESTAMP`,
-      [json]
+    const result = await pool.query(
+      `INSERT INTO app_state (id, data, rev, updated_at) VALUES (1, $1::jsonb, 1, CURRENT_TIMESTAMP)
+       ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, rev = app_state.rev + 1, updated_at = CURRENT_TIMESTAMP
+       WHERE app_state.rev = $2
+       RETURNING rev`,
+      [json, expectRev]
     );
-  } else if (kind === 'mysql' && pool) {
-    await pool.execute(
-      'INSERT INTO app_state (id, data) VALUES (1, ?) ON DUPLICATE KEY UPDATE data = VALUES(data)',
-      [json]
-    );
-  } else {
-    await fs.promises.writeFile(DATA_FILE, json);
+    if (!result.rowCount) throw new Error('STORAGE_WRITE_CONFLICT');
+    return Number(result.rows[0].rev) || 0;
+  }
+  if (kind === 'mysql' && pool) {
+    const conn = await pool.getConnection();
+    try {
+      await conn.beginTransaction();
+      const [rows] = await conn.execute('SELECT rev FROM app_state WHERE id = 1 FOR UPDATE');
+      let newRev;
+      if (!rows.length) {
+        if (expectRev !== 0) throw new Error('STORAGE_WRITE_CONFLICT');
+        await conn.execute('INSERT INTO app_state (id, data, rev) VALUES (1, ?, 1)', [json]);
+        newRev = 1;
+      } else {
+        const cur = Number(rows[0].rev) || 0;
+        if (cur !== expectRev) throw new Error('STORAGE_WRITE_CONFLICT');
+        await conn.execute(
+          'UPDATE app_state SET data = ?, rev = rev + 1, updated_at = CURRENT_TIMESTAMP WHERE id = 1',
+          [json]
+        );
+        newRev = cur + 1;
+      }
+      await conn.commit();
+      return newRev;
+    } catch (e) {
+      try { await conn.rollback(); } catch {}
+      throw e;
+    } finally {
+      conn.release();
+    }
+  }
+  await fs.promises.writeFile(DATA_FILE, json);
+  return 0;
+}
+
+// Muat objek state ke memori SECARA IN-PLACE supaya referensi lama (mis.
+// DB.settings yang disimpan handler async) tetap sah dan tidak ada data
+// yang "kembali" ke versi lama tanpa sengaja. Dipakai oleh refresh bacaan
+// dan oleh jalur merge konflik tulisan.
+function applyStateInPlace(stateObj) {
+  normalizeStateObject(stateObj);
+  for (const key of ['admins', 'reservations', 'receipts', 'broadcasts', 'expenses', 'packages', 'supplies', 'supply_moves', 'supply_recipes']) {
+    const srcArr = stateObj[key] || [];
+    if (!Array.isArray(DB[key])) { DB[key] = srcArr; continue; }
+    DB[key].length = 0;
+    for (const item of srcArr) DB[key].push(item);
+  }
+  DB._seq = stateObj._seq;
+  DB.invoice_counters = stateObj.invoice_counters || DB.invoice_counters;
+  DB.share_tokens = stateObj.share_tokens || DB.share_tokens;
+  if (stateObj.settings != null) {
+    if (DB.settings) Object.assign(DB.settings, stateObj.settings);
+    else DB.settings = stateObj.settings;
+  }
+  DB.admins = stateObj.admins || [];
+}
+
+// Batas percobaan merge-rewrite saat konflik antar instance.
+const STORAGE_SAVE_RETRIES = 6;
+async function persistWithRetry() {
+  // JSON diambil SAAT MENULIS (bukan saat save() dipanggil) supaya state
+  // hasil refreshFromDbIfStale() yang segar ikut terbawa.
+  let mine = JSON.stringify(DB);
+  for (let attempt = 1; attempt <= STORAGE_SAVE_RETRIES; attempt++) {
+    try {
+      dbStateRev = await persistSnapshot(mine, dbStateRev);
+      try {
+        const parsed = JSON.parse(mine);
+        // PENTING: hasil gabungan harus DIMUAT BALIK ke memori. Tanpa ini,
+        // instance yang kalah rev menulis data gabungan ke database tetapi
+        // GET-nya sendiri tetap tidak melihat tulisan instance lain.
+        applyStateInPlace(parsed);
+        refreshLoadedBaseline(parsed);
+      } catch { /* muat balik opsional */ }
+      return;
+    } catch (e) {
+      if (!/STORAGE_WRITE_CONFLICT/.test(e.message) || attempt === STORAGE_SAVE_RETRIES) throw e;
+      // Instance lain menulis lebih dulu. Muat state terbaru, GABUNGKAN
+      // data transaksional (dedupe — tidak ada reservasi/kwitansi yang
+      // tertimpa), lalu tulis ulang dengan revisi terbaru.
+      const fresh = await readCurrentDbState();
+      if (!fresh) throw e;
+      const ours = JSON.parse(mine);
+      const { state: merged } = mergeTransactionalState(fresh.state, ours);
+      // Pengaturan & akun admin: versi KITA menang hanya bila KITA yang
+      // mengubahnya sejak muatan terakhir; kalau tidak, ikuti database
+      // (mergeTransactionalState sengaja tidak menyentuh keduanya).
+      if (JSON.stringify(ours.settings != null ? ours.settings : null) !== loadedBaseline.settings) {
+        merged.settings = ours.settings != null ? ours.settings : null;
+      } else if (fresh.state && fresh.state.settings != null) {
+        merged.settings = fresh.state.settings;
+      }
+      if (JSON.stringify(ours.admins || []) !== loadedBaseline.admins) {
+        merged.admins = ours.admins || [];
+      }
+      // Jaga-lah agar tidak ada ID ganda di hasil gabungan (salinan dari
+      // dua instance bisa sama-sama id 1).
+      renumberDuplicateIds(merged);
+      mine = JSON.stringify(merged);
+      dbStateRev = fresh.rev;
+      await new Promise((resolve) => setTimeout(resolve, 40 * attempt));
+    }
+  }
+}
+
+// Beri ID baru untuk item yang ID-nya bentrok dalam satu koleksi hasil
+// gabungan. Rujukan silang (kwitansi → reservasi) tidak diubah di sini —
+// kasusnya jarang (dua instance membuat data pada milidetik yang sama),
+// dan risikonya jauh lebih kecil daripada kehilangan data.
+function renumberDuplicateIds(state) {
+  const cols = ['reservations', 'receipts', 'expenses', 'broadcasts', 'packages'];
+  const seen = new Set();
+  const maxId = (arr) => (arr || []).reduce((m, x) => Math.max(m, (x && x.id) || 0), 0);
+  state._seq = state._seq || {};
+  for (const col of cols) {
+    const arr = state[col] || [];
+    let next = Math.max(state._seq[col] || 0, maxId(arr));
+    for (const item of arr) {
+      if (!item || item.id == null) continue;
+      const key = col + ':' + item.id;
+      if (seen.has(key)) {
+        next += 1;
+        item.id = next;
+      } else {
+        seen.add(key);
+      }
+    }
+    state._seq[col] = Math.max(state._seq[col] || 0, next);
   }
 }
 
 function queueSave() {
-  const json = JSON.stringify(DB);
   saveChain = saveChain
-    .then(() => persistSnapshot(json))
+    .then(() => persistWithRetry())
     .catch((error) => console.error(`[storage] ${activeDatabaseKind()} save gagal:`, error.message));
   return saveChain;
+}
+
+// ---- Refresh bacaan dari database (serverless multi-instance) ----
+// Instance yang lama tidak menerima request bisa "basi": instance lain yang
+// menangani tulisan. GET berulang pada instance yang sama harus tetap
+// melihat data terbaru (kalender, daftar reservasi, dsb.). Refresh dibatasi
+// sekali per TTL supaya murah; tulisan selalu divalidasi rev di
+// persistWithRetry.
+const DB_REFRESH_TTL_MS = 5000;
+let lastDbRefreshAt = 0;
+async function refreshFromDbIfStale(force) {
+  if (!pool || activeDatabaseKind() === 'file') return;
+  const now = Date.now();
+  if (!force && now - lastDbRefreshAt < DB_REFRESH_TTL_MS) return;
+  lastDbRefreshAt = now;
+  const fresh = await readCurrentDbState();
+  if (!fresh || !fresh.state || fresh.rev === dbStateRev) return;
+  // Gabungkan: data transaksional dari database, tulisan kita yang belum
+  // tersimpan tetap ikut (dedupe). Settings/admins hanya diikuti bila
+  // memori ini tidak punya perubahan yang belum tersimpan.
+  const { state: merged } = mergeTransactionalState(fresh.state, DB);
+  renumberDuplicateIds(merged);
+  normalizeStateObject(merged);
+  if (JSON.stringify(DB.settings != null ? DB.settings : null) === loadedBaseline.settings) {
+    merged.settings = (fresh.state.settings != null) ? fresh.state.settings : merged.settings;
+  }
+  if (JSON.stringify(DB.admins || []) === loadedBaseline.admins) {
+    merged.admins = (fresh.state.admins) || merged.admins;
+  }
+  applyStateInPlace(merged);
+  dbStateRev = fresh.rev;
 }
 
 function save() {
@@ -741,6 +977,12 @@ function seedSettings() {
     const p = path.join(__dirname, 'seed-logo.b64');
     if (fs.existsSync(p)) logo_b64 = fs.readFileSync(p, 'utf8').trim();
   } catch (e) {}
+  if (!logo_b64) {
+    // Vercel Function: pembacaan fs TIDAK ditelusuri oleh Node File Trace,
+    // sedangkan require() YA. seed-logo.js menyimpan logo yang sama dalam
+    // bentuk modul supaya /api/logo tetap berfungsi di sana.
+    try { logo_b64 = String(require('./seed-logo.js') || '').trim() || null; } catch (e) {}
+  }
   DB.settings = {
     business_name: 'Adzkiya Mom Baby Care',
     tagline: 'Layanan Kesehatan Ibu & Anak Terpercaya',
@@ -931,89 +1173,135 @@ function ensureNewSettings() {
   if (DB.settings.owner_signature_at === undefined) DB.settings.owner_signature_at = null;
 }
 
-// Async boot — load persistent state, seed defaults, then start the API.
-(async () => {
-  try {
-    await initStorage();
-    seedAdmin();
-    seedSettings();
-    ensureNewSettings();
-    // Rehydrate share-tokens from disk/DB so links generated before the
-    // last restart still resolve. Done after settings are seeded (so
-    // DB.share_tokens is initialized) but before the HTTP server
-    // starts accepting requests.
-    await loadShareTokens();
-    // Schedule periodic pruning of expired tokens so the map and
-    // database don't grow forever.
-    setInterval(() => { pruneShareTokens().catch(() => {}); }, 6 * 60 * 60 * 1000);
-    await queueSave();
-    server = app.listen(PORT, '0.0.0.0', () => {
-      console.log(`Adzkiya Mom Baby Care v2.2 on 0.0.0.0:${PORT} (storage: ${pool ? activeDatabaseKind() : 'file'})`);
-      // PENGINGAT OTOMATIS: periksa tiap 5 menit. Pengingat yang jatuh tempo
-      // dikirim sendiri lewat WhatsApp Cloud API (bila kredensial ada dan
-      // reminder_auto_wa aktif); kalau tidak, ia muncul sebagai antrean
-      // "kirim sekali klik" di panel admin.
-      if (DB.settings && DB.settings.reminder_enabled !== false) {
-        const autoSend = async () => {
+// Async boot — muat state persisten + seed data bawaan. SENGAJA tidak lagi
+// memanggil app.listen() di dalamnya supaya berkas ini bisa dipakai dua cara:
+//   1. Server biasa (Railway/local): boot() lalu app.listen() — blok di bawah.
+//   2. Vercel Function (api/index.js): boot() dipicu saat request pertama dan
+//      app DIPAKAI LANGSUNG sebagai request handler, tanpa app.listen().
+async function boot() {
+  await initStorage();
+  seedAdmin();
+  seedSettings();
+  ensureNewSettings();
+  // Rehydrate share-tokens from disk/DB so links generated before the
+  // last restart still resolve. Done after settings are seeded (so
+  // DB.share_tokens is initialized) but before the HTTP server
+  // starts accepting requests.
+  await loadShareTokens();
+  // Schedule periodic pruning of expired tokens so the map and
+  // database don't grow forever.
+  const pruneTimer = setInterval(() => { pruneShareTokens().catch(() => {}); }, 6 * 60 * 60 * 1000);
+  // unref: timer pembersihan tidak boleh menahan proses hidup (penting agar
+  // tool/test yang me-require modul ini bisa keluar dengan normal).
+  if (pruneTimer.unref) pruneTimer.unref();
+  await queueSave();
+}
+
+// Pekerjaan latar (pengingat otomatis, peringatan stok, pemanasan AI).
+// Dipanggil SETELAH boot sukses dan HANYA pada runtime berumur panjang
+// (server biasa / instance Fluid yang tetap hangat). Guard bgJobsStarted
+// membuatnya aman dipanggil berulang kali dari api/index.js.
+let bgJobsStarted = false;
+function startBackgroundJobs() {
+  if (bgJobsStarted) return;
+  bgJobsStarted = true;
+  // PENGINGAT OTOMATIS: periksa tiap 5 menit. Pengingat yang jatuh tempo
+  // dikirim sendiri lewat WhatsApp Cloud API (bila kredensial ada dan
+  // reminder_auto_wa aktif); kalau tidak, ia muncul sebagai antrean
+  // "kirim sekali klik" di panel admin.
+  if (DB.settings && DB.settings.reminder_enabled !== false) {
+    const autoSend = async () => {
+      try {
+        if (DB.settings.reminder_auto_wa === false) return;
+        if (!(DB.settings.ai_assistant_phone_id && DB.settings.ai_assistant_access_token)) return;
+        const pending = dueReminders().filter((x) => !x.already_sent);
+        for (const item of pending) {
+          // Hanya kirim otomatis untuk pengingat yang sudah masuk jendela
+          // (maks 24 jam ke depan) agar tidak mengirim terlalu dini.
+          if (item.mins_left > 24 * 60) continue;
           try {
-            if (DB.settings.reminder_auto_wa === false) return;
-            if (!(DB.settings.ai_assistant_phone_id && DB.settings.ai_assistant_access_token)) return;
-            const pending = dueReminders().filter((x) => !x.already_sent);
-            for (const item of pending) {
-              // Hanya kirim otomatis untuk pengingat yang sudah masuk jendela
-              // (maks 24 jam ke depan) agar tidak mengirim terlalu dini.
-              if (item.mins_left > 24 * 60) continue;
-              try {
-                await sendWAReply(item.whatsapp, item.text);
-                markReminderSent(item.key);
-                console.log(`[reminder] terkirim ke ${item.patient_name} (${item.lead_hours} jam sebelum ${item.date} ${item.time})`);
-              } catch (e) {
-                console.warn('[reminder] gagal kirim:', sanitizeAIError(e));
-                recordAIError(e);
-                break; // kemungkinan kredensial/limit bermasalah: berhenti dulu
-              }
-            }
-          } catch (e) { console.error('[reminder] error:', sanitizeAIError(e)); }
-        };
-        setTimeout(autoSend, 25000);
-        setInterval(autoSend, 5 * 60 * 1000);
-      }
-      // PERINGATAN STOK MENIPIS (lihat bagian BUKU STOK): dicek tiap 30
-      // menit, dikirim ke WhatsApp admin/supplier hanya bila benar-benar ada
-      // barang di bawah batas minimum dan jeda minimal antar-peringatan
-      // (default 24 jam) sudah lewat — supaya tidak jadi spam.
-      const autoStockAlert = async () => {
-        try {
-          if (!supplyAlertDue()) return;
-          const items = lowStockSupplies();
-          const result = await sendSupplyAlertNow(items);
-          console.log(`[stok] peringatan stok menipis terkirim ke ${result.sent_to} (${result.count} barang)`);
-        } catch (e) {
-          console.warn('[stok] gagal kirim peringatan:', sanitizeAIError(e));
-          recordAIError(e);
+            await sendWAReply(item.whatsapp, item.text);
+            markReminderSent(item.key);
+            console.log(`[reminder] terkirim ke ${item.patient_name} (${item.lead_hours} jam sebelum ${item.date} ${item.time})`);
+          } catch (e) {
+            console.warn('[reminder] gagal kirim:', sanitizeAIError(e));
+            recordAIError(e);
+            break; // kemungkinan kredensial/limit bermasalah: berhenti dulu
+          }
         }
-      };
-      setTimeout(autoStockAlert, 45000);
-      setInterval(autoStockAlert, 30 * 60 * 1000);
-      // Pemanasan AI (tidak memblokir boot): siapkan daftar model & prompt
-      // sistem di latar belakang supaya pesan pertama pengunjung tidak
-      // menanggung biaya tambahan apa pun.
-      if (DB.settings && DB.settings.ai_gemini_api_key) {
-        setTimeout(() => {
-          try {
-            buildAISystemPrompt();
-            resolveGeminiModel(DB.settings.ai_gemini_api_key, { force: true })
-              .then((m) => { if (m) console.log('[ai] Model siap dipakai: ' + m); })
-              .catch((e) => console.warn('[ai] Pemanasan model gagal: ' + sanitizeAIError(e)));
-          } catch (e) { /* pemanasan bersifat opsional */ }
-        }, 2000);
-      }
-    });
-  } catch (error) {
-    console.error('FATAL boot:', error);
-    process.exit(1);
+      } catch (e) { console.error('[reminder] error:', sanitizeAIError(e)); }
+    };
+    setTimeout(autoSend, 25000);
+    setInterval(autoSend, 5 * 60 * 1000);
   }
-})();
+  // PERINGATAN STOK MENIPIS (lihat bagian BUKU STOK): dicek tiap 30
+  // menit, dikirim ke WhatsApp admin/supplier hanya bila benar-benar ada
+  // barang di bawah batas minimum dan jeda minimal antar-peringatan
+  // (default 24 jam) sudah lewat — supaya tidak jadi spam.
+  const autoStockAlert = async () => {
+    try {
+      if (!supplyAlertDue()) return;
+      const items = lowStockSupplies();
+      const result = await sendSupplyAlertNow(items);
+      console.log(`[stok] peringatan stok menipis terkirim ke ${result.sent_to} (${result.count} barang)`);
+    } catch (e) {
+      console.warn('[stok] gagal kirim peringatan:', sanitizeAIError(e));
+      recordAIError(e);
+    }
+  };
+  setTimeout(autoStockAlert, 45000);
+  setInterval(autoStockAlert, 30 * 60 * 1000);
+  // Pemanasan AI (tidak memblokir boot): siapkan daftar model & prompt
+  // sistem di latar belakang supaya pesan pertama pengunjung tidak
+  // menanggung biaya tambahan apa pun.
+  if (DB.settings && DB.settings.ai_gemini_api_key) {
+    setTimeout(() => {
+      try {
+        buildAISystemPrompt();
+        resolveGeminiModel(DB.settings.ai_gemini_api_key, { force: true })
+          .then((m) => { if (m) console.log('[ai] Model siap dipakai: ' + m); })
+          .catch((e) => console.warn('[ai] Pemanasan model gagal: ' + sanitizeAIError(e)));
+      } catch (e) { /* pemanasan bersifat opsional */ }
+    }, 2000);
+  }
+}
+
+// ensureBooted(): idempoten & aman dipanggil dari mana pun. Bila boot gagal
+// (mis. ADMIN_PASSWORD production belum diisi), promise di-reset supaya
+// percobaan berikutnya (request berikutnya di Vercel) bisa mencoba lagi
+// setelah env diperbaiki — bukan terkunci selamanya pada error lama.
+let bootPromise = null;
+function ensureBooted() {
+  if (!bootPromise) {
+    bootPromise = boot().catch((error) => { bootPromise = null; throw error; });
+  }
+  return bootPromise;
+}
+
+if (RUNNING_ON_VERCEL) {
+  // Di Vercel: TANPA app.listen(). api/index.js memanggil ensureBooted()
+  // saat request pertama lalu meneruskan (req, res) ke app.
+  console.log('[boot] Mode Vercel Function: app.listen() dilewati (boot dipicu api/index.js).');
+} else {
+  ensureBooted()
+    .then(() => {
+      server = app.listen(PORT, '0.0.0.0', () => {
+        console.log(`Adzkiya Mom Baby Care v2.2 on 0.0.0.0:${PORT} (storage: ${pool ? activeDatabaseKind() : 'file'})`);
+        startBackgroundJobs();
+      });
+    })
+    .catch((error) => {
+      console.error('FATAL boot:', error);
+      process.exit(1);
+    });
+}
+
+// Diekspor untuk Vercel Function (api/index.js). Ekspor boleh terjadi di
+// sini walau rute-rute baru ditambahkan ke `app` di bawah — Express
+// mengevaluasi routing secara dinamis saat request masuk.
+module.exports = app;
+module.exports.ensureBooted = ensureBooted;
+module.exports.startBackgroundJobs = startBackgroundJobs;
 
 // ---- SERVICES CATALOG ----
 const SERVICES = [
@@ -1324,9 +1612,16 @@ if (fs.existsSync(docsDir)) {
 }
 
 const ALLOWED_UPLOAD_MIMES = new Set(['image/jpeg', 'image/png', 'image/webp', 'application/pdf']);
+// Vercel Functions membatasi ukuran body request 4,5 MB (di atasnya request
+// ditolak 413 FUNCTION_PAYLOAD_TOO_LARGE oleh platform SEBELUM sampai ke
+// Express). Batas server diturunkan mengikuti platform saat berjalan di
+// Vercel supaya pengguna mendapat pesan yang jelas dari server, bukan 413
+// misterius; di Railway/local batas 5 MB dipertahankan.
+const UPLOAD_MAX_BYTES = RUNNING_ON_VERCEL ? 4 * 1024 * 1024 : 5 * 1024 * 1024;
+const UPLOAD_MAX_LABEL = Math.round(UPLOAD_MAX_BYTES / (1024 * 1024)) + ' MB';
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 5 * 1024 * 1024, files: 1 },
+  limits: { fileSize: UPLOAD_MAX_BYTES, files: 1 },
   fileFilter: (req, file, callback) => {
     if (!ALLOWED_UPLOAD_MIMES.has(file.mimetype)) {
       return callback(new multer.MulterError('LIMIT_UNEXPECTED_FILE', file.fieldname));
@@ -1337,7 +1632,7 @@ const upload = multer({
 // Bulk PDF upload for kwitansi restore: up to 50 PDFs at once, 5 MB each.
 const pdfUpload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 5 * 1024 * 1024, files: 50 },
+  limits: { fileSize: UPLOAD_MAX_BYTES, files: 50 },
   fileFilter: (req, file, callback) => {
     if (file.mimetype !== 'application/pdf') {
       return callback(new multer.MulterError('LIMIT_UNEXPECTED_FILE', file.fieldname));
@@ -1409,6 +1704,19 @@ function calcReservationTotal(r) {
 // Admin receipts
 // Admin settings get/put + upload
 // Admin backup/restore
+
+// Refresh state dari database untuk GET /api/* (maks sekali per TTL).
+// Di platform serverless multi-instance (Vercel), instance ini bisa saja
+// sudah lama tidak menerima tulisan — kalender & daftar admin harus tetap
+// menampilkan data terbaru dari instance lain. Tulisan tidak melalui sini
+// (mereka divalidasi rev di persistWithRetry).
+app.use((req, res, next) => {
+  if ((req.method === 'GET' || req.method === 'HEAD') && req.path.startsWith('/api/')) {
+    refreshFromDbIfStale().then(() => next(), () => next());
+    return;
+  }
+  next();
+});
 
 // Apply the general API rate limit to every /api/* route. Public
 // HTML/static are served above and are not affected.
@@ -1754,7 +2062,9 @@ const loginAttemptsByAccount = new Map();
 // Bersihkan entri login-attempts yang sudah lewat window-nya secara
 // berkala supaya Map tidak tumbuh tanpa batas (memory leak) saat banyak
 // IP berbeda gagal login sekali lalu tidak pernah kembali.
-setInterval(() => {
+// unref: timer hanya kebersihan — tidak boleh menahan proses hidup (mis.
+// tool/test yang me-require modul ini tanpa app.listen).
+const loginCleanupTimer = setInterval(() => {
   const now = Date.now();
   for (const [key, val] of loginAttempts) {
     if (!val || val.resetAt < now) loginAttempts.delete(key);
@@ -1763,6 +2073,7 @@ setInterval(() => {
     if (!val || val.resetAt < now) loginAttemptsByAccount.delete(key);
   }
 }, 30 * 60 * 1000);
+if (loginCleanupTimer.unref) loginCleanupTimer.unref();
 app.post('/api/auth/login', authLimiter, (req, res) => {
   const key = req.ip;
   const now = Date.now();
@@ -3318,6 +3629,47 @@ app.post('/api/admin/reminders/send', auth, async (req, res) => {
     recordAIError(e);
     res.status(500).json({ error: 'Gagal mengirim pengingat: ' + sanitizeAIError(e) });
   }
+});
+
+// ===== CRON: pengingat otomatis terjadwal (Vercel Cron / scheduler lain) =====
+// Di Railway, pengingat otomatis berjalan lewat setInterval di dalam proses
+// server (startBackgroundJobs). Di Vercel Function proses bisa dibekukan saat
+// idle, jadi pengingat dipicu scheduler eksternal yang memanggil path ini:
+//   • vercel.json → crons: [{ path: "/api/cron/reminders", ... }]
+//   • Vercel otomatis menyertakan header `Authorization: Bearer $CRON_SECRET`
+//     bila env CRON_SECRET diisi di project — verifikasi di bawah.
+// Batas paket Hobby: cron hanya boleh 1x/hari (jadwal lebih sering gagal
+// deploy), sehingga pengingat H-2 bisa terlambat beberapa jam. Naik ke paket
+// Pro dan ubah jadwalnya menjadi per jam untuk pengingat tepat waktu.
+app.get('/api/cron/reminders', async (req, res) => {
+  const secret = (process.env.CRON_SECRET || '').trim();
+  if (secret && !safeCompare(String(req.headers.authorization || ''), 'Bearer ' + secret)) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  const s = DB.settings || {};
+  if (s.reminder_enabled === false) return res.json({ ok: true, skipped: 'reminder_disabled' });
+  if (s.reminder_auto_wa === false) return res.json({ ok: true, skipped: 'auto_wa_off' });
+  if (!(s.ai_assistant_phone_id && s.ai_assistant_access_token)) {
+    return res.json({ ok: true, skipped: 'wa_credentials_missing' });
+  }
+  // Sama seperti autoSend di startBackgroundJobs: hanya pengingat dalam
+  // jendela maks 24 jam ke depan yang dikirim otomatis.
+  const pending = dueReminders().filter((x) => !x.already_sent && x.mins_left <= 24 * 60);
+  let sent = 0;
+  const errors = [];
+  for (const item of pending) {
+    try {
+      await sendWAReply(item.whatsapp, item.text);
+      markReminderSent(item.key);
+      sent++;
+    } catch (e) {
+      console.warn('[cron-reminder] gagal kirim:', sanitizeAIError(e));
+      recordAIError(e);
+      errors.push(sanitizeAIError(e));
+      break; // kemungkinan kredensial/limit bermasalah: berhenti dulu
+    }
+  }
+  res.json({ ok: true, considered: pending.length, sent, errors: errors.slice(0, 3) });
 });
 
 // ===== ADMIN — RESERVATIONS =====
@@ -6340,7 +6692,12 @@ async function switchStorageToDatabase(connStr, kindOverride, opts) {
   saveShareTokensMirror();
   dbConnectError = null;
   dbReachable = true;
-  await persistSnapshot(JSON.stringify(DB));
+  try {
+    const fresh = await readCurrentDbState();
+    dbStateRev = fresh ? fresh.rev : 0;
+  } catch { dbStateRev = 0; }
+  dbStateRev = await persistSnapshot(JSON.stringify(DB), dbStateRev);
+  refreshLoadedBaseline(DB);
   return report;
 }
 
@@ -7029,12 +7386,6 @@ function aiBookingRateCheck(key, max) {
   cur.count += 1;
   return { ok: true };
 }
-// Bersihkan peta pembatas berkala supaya tidak tumbuh tanpa batas.
-setInterval(() => {
-  const now = Date.now();
-  for (const [k, v] of aiBookingHits) if (v.resetAt < now) aiBookingHits.delete(k);
-}, 30 * 60 * 1000);
-
 // Ambil blok booking dari balasan AI. Mengembalikan { clean, data|raw, error }.
 function extractAISBooking(reply) {
   const text = String(reply == null ? '' : reply);
@@ -7856,6 +8207,15 @@ async function callAIChatInner(systemPrompt, messages, opts) {
 }
 // PUBLIC chat endpoint — used by the chat widget on the landing page
 // and (optionally) by the WA webhook handler.
+// Bersihkan peta pembatas berkala supaya tidak tumbuh tanpa batas.
+// (Diletakkan SETELAH fungsi-fungsi AI yang diekstrak test/ai-booking.test.js
+// ke sandbox VM — sandbox itu tidak punya setInterval/unref.)
+const aiHitsCleanupTimer = setInterval(() => {
+  const now = Date.now();
+  for (const [k, v] of aiBookingHits) if (v.resetAt < now) aiBookingHits.delete(k);
+}, 30 * 60 * 1000);
+if (aiHitsCleanupTimer.unref) aiHitsCleanupTimer.unref();
+
 app.post('/api/ai/chat', aiLimiter, async (req, res) => {
   try {
     const { message, history = [], session_id = 'web-' + Date.now() } = req.body || {};
@@ -8462,7 +8822,7 @@ app.use((req, res, next) => {
 app.use((error, req, res, next) => {
   if (error instanceof multer.MulterError) {
     const message = error.code === 'LIMIT_FILE_SIZE'
-      ? 'Ukuran file maksimal 5 MB'
+      ? ('Ukuran file maksimal ' + UPLOAD_MAX_LABEL)
       : 'File tidak didukung atau jumlah file berlebih';
     return res.status(400).json({ error: message });
   }

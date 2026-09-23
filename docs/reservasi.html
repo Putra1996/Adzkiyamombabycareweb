@@ -432,7 +432,7 @@ document.addEventListener('DOMContentLoaded', () => {
 <script>
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', function () {
-    navigator.serviceWorker.register('/sw.js').catch(function () { /* opsional */ });
+    navigator.serviceWorker.register('sw.js').catch(function () { /* opsional */ });
   });
 }
 </script>

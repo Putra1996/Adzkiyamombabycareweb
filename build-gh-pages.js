@@ -34,10 +34,16 @@ if (logoB64) {
   const logoBuf = Buffer.from(logoB64, 'base64');
   fs.writeFileSync(path.join(DOCS, 'img', 'logo.png'), logoBuf);
   console.log('[build] Logo saved (' + logoBuf.length + ' bytes)');
+} else if (fs.existsSync(path.join(ROOT, 'seed-logo.png'))) {
+  // data.json tidak ada (mis. clone segar) — pakai logo bawaan repo supaya
+  // docs/img/logo.png tidak pernah hilang dari mirror Pages.
+  fs.copyFileSync(path.join(ROOT, 'seed-logo.png'), path.join(DOCS, 'img', 'logo.png'));
+  console.log('[build] Logo dari seed-logo.png (data.json tidak dibaca)');
 }
 
 // Build public settings (mimicking /api/public-settings endpoint)
 const publicSettings = {
+
   business_name: settings.business_name || 'Adzkiya Mom Baby Care',
   tagline: settings.tagline || '',
   address: settings.address || '',
@@ -90,91 +96,11 @@ fs.copyFileSync(path.join(ROOT, 'public', 'reservasi.html'), path.join(DOCS, 're
 fs.copyFileSync(path.join(ROOT, 'public', 'js', 'admin.js'), path.join(DOCS, 'js', 'admin.js'));
 console.log('[build] Admin and reservation clients copied');
 
-// Build main.js with embedded data
-const servicesCode = `
-// Embedded services data (from server.js SERVICES)
-const SERVICES_DATA = [
-  { cat: 'Basic Treatment Ibu', items: [
-    { name: 'Massage Ibu Hamil', price: 80000 },
-    { name: 'Massage Ibu Nifas', price: 80000 },
-    { name: 'Massage Laktasi', price: 80000 },
-    { name: 'Massage Induksi', price: 80000 },
-  ]},
-  { cat: 'Paket Spa Ibu Hamil', items: [
-    { name: 'Serenity Bump Package', price: 115000 },
-    { name: 'Blooming Mama Package', price: 125000 },
-    { name: 'Adzkiya Glow Package', price: 135000 },
-  ]},
-  { cat: 'Basic Spa Untuk Ibu', items: [
-    { name: 'Harmony Spa', price: 105000 },
-    { name: 'Blooming Spa', price: 115000 },
-  ]},
-  { cat: 'Perawatan Ibu & Newborn', items: [
-    { name: 'Mom & Newborn Care 5 Days', price: 550000 },
-    { name: 'Mom & Newborn Care 7 Days', price: 750000 },
-    { name: 'Mom & Newborn Care 14 Days', price: 1400000 },
-    { name: 'Perawatan Luka Perineum', price: 100000 },
-    { name: 'Perawatan Luka Post SC', price: 120000 },
-  ]},
-  { cat: 'Massage Laktasi (Paket)', items: [
-    { name: "Mom's Relief Package (3x)", price: 230000 },
-    { name: 'Gentle Flow Package (5x)', price: 350000 },
-    { name: 'Lacta Bloom Package (7x)', price: 450000 },
-  ]},
-  { cat: 'Baby Treatment (0\u201312 Bulan)', items: [
-    { name: 'Sleepwell Massage', price: 50000 },
-    { name: 'Pijat Bapil', price: 60000 },
-    { name: 'Pijat Diare', price: 60000 },
-    { name: 'Pijat Sembelit / Konstipasi', price: 60000 },
-    { name: 'Pijat Tuina', price: 60000 },
-    { name: 'Stimulasi Berjalan', price: 60000 },
-    { name: 'Therapy Bapil', price: 80000 },
-    { name: 'Baby Gym', price: 70000 },
-    { name: 'Baby Haircut / Cukur Gundul', price: 25000 },
-  ]},
-  { cat: 'Newborn Care', items: [
-    { name: 'Newborn Care 3 Days', price: 255000 },
-    { name: 'Newborn Care 5 Days', price: 425000 },
-    { name: 'Newborn Care 7 Days', price: 595000 },
-  ]},
-  { cat: 'Toddler Treatment (1\u20133 Tahun)', items: [
-    { name: 'Toddler - Sleepwell Massage', price: 65000 },
-    { name: 'Toddler - Pijat Bapil', price: 70000 },
-    { name: 'Toddler - Pijat Diare', price: 70000 },
-    { name: 'Toddler - Pijat Sembelit', price: 70000 },
-    { name: 'Toddler - Pijat Tuina', price: 70000 },
-    { name: 'Toddler - Therapy Bapil', price: 85000 },
-  ]},
-  { cat: 'Kids Treatment (4\u20135 Tahun)', items: [
-    { name: 'Kids - Sleepwell Massage', price: 65000 },
-    { name: 'Kids - Pijat Bapil', price: 70000 },
-    { name: 'Kids - Pijat Diare', price: 70000 },
-    { name: 'Kids - Pijat Sembelit', price: 70000 },
-    { name: 'Kids - Therapy Bapil', price: 85000 },
-  ]},
-];`;
-
-const settingsCode = `
-// Embedded settings data (from data.json)
-const SETTINGS_DATA = ${JSON.stringify(publicSettings, null, 2)};`;
-
-// Read the original main.js from docs and replace the data sections
-let mainJs = fs.readFileSync(path.join(DOCS, 'js', 'main.js'), 'utf8');
-
-// Replace SERVICES_DATA
-const servicesMatch = mainJs.match(/\/\/ Embedded services data[\s\S]*?^];/m);
-if (servicesMatch) {
-  mainJs = mainJs.replace(servicesMatch[0], servicesCode.trim());
-}
-
-// Replace SETTINGS_DATA
-const settingsMatch = mainJs.match(/\/\/ Embedded settings data[\s\S]*?^};/m);
-if (settingsMatch) {
-  mainJs = mainJs.replace(settingsMatch[0], settingsCode.trim());
-}
-
-fs.writeFileSync(path.join(DOCS, 'js', 'main.js'), mainJs);
-console.log('[build] main.js updated with embedded data');
+// CATATAN: data layanan & pengaturan TIDAK ditanam ke docs/js/main.js.
+// Mirror GitHub Pages memanggil API produksi (Vercel) lewat js/api-config.js;
+// dulu ada blok "embedded data" yang mencari penanda SERVICES_DATA/
+// SETTINGS_DATA di main.js — penanda itu sudah tidak ada sehingga blok itu
+// tidak pernah melakukan apa-apa (dead code) dan kini dihapus.
 
 // ===== MIRROR public/ -> docs/ DENGAN PATH RELATIF =====
 //
@@ -191,10 +117,13 @@ console.log('[build] main.js updated with embedded data');
 // Jalankan `npm run build:pages` setiap kali file di public/ berubah,
 // lalu commit folder docs/.
 const PAGES_COPY = [
-  'index.html', 'kalender.html', 'reservasi.html', 'admin.html', '404.html', 'robots.txt',
+  'index.html', 'kalender.html', 'reservasi.html', 'admin.html', '404.html', 'kwitansi-share.html',
   'css/style.css', 'sw.js',
   'js/api-config.js', 'js/i18n.js', 'js/main.js', 'js/kalender.js', 'js/admin.js',
 ];
+// robots.txt TIDAK lagi disalin dari public/ (file itu dihapus dari repo —
+// server Express punya handler dinamis dengan host yang benar). Untuk
+// GitHub Pages versi statisnya dibuat di bawah.
 
 // Aset statis dari data.json (agar <img src="/api/logo"> tetap tampil di
 // GitHub Pages yang tidak punya endpoint /api/*).
@@ -231,6 +160,9 @@ function rewriteForPages(content) {
   });
   // 3) Referensi absolut di dalam script/style inline: '/js/...', '/css/...'.
   out = out.replace(/(["'(])\/(js|css|img|data)\//g, '$1$2/');
+  // 4) Service worker diregistrasi lewat JS inline: register('/sw.js') —
+  //    GitHub Pages menyajikan repo di sub-folder, jadi harus relatif.
+  out = out.replace(/(["'(])\/sw\.js/g, '$1sw.js');
   return out;
 }
 
@@ -245,6 +177,49 @@ for (const rel of PAGES_COPY) {
   mirrorCount++;
 }
 console.log('[build] Mirror public/ -> docs/ selesai (' + mirrorCount + ' file, path relatif)');
+
+// ===== PWA manifest statis =====
+// Di Vercel/Railway, /manifest.webmanifest dilayani dinamis oleh server
+// (ikon dari /api/logo). GitHub Pages tidak punya backend, jadi manifest
+// dibuat statis dengan ikon img/logo.png dan start_url './' (sub-folder).
+const ghPagesManifest = {
+  name: (settings.business_name || 'Adzkiya Mom Baby Care') + ' — Reservasi & Layanan',
+  short_name: 'Adzkiya',
+  description: settings.tagline || 'Layanan kesehatan ibu & anak, home service Cilacap.',
+  start_url: './?pwa=1',
+  scope: './',
+  display: 'standalone',
+  background_color: '#fffafc',
+  theme_color: settings.primary_color || '#ee5a8a',
+  lang: 'id',
+  icons: [
+    { src: 'img/logo.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
+    { src: 'img/logo.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
+    { src: 'img/logo.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' }
+  ],
+  shortcuts: [
+    { name: 'Reservasi', url: './reservasi.html' },
+    { name: 'Kalender', url: './kalender.html' },
+    { name: 'Chat AI', url: './index.html?chat=1' }
+  ]
+};
+fs.writeFileSync(path.join(DOCS, 'manifest.webmanifest'), JSON.stringify(ghPagesManifest, null, 2));
+console.log('[build] manifest.webmanifest ditulis (statis, ikon img/logo.png)');
+
+// ===== robots.txt statis =====
+// URL sitemap produksi dikelola server (dinamis per host); di GitHub Pages
+// cukup aturan izin/crawl tanpa baris Sitemap.
+fs.writeFileSync(path.join(DOCS, 'robots.txt'), [
+  '# Adzkiya Mom Baby Care — robots.txt (GitHub Pages)',
+  'User-agent: *',
+  'Allow: /',
+  'Disallow: /admin',
+  'Disallow: /admin.html',
+  'Disallow: /api/',
+  'Disallow: /kwitansi-share.html',
+  ''
+].join('\n'));
+console.log('[build] robots.txt ditulis (statis, tanpa Sitemap)');
 
 console.log('\n[build] ✅ Done! docs/ folder is ready for GitHub Pages.');
 console.log('[build] Push to GitHub and publish GitHub Pages from the main branch /docs folder.');
