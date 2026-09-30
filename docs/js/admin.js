@@ -453,7 +453,11 @@ async function renderDashboard() {
       if (grid && grid.parentNode) grid.parentNode.insertBefore(banner, grid);
     }
     drawCharts(charts);
-  } catch (e) { document.getElementById('statGrid').innerHTML = `<div class="alert alert-error">${e.message}</div>`; }
+  } catch (e) {
+    // Elemen bisa sudah hilang bila admin pindah halaman saat request gagal.
+    const box = document.getElementById('statGrid');
+    if (box) box.innerHTML = `<div class="alert alert-error">${esc(e.message)}</div>`;
+  }
 }
 
 // Render the recent-reservations list in a card format. Shows a count
@@ -1552,7 +1556,11 @@ async function loadReceipts(append) {
         <div style="font-size:0.78rem;color:var(--text-soft);margin-top:6px;">Menampilkan ${rows.length} kwitansi terbaru.</div>
       </div>` : `<div style="text-align:center;font-size:0.78rem;color:var(--text-soft);margin-top:12px;">Total ${rows.length} kwitansi.</div>`}`;
     updateKwSelCount();
-  } catch (e) { document.getElementById('kwList').innerHTML = `<div class="alert alert-error">${e.message}</div>`; }
+  } catch (e) {
+    // Elemen bisa sudah hilang bila admin pindah halaman saat request gagal.
+    const box = document.getElementById('kwList');
+    if (box) box.innerHTML = `<div class="alert alert-error">${esc(e.message)}</div>`;
+  }
 }
 
 function printReceiptById(id) {
@@ -2275,7 +2283,12 @@ async function loadRecap() {
     // For receipts table we only show the single-month receipts (the
     // receipts list is too long to mix across multi-month views).
     RECAP_RECEIPTS = await api('/api/admin/receipts?month=' + month);
+    // Cek ulang setelah await KEDUA: admin bisa sudah pindah halaman saat
+    // daftar kwitansi dimuat — dulu ini melempar TypeError (recapContent
+    // null) sebagai unhandled rejection.
+    if (!isLatestRender('recap', _token461)) return;
     const el = document.getElementById('recapContent');
+    if (!el) return;
     const isRange = parseInt(months, 10) > 1;
     // Range label for the page header
     const rangeLabel = isRange
@@ -2364,7 +2377,10 @@ async function loadRecap() {
       </div>
       <style>@media(max-width:920px),(hover:none) and (pointer:coarse) and (max-width:1024px){#recapCols{grid-template-columns:1fr !important;}}</style>
     `;
-  } catch (e) { document.getElementById('recapContent').innerHTML = `<div class="alert alert-error">${e.message}</div>`; }
+  } catch (e) {
+    const box = document.getElementById('recapContent');
+    if (box && isLatestRender('recap', _token461)) box.innerHTML = `<div class="alert alert-error">${esc(e.message)}</div>`;
+  }
 }
 
 function renderReceiptTable(rows) {

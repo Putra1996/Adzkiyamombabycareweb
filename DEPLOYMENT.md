@@ -31,20 +31,35 @@ dibiarkan di bawah sebagai referensi.
 - Cron pengingat otomatis: `vercel.json → crons` memanggil
   `/api/cron/reminders` (dilindungi env `CRON_SECRET`).
 
-### 0.2 Environment variables yang WAJIB diisi di Vercel
+### 0.2 Environment variables (mode zero-config — situs TETAP hidup tanpa env)
+
+Sejak versi ini **tidak ada env yang membuat situs mati**. Tanpa env apa pun,
+fitur publik (beranda, katalog, reservasi, kalender, pengaturan publik, chat)
+tetap jalan; yang kurang dilaporkan di `GET /api/health → warnings`. Isi env
+berikut untuk versi **penuh**, lalu **Redeploy**:
 
 Project Settings → Environment Variables (semua environment):
 
-| Variabel | Nilai |
-|---|---|
-| `DATABASE_URL` | Connection string **Postgres/MySQL** (mis. Neon). WAJIB — filesystem Vercel tidak persisten, tanpa ini data hilang. |
-| `JWT_SECRET` | Minimal 32 karakter acak (menandatangani token admin & link kwitansi). |
-| `ADMIN_EMAIL` | Email login admin. |
-| `ADMIN_PASSWORD` | Password awal admin, minimal 12 karakter. Ganti lewat panel setelah login pertama. |
-| `ADMIN_NAME` | (opsional) Nama admin. |
-| `CRON_SECRET` | (opsional tapi disarankan) Kunci untuk `/api/cron/reminders`; Vercel mengirimkannya sebagai `Authorization: Bearer <nilai>`. |
-| `ALLOWED_ORIGINS` | (opsional) Isi `https://putra1996.github.io` bila ingin mengunci CORS untuk cermin GitHub Pages. Same-origin Vercel tidak butuh CORS. |
-| `NODEJS_HELPERS` | (opsional) Isi `0` bila terjadi masalah parsing body pada upload/multipart — mematikan "helpers" bawaan runtime Node Vercel. |
+| Variabel | Nilai | Bila kosong |
+|---|---|---|
+| `DATABASE_URL` | Connection string **Postgres/MySQL** (mis. Neon). **WAJIB agar data reservasi permanen.** | Data disimpan di `/tmp` per instance — bisa hilang kapan saja. Respons reservasi memuat `storage_warning` & pasien diminta konfirmasi lewat WhatsApp. |
+| `JWT_SECRET` | Minimal **32 karakter** acak (token admin & link kwitansi). | Diturunkan dari `DATABASE_URL` (stabil antar instance). Bila `DATABASE_URL` juga kosong: kunci acak per proses → **login admin ditutup (503)** dengan pesan jelas. ⚠️ Nilai yang diisi tapi **<32 karakter tetap GAGAL KERAS** (JSON error) — sengaja, karena itu salah konfigurasi berbahaya. |
+| `ADMIN_EMAIL` | Email login admin. | Dipakai akun admin yang sudah tersimpan di database; bila belum ada, dibuat **akun sementara** `admin@adzkiya.id` dengan password acak yang **hanya tercetak di log deployment** (Vercel → Deployments → Logs, cari `[auth]`). |
+| `ADMIN_PASSWORD` | Password awal admin, minimal **12 karakter**. | Sama seperti di atas. Password <12 karakter **diabaikan** (bukan mematikan situs) + peringatan di `/health`. |
+| `ADMIN_NAME` | (opsional) Nama admin. | — |
+| `CRON_SECRET` | (opsional tapi disarankan) Kunci untuk `/api/cron/reminders`; Vercel mengirimkannya sebagai `Authorization: Bearer <nilai>`. | — |
+| `ALLOWED_ORIGINS` | (opsional) Isi `https://putra1996.github.io` bila ingin mengunci CORS untuk cermin GitHub Pages. Same-origin Vercel tidak butuh CORS. | — |
+| `NODEJS_HELPERS` | (opsional) Isi `0` bila terjadi masalah parsing body pada upload/multipart. | — |
+
+`GET /api/health` kini memuat:
+
+- `warnings` — daftar env yang perlu diisi (tanpa rahasia),
+- `admin_login` — `env` | `existing` | `temporary` | `disabled`,
+- `jwt_secret_source` — `env` | `database_url` | `random`.
+
+Catatan SSL PostgreSQL: SSL tidak dipaksakan ke host lokal
+(`localhost`/`127.x`/`::1`) atau URL ber-`sslmode=disable`; host lain di
+production memakai SSL (Neon/Supabase/Render).
 
 ### 0.3 Batas platform yang perlu diketahui
 
@@ -64,7 +79,9 @@ Project Settings → Environment Variables (semua environment):
 
 ### 0.4 Cek kesehatan setelah deploy
 
-1. `GET /health` → `{"ok":true,"storage":"postgres",...}` (bukan `"file"`).
+1. `GET /api/health` → `{"ok":true,"storage":"postgres","warnings":[],"admin_login":"env",...}`.
+   `warnings` kosong = semua env sudah benar; `storage:"file"` = `DATABASE_URL`
+   belum diisi / tidak bisa dihubungi.
 2. `GET /api/services` → katalog layanan terisi.
 3. Buka `/` → kartu layanan, testimoni, jam operasional tampil.
 4. Buka `/admin` → login dengan `ADMIN_EMAIL`/`ADMIN_PASSWORD`.

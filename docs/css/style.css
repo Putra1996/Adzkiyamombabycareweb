@@ -506,6 +506,7 @@ footer { padding: 40px 24px; background: var(--card); border-top: 1px solid var(
 .alert { padding: 14px 18px; border-radius: var(--radius-sm); margin-bottom: 16px; font-weight: 600; font-size: 0.92rem; }
 .alert-success { background: #e7f8ef; color: #1e8957; border: 1px solid #b8e7c9; }
 .alert-error { background: #fde7eb; color: #c43050; border: 1px solid #f5b8c4; }
+.alert-warning { background: #fff6e0; color: #8a5a00; border: 1px solid #f3d58a; }
 
 /* ---------- CALENDAR ---------- */
 .calendar-wrap { background: var(--card); padding: 20px; border-radius: var(--radius); box-shadow: var(--shadow); border: 1px solid var(--border); }

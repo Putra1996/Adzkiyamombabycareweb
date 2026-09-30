@@ -6,6 +6,12 @@
 // Setiap pemeriksaan mencetak OK / !! (masalah) supaya temuan bisa langsung
 // ditindaklanjuti.
 const BASE = process.env.BASE || 'http://127.0.0.1:3600';
+// Bulan uji = 2 bulan ke depan (WIB). Semua data uji jatuh di bulan yang
+// sama (rekap/Excel per bulan) dan selalu di masa depan — tanggal hard-code
+// lama (Desember 2026) akan membuat audit gagal begitu terlewati.
+const _nowWib = new Date(Date.now() + 7 * 3600 * 1000);
+const BULAN_UJI = new Date(Date.UTC(_nowWib.getUTCFullYear(), _nowWib.getUTCMonth() + 2, 1)).toISOString().slice(0, 7);
+const tglUji = (d) => BULAN_UJI + '-' + String(d).padStart(2, '0');
 
 let pass = 0, fail = 0;
 const masalah = [];
@@ -51,18 +57,18 @@ const api = async (path, opts) => {
   // ---------- 2. RESERVASI PUBLIK ----------
   console.log('\n[2] Reservasi publik (form)');
   const fd = (fields) => { const f = new FormData(); Object.entries(fields).forEach(([k, v]) => f.set(k, v)); return f; };
-  let r = await api('/api/reservations', { method: 'POST', body: fd({ patient_name: 'Audit Satu', whatsapp: '081200000001', address: 'Alamat audit panjang', payment_method: 'COD', items: JSON.stringify([{ name: layanan, price: 1, qty: 2 }]), slots: JSON.stringify([{ date: '2026-12-01', time: '09:00' }]) }) });
+  let r = await api('/api/reservations', { method: 'POST', body: fd({ patient_name: 'Audit Satu', whatsapp: '081200000001', address: 'Alamat audit panjang', payment_method: 'COD', items: JSON.stringify([{ name: layanan, price: 1, qty: 2 }]), slots: JSON.stringify([{ date: tglUji(1), time: '09:00' }]) }) });
   check('reservasi publik dibuat', r.status === 201, 'status ' + r.status);
   check('harga ditentukan server (menolak harga form)', r.json && r.json.total === hargaAsli * 2, 'total=' + (r.json && r.json.total) + ' diharap ' + (hargaAsli * 2));
   const resId = r.json && r.json.id;
 
-  r = await api('/api/reservations', { method: 'POST', body: fd({ patient_name: 'Audit Dua', whatsapp: '081200000002', address: 'Alamat audit', payment_method: 'COD', items: JSON.stringify([{ name: 'Layanan Palsu', qty: 1 }]), slots: JSON.stringify([{ date: '2026-12-02', time: '09:00' }]) }) });
+  r = await api('/api/reservations', { method: 'POST', body: fd({ patient_name: 'Audit Dua', whatsapp: '081200000002', address: 'Alamat audit', payment_method: 'COD', items: JSON.stringify([{ name: 'Layanan Palsu', qty: 1 }]), slots: JSON.stringify([{ date: tglUji(2), time: '09:00' }]) }) });
   check('layanan di luar katalog ditolak', r.status === 400, 'status ' + r.status);
 
-  r = await api('/api/reservations', { method: 'POST', body: fd({ patient_name: 'Audit Tiga', whatsapp: '081200000003', address: 'Alamat audit', payment_method: 'COD', items: JSON.stringify([{ name: layanan, qty: 1 }]), slots: JSON.stringify([{ date: '2026-12-03', time: '09:00' }, { date: '2026-12-03', time: '09:00' }]) }) });
+  r = await api('/api/reservations', { method: 'POST', body: fd({ patient_name: 'Audit Tiga', whatsapp: '081200000003', address: 'Alamat audit', payment_method: 'COD', items: JSON.stringify([{ name: layanan, qty: 1 }]), slots: JSON.stringify([{ date: tglUji(3), time: '09:00' }, { date: tglUji(3), time: '09:00' }]) }) });
   check('slot duplikat di-ringkas (bukan 2 sesi)', r.status === 201 && r.json.total === hargaAsli, 'total=' + (r.json && r.json.total));
 
-  r = await api('/api/reservations', { method: 'POST', body: fd({ patient_name: 'Audit Empat', whatsapp: '081200000004', address: 'Alamat audit', payment_method: 'Kripto', items: JSON.stringify([{ name: layanan, qty: 1 }]), slots: JSON.stringify([{ date: '2026-12-04', time: '09:00' }]) }) });
+  r = await api('/api/reservations', { method: 'POST', body: fd({ patient_name: 'Audit Empat', whatsapp: '081200000004', address: 'Alamat audit', payment_method: 'Kripto', items: JSON.stringify([{ name: layanan, qty: 1 }]), slots: JSON.stringify([{ date: tglUji(4), time: '09:00' }]) }) });
   check('metode pembayaran tidak valid ditolak', r.status === 400, 'status ' + r.status);
 
   // ---------- 3. ADMIN: RESERVASI ----------
@@ -83,7 +89,7 @@ const api = async (path, opts) => {
 
   // ---------- 4. KWITANSI ----------
   console.log('\n[4] Kwitansi & link publik');
-  r = await api('/api/admin/receipts', { method: 'POST', headers: H, body: JSON.stringify({ patient_name: 'Audit Kwitansi', whatsapp: '081200000005', address: 'Alamat kwitansi', service_date: '2026-12-05', service_time: '10:00', items: [{ name: layanan, price: hargaAsli, qty: 1 }], transport_fee: 20000, discount: 5000 }) });
+  r = await api('/api/admin/receipts', { method: 'POST', headers: H, body: JSON.stringify({ patient_name: 'Audit Kwitansi', whatsapp: '081200000005', address: 'Alamat kwitansi', service_date: tglUji(5), service_time: '10:00', items: [{ name: layanan, price: hargaAsli, qty: 1 }], transport_fee: 20000, discount: 5000 }) });
   check('kwitansi dibuat', r.status === 200 && r.json.invoice_no, r.json && r.json.invoice_no);
   const totalKw = hargaAsli + 20000 - 5000;
   check('total kwitansi = subtotal + transport - diskon', r.json.total === totalKw, 'total=' + r.json.total);
@@ -91,7 +97,7 @@ const api = async (path, opts) => {
   const rc = receipts.find((x) => x.invoice_no === r.json.invoice_no);
   check('kwitansi muncul di daftar', !!rc);
   check('daftar kwitansi punya header total', (await api('/api/admin/receipts?limit=1', { headers: H })).headers.get('x-total-count') !== null);
-  const bulan = (await api('/api/admin/receipts?month=2026-12', { headers: H })).json;
+  const bulan = (await api('/api/admin/receipts?month=' + BULAN_UJI, { headers: H })).json;
   check('filter bulan kwitansi', bulan.length >= 1);
   const cari = (await api('/api/admin/receipts?q=Audit+Kwitansi', { headers: H })).json;
   check('pencarian kwitansi', cari.length === 1);
@@ -107,10 +113,10 @@ const api = async (path, opts) => {
 
   // ---------- 5. REKAP, AKUNTING, PENGELUARAN ----------
   console.log('\n[5] Rekap & akunting');
-  const recap = (await api('/api/admin/recap?month=2026-12', { headers: H })).json;
+  const recap = (await api('/api/admin/recap?month=' + BULAN_UJI, { headers: H })).json;
   check('rekap bulan ini menghitung omzet', recap.totalOmzet >= hargaAsli * 2, 'omzet=' + recap.totalOmzet);
   check('rekap menghitung kwitansi', recap.totalKwitansi >= 1);
-  const xlsx = await api('/api/admin/recap.xlsx?month=2026-12', { headers: H });
+  const xlsx = await api('/api/admin/recap.xlsx?month=' + BULAN_UJI, { headers: H });
   check('export Excel terunduh', xlsx.status === 200 && xlsx.text.length > 1000, xlsx.text.length + ' byte');
   // Tanggal pengeluaran memakai BULAN BERJALAN (WIB) agar benar-benar masuk
   // rentang ringkasan P&L — sebelumnya memakai bulan tetap sehingga cek
@@ -171,11 +177,11 @@ const api = async (path, opts) => {
   check('simpan pengaturan dengan kunci kosong diterima', r.status === 200);
   r = await api('/api/admin/settings', { method: 'PUT', headers: H, body: JSON.stringify({ __proto__: { jahat: 1 } }) });
   check('protesi prototype ditolak', ({}).jahat === undefined);
-  r = await api('/api/admin/settings', { method: 'PUT', headers: H, body: JSON.stringify({ blackout_dates: ['2026-12-24'], blackout_notes: { '2026-12-24': 'Libur audit' } }) });
+  r = await api('/api/admin/settings', { method: 'PUT', headers: H, body: JSON.stringify({ blackout_dates: [tglUji(24)], blackout_notes: { [tglUji(24)]: 'Libur audit' } }) });
   check('simpan hari libur', r.status === 200);
-  r = await api('/api/reservations', { method: 'POST', body: fd({ patient_name: 'Audit Libur', whatsapp: '081200000006', address: 'Alamat audit', payment_method: 'COD', items: JSON.stringify([{ name: layanan, qty: 1 }]), slots: JSON.stringify([{ date: '2026-12-24', time: '09:00' }]) }) });
+  r = await api('/api/reservations', { method: 'POST', body: fd({ patient_name: 'Audit Libur', whatsapp: '081200000006', address: 'Alamat audit', payment_method: 'COD', items: JSON.stringify([{ name: layanan, qty: 1 }]), slots: JSON.stringify([{ date: tglUji(24), time: '09:00' }]) }) });
   check('reservasi di hari libur ditolak', r.status === 400 && /libur/i.test(r.text), r.text.slice(0, 70));
-  r = await api('/api/admin/receipts', { method: 'POST', headers: H, body: JSON.stringify({ patient_name: 'Audit Libur 2', whatsapp: '0812', address: 'x', service_date: '2026-12-24', service_time: '09:00', items: [{ name: layanan, price: hargaAsli, qty: 1 }] }) });
+  r = await api('/api/admin/receipts', { method: 'POST', headers: H, body: JSON.stringify({ patient_name: 'Audit Libur 2', whatsapp: '0812', address: 'x', service_date: tglUji(24), service_time: '09:00', items: [{ name: layanan, price: hargaAsli, qty: 1 }] }) });
   check('kwitansi di hari libur ditolak', r.status === 400 && /libur/i.test(r.text), r.text.slice(0, 70));
   await api('/api/admin/settings', { method: 'PUT', headers: H, body: JSON.stringify({ blackout_dates: [], blackout_notes: {} }) });
 

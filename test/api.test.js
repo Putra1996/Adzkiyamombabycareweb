@@ -89,7 +89,18 @@ test('API menyimpan reservasi, menghitung harga server, dan melindungi admin', {
     form.set('address', 'Alamat pengujian');
     form.set('payment_method', 'COD');
     form.set('items', JSON.stringify([{ name: 'Massage Ibu Hamil', price: 1, qty: 1 }]));
-    form.set('slots', JSON.stringify([{ date: '2026-09-01', time: '09:00' }]));
+    // Tanggal dinamis (+5 hari): tanggal hard-code lama jadi "bom waktu"
+    // setelah server menolak jadwal yang sudah lewat.
+    const futureDate = new Date(Date.now() + 5 * 24 * 3600 * 1000).toISOString().slice(0, 10);
+    form.set('slots', JSON.stringify([{ date: futureDate, time: '09:00' }]));
+
+    // Jadwal yang sudah lewat harus ditolak (sama seperti jalur booking AI).
+    const pastForm = new FormData();
+    for (const [k, v] of form.entries()) pastForm.set(k, v);
+    pastForm.set('slots', JSON.stringify([{ date: '2020-01-02', time: '09:00' }]));
+    const pastResponse = await fetch(`${baseUrl}/api/reservations`, { method: 'POST', body: pastForm });
+    assert.equal(pastResponse.status, 400, 'jadwal yang sudah lewat harus ditolak');
+    assert.match((await pastResponse.json()).error, /sudah lewat/);
 
     const reservationResponse = await fetch(`${baseUrl}/api/reservations`, {
       method: 'POST',
@@ -215,7 +226,7 @@ test('API menyimpan reservasi, menghitung harga server, dan melindungi admin', {
         patient_name: 'Bunda Test',
         whatsapp: '08123456789',
         address: 'Alamat pengujian',
-        service_date: '2026-09-01',
+        service_date: futureDate, // sama dengan jadwal reservasi di atas
         service_time: '09:00',
         items: [{ name: 'Massage Ibu Hamil', price: 80000, qty: 1 }]
       })
