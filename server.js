@@ -106,7 +106,52 @@ const PORT = parseInt(process.env.PORT || '3000', 10);
 const RUNNING_ON_VERCEL = process.env.VERCEL === '1' || process.env.VERCEL === 'true';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 if (IS_PRODUCTION) app.set('trust proxy', 1);
-const JWT_SECRET = process.env.JWT_SECRET || 'adzkiya_local_development_secret';
+// ---- JWT_SECRET berjenjang (mode zero-config) ----
+// Dulu: tanpa JWT_SECRET di production server MENOLAK boot → seluruh /api/*
+// di vercel.app membalas error dan fitur publik (katalog, reservasi,
+// kalender) ikut mati. Sekarang kunci dipilih berjenjang:
+//   1. env JWT_SECRET (production WAJIB ≥32 karakter — nilai pendek tetap
+//      GAGAL KERAS karena itu salah konfigurasi yang berbahaya),
+//   2. turunan HMAC dari DATABASE_URL — stabil di semua instance yang
+//      memakai database yang sama, dan serahasia DATABASE_URL itu sendiri,
+//   3. production tanpa keduanya: kunci ACAK per proses. Token dari satu
+//      instance tidak dikenali instance lain, jadi login admin DITUTUP
+//      (503 + pesan jelas) di platform multi-instance — fitur publik tetap
+//      hidup.
+//   Lokal (non-production): kunci pengembangan tetap seperti sebelumnya.
+function resolveJwtSecret() {
+  const envSecret = String(process.env.JWT_SECRET || '');
+  if (envSecret) {
+    if (IS_PRODUCTION && envSecret.length < 32) {
+      throw new Error('JWT_SECRET production wajib diisi minimal 32 karakter');
+    }
+    return { secret: envSecret, source: 'env' };
+  }
+  const dbUrl = String(process.env.DATABASE_URL || '').trim();
+  if (IS_PRODUCTION && dbUrl) {
+    const derived = crypto.createHmac('sha256', 'adzkiya-jwt-v1').update(dbUrl).digest('hex');
+    return { secret: derived, source: 'database_url' };
+  }
+  if (IS_PRODUCTION) {
+    return { secret: crypto.randomBytes(48).toString('hex'), source: 'random' };
+  }
+  return { secret: 'adzkiya_local_development_secret', source: 'development' };
+}
+const JWT_SECRET_INFO = resolveJwtSecret();
+const JWT_SECRET = JWT_SECRET_INFO.secret;
+// Kunci acak per proses aman untuk satu proses berumur panjang (Railway,
+// VPS), tapi TIDAK di Vercel: request berikutnya bisa mendarat di instance
+// lain yang tidak mengenali token → admin terlempar keluar acak-acakan.
+const ADMIN_LOGIN_BLOCKED_REASON = (JWT_SECRET_INFO.source === 'random' && RUNNING_ON_VERCEL)
+  ? 'Login admin dinonaktifkan sementara: JWT_SECRET belum diisi dan DATABASE_URL tidak ada, ' +
+    'sehingga sesi login tidak aman antar instance. Isi env JWT_SECRET (min. 32 karakter) dan ' +
+    'DATABASE_URL di Vercel → Settings → Environment Variables, lalu Redeploy.'
+  : null;
+if (JWT_SECRET_INFO.source === 'random') {
+  console.warn('[auth] ⚠️  JWT_SECRET belum diisi — memakai kunci acak per proses (sesi admin hilang saat restart).');
+} else if (JWT_SECRET_INFO.source === 'database_url') {
+  console.warn('[auth] ⚠️  JWT_SECRET belum diisi — memakai kunci turunan DATABASE_URL. Disarankan isi JWT_SECRET sendiri.');
+}
 // .trim(): nilai env yang di-paste dari dashboard sering membawa
 // spasi/newline tak terlihat, yang membuat deteksi jenis DB gagal.
 const DATABASE_URL = String(process.env.DATABASE_URL || '').trim();
@@ -114,9 +159,6 @@ const DATABASE_KIND = DATABASE_URL.startsWith('postgres://') || DATABASE_URL.sta
   ? 'postgres'
   : (DATABASE_URL ? 'mysql' : 'file');
 
-if (IS_PRODUCTION && (!process.env.JWT_SECRET || process.env.JWT_SECRET.length < 32)) {
-  throw new Error('JWT_SECRET production wajib diisi minimal 32 karakter');
-}
 
 // ---- DATA LAYER ----
 // Production supports PostgreSQL (Neon, Railway Postgres, etc.) and MySQL/TiDB.
@@ -146,7 +188,9 @@ function detectDataFile() {
     // antar instance/invocation. Tanpa cabang ini, writeFile ke data.json di
     // root selalu gagal (filesystem read-only) sehingga SEMUA penyimpanan
     // mode file gagal diam-diam. Set DATABASE_URL agar data benar-benar aman.
-    return { file: '/tmp/adzkiya-state.json', source: 'Vercel /tmp (ephemeral)', persistent: false };
+    // os.tmpdir() = /tmp di Vercel; memakai os.tmpdir() membuat tes bisa
+    // mengisolasi berkas ini lewat env TMPDIR.
+    return { file: path.join(require('os').tmpdir(), 'adzkiya-state.json'), source: 'Vercel /tmp (ephemeral)', persistent: false };
   }
   return { file: path.join(__dirname, 'data.json'), source: 'filesystem container', persistent: false };
 }
@@ -236,6 +280,31 @@ let runtimeDatabaseKind = null;
 function activeDatabaseUrl() { return runtimeDatabaseUrl || DATABASE_URL; }
 function activeDatabaseKind() { return runtimeDatabaseKind || DATABASE_KIND; }
 
+// Opsi SSL untuk koneksi PostgreSQL. Dulu production SELALU memaksa SSL —
+// PostgreSQL lokal/sidecar (127.0.0.1, sslmode=disable) yang tidak
+// mendukung SSL jadi gagal connect lalu server diam-diam jatuh ke mode
+// file. Aturan sekarang:
+//   • sslmode=disable di URL        → tanpa SSL
+//   • host lokal (localhost/127.x/::1/socket) → tanpa SSL
+//   • selain itu di production      → SSL tanpa verifikasi CA (Neon, Supabase, Render)
+//   • selain itu di pengembangan    → ikuti URL apa adanya
+function pgSslFor(connStr) {
+  const raw = String(connStr || '').trim();
+  let host = '';
+  let sslmode = '';
+  try {
+    const u = new URL(raw);
+    host = String(u.hostname || '').replace(/^\[|\]$/g, '').toLowerCase();
+    sslmode = String(u.searchParams.get('sslmode') || '').toLowerCase();
+  } catch (e) {
+    return IS_PRODUCTION ? { rejectUnauthorized: false } : undefined;
+  }
+  if (sslmode === 'disable') return false;
+  const isLocal = !host || host === 'localhost' || host === '::1' || /^127\./.test(host) || host.startsWith('/');
+  if (isLocal) return false;
+  return IS_PRODUCTION ? { rejectUnauthorized: false } : undefined;
+}
+
 async function probeDatabase() {
   if (activeDatabaseKind() === 'file') return { ok: false, error: 'DATABASE_URL belum diset (mode file)' };
   if (activeDatabaseKind() === 'postgres') {
@@ -243,7 +312,7 @@ async function probeDatabase() {
     try {
       testPool = new PostgresPool({
         connectionString: activeDatabaseUrl(),
-        ssl: IS_PRODUCTION ? { rejectUnauthorized: false } : undefined,
+        ssl: pgSslFor(activeDatabaseUrl()),
         max: 1,
         connectionTimeoutMillis: 8000
       });
@@ -278,7 +347,7 @@ async function openDbPoolAndReadState(connStr, kindOverride) {
   if (kind === 'postgres') {
     const newPool = new PostgresPool({
       connectionString: conn,
-      ssl: IS_PRODUCTION ? { rejectUnauthorized: false } : undefined,
+      ssl: pgSslFor(conn),
       max: 5,
       idleTimeoutMillis: 30000,
       connectionTimeoutMillis: 10000
@@ -499,7 +568,7 @@ async function initStorage() {
     try {
       pool = new PostgresPool({
         connectionString: DATABASE_URL,
-        ssl: IS_PRODUCTION ? { rejectUnauthorized: false } : undefined,
+        ssl: pgSslFor(DATABASE_URL),
         max: 5,
         idleTimeoutMillis: 30000,
         connectionTimeoutMillis: 10000
@@ -538,25 +607,38 @@ async function initStorage() {
       } catch (e) { /* ignore */ }
     }
   } else if (DATABASE_KIND === 'mysql') {
-    pool = mysql.createPool(DATABASE_URL);
-    await pool.execute(`
-      CREATE TABLE IF NOT EXISTS app_state (
-        id INT PRIMARY KEY,
-        data LONGTEXT NOT NULL,
-        rev BIGINT NOT NULL DEFAULT 0,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-      )
-    `);
-    // Tabel lama belum punya kolom rev — MySQL tidak punya ADD COLUMN IF
-    // NOT EXISTS, cek information_schema dulu.
-    const [revCol] = await pool.execute(
-      "SELECT COUNT(*) AS n FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'app_state' AND COLUMN_NAME = 'rev'"
-    );
-    if (!Number(revCol[0].n)) await pool.execute('ALTER TABLE app_state ADD COLUMN rev BIGINT NOT NULL DEFAULT 0');
-    const [rows] = await pool.execute('SELECT data, rev FROM app_state WHERE id = 1');
-    if (rows.length) {
-      DB = JSON.parse(rows[0].data);
-      dbStateRev = Number(rows[0].rev) || 0;
+    // Sama seperti Postgres: MySQL/TiDB yang tidak bisa dihubungi TIDAK boleh
+    // mematikan seluruh situs (dulu boot melempar error → semua /api/* mati).
+    // Jatuh ke mode file sementara + probe berkala, admin tetap bisa masuk.
+    try {
+      pool = mysql.createPool(DATABASE_URL);
+      await pool.execute(`
+        CREATE TABLE IF NOT EXISTS app_state (
+          id INT PRIMARY KEY,
+          data LONGTEXT NOT NULL,
+          rev BIGINT NOT NULL DEFAULT 0,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+        )
+      `);
+      // Tabel lama belum punya kolom rev — MySQL tidak punya ADD COLUMN IF
+      // NOT EXISTS, cek information_schema dulu.
+      const [revCol] = await pool.execute(
+        "SELECT COUNT(*) AS n FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'app_state' AND COLUMN_NAME = 'rev'"
+      );
+      if (!Number(revCol[0].n)) await pool.execute('ALTER TABLE app_state ADD COLUMN rev BIGINT NOT NULL DEFAULT 0');
+      const [rows] = await pool.execute('SELECT data, rev FROM app_state WHERE id = 1');
+      if (rows.length) {
+        DB = JSON.parse(rows[0].data);
+        dbStateRev = Number(rows[0].rev) || 0;
+      }
+    } catch (err) {
+      console.error('[storage] MySQL unreachable, falling back to file mode: ' + sanitizeDbError(err));
+      dbConnectError = sanitizeDbError(err);
+      if (pool) { try { await pool.end(); } catch (e) { /* abaikan */ } }
+      pool = null;
+      try {
+        if (fs.existsSync(DATA_FILE)) DB = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
+      } catch (e) { /* ignore */ }
     }
   } else {
     try {
@@ -932,18 +1014,62 @@ function syncReceiptToReservation(receipt) {
   return rec;
 }
 
-function seedAdmin() {
-  const configuredEmail = (process.env.ADMIN_EMAIL || '').trim().toLowerCase();
-  const configuredPassword = process.env.ADMIN_PASSWORD || '';
-  const email = configuredEmail || (IS_PRODUCTION ? '' : 'admin@adzkiya.id');
-  const password = configuredPassword || (IS_PRODUCTION ? '' : 'admin123');
+// Status akun admin untuk /health & panel (tanpa membocorkan email/password).
+//   'env'        — akun dari ADMIN_EMAIL/ADMIN_PASSWORD
+//   'existing'   — env kosong, memakai akun admin yang sudah tersimpan
+//   'temporary'  — env kosong & belum ada akun: dibuat akun sementara dengan
+//                  password acak yang HANYA tercetak di log deployment
+//   'development'— akun bawaan lokal (admin@adzkiya.id / admin123)
+let adminSeedSource = null;
+const adminSeedWarnings = [];
 
-  if (!email || !password) {
-    throw new Error('ADMIN_EMAIL dan ADMIN_PASSWORD wajib diisi pada production');
+function seedAdmin() {
+  adminSeedWarnings.length = 0;
+  const configuredEmail = (process.env.ADMIN_EMAIL || '').trim().toLowerCase();
+  let configuredPassword = process.env.ADMIN_PASSWORD || '';
+
+  // Mode zero-config: env admin yang tidak lengkap/lemah TIDAK lagi
+  // mematikan seluruh situs (dulu throw → semua /api/* di Vercel error).
+  // Fitur publik tetap jalan; masalahnya dilaporkan di log & /health.
+  if (IS_PRODUCTION && configuredPassword && configuredPassword.length < 12) {
+    adminSeedWarnings.push('ADMIN_PASSWORD kurang dari 12 karakter sehingga diabaikan — isi minimal 12 karakter lalu Redeploy.');
+    console.warn('[auth] ⚠️  ADMIN_PASSWORD production kurang dari 12 karakter — DIABAIKAN demi keamanan.');
+    configuredPassword = '';
   }
-  if (IS_PRODUCTION && password.length < 12) {
-    throw new Error('ADMIN_PASSWORD production wajib minimal 12 karakter');
+  if (IS_PRODUCTION && (!configuredEmail || !configuredPassword)) {
+    if (configuredEmail || configuredPassword) {
+      adminSeedWarnings.push('ADMIN_EMAIL dan ADMIN_PASSWORD harus diisi berpasangan.');
+    }
+    const existingAny = (DB.admins || []).find((a) => a && a.email && a.password_hash);
+    if (existingAny) {
+      adminSeedSource = 'existing';
+      console.warn('[auth] ⚠️  ADMIN_EMAIL/ADMIN_PASSWORD belum diisi — memakai akun admin yang sudah tersimpan.');
+      return;
+    }
+    const tempEmail = configuredEmail || 'admin@adzkiya.id';
+    const tempPassword = crypto.randomBytes(12).toString('base64url');
+    DB.admins.push({
+      id: nextId('admins'),
+      email: tempEmail,
+      password_hash: bcrypt.hashSync(tempPassword, 12),
+      name: process.env.ADMIN_NAME || 'Tasya Hanifah',
+      role: 'super',
+      temporary: true,
+      created_at: new Date().toISOString()
+    });
+    adminSeedSource = 'temporary';
+    console.warn('==================================================================');
+    console.warn('[auth] ⚠️  ADMIN_EMAIL/ADMIN_PASSWORD belum diisi. Akun admin SEMENTARA dibuat:');
+    console.warn('[auth]     email    : ' + tempEmail);
+    console.warn('[auth]     password : ' + tempPassword);
+    console.warn('[auth]     Segera login & ganti password, atau isi env ADMIN_EMAIL + ADMIN_PASSWORD lalu Redeploy.');
+    console.warn('==================================================================');
+    return;
   }
+
+  const email = configuredEmail || 'admin@adzkiya.id';
+  const password = configuredPassword || 'admin123';
+  adminSeedSource = (configuredEmail && configuredPassword) ? 'env' : 'development';
 
   const existing = DB.admins.find((admin) => admin.email.toLowerCase() === email);
   if (existing) {
@@ -1202,6 +1328,7 @@ async function boot() {
 // (server biasa / instance Fluid yang tetap hangat). Guard bgJobsStarted
 // membuatnya aman dipanggil berulang kali dari api/index.js.
 let bgJobsStarted = false;
+function unrefTimer(t) { if (t && typeof t.unref === 'function') t.unref(); return t; }
 function startBackgroundJobs() {
   if (bgJobsStarted) return;
   bgJobsStarted = true;
@@ -1231,8 +1358,9 @@ function startBackgroundJobs() {
         }
       } catch (e) { console.error('[reminder] error:', sanitizeAIError(e)); }
     };
-    setTimeout(autoSend, 25000);
-    setInterval(autoSend, 5 * 60 * 1000);
+    // unref: timer latar tidak boleh menahan proses (instance Vercel/tes).
+    unrefTimer(setTimeout(autoSend, 25000));
+    unrefTimer(setInterval(autoSend, 5 * 60 * 1000));
   }
   // PERINGATAN STOK MENIPIS (lihat bagian BUKU STOK): dicek tiap 30
   // menit, dikirim ke WhatsApp admin/supplier hanya bila benar-benar ada
@@ -1249,20 +1377,20 @@ function startBackgroundJobs() {
       recordAIError(e);
     }
   };
-  setTimeout(autoStockAlert, 45000);
-  setInterval(autoStockAlert, 30 * 60 * 1000);
+  unrefTimer(setTimeout(autoStockAlert, 45000));
+  unrefTimer(setInterval(autoStockAlert, 30 * 60 * 1000));
   // Pemanasan AI (tidak memblokir boot): siapkan daftar model & prompt
   // sistem di latar belakang supaya pesan pertama pengunjung tidak
   // menanggung biaya tambahan apa pun.
   if (DB.settings && DB.settings.ai_gemini_api_key) {
-    setTimeout(() => {
+    unrefTimer(setTimeout(() => {
       try {
         buildAISystemPrompt();
         resolveGeminiModel(DB.settings.ai_gemini_api_key, { force: true })
           .then((m) => { if (m) console.log('[ai] Model siap dipakai: ' + m); })
           .catch((e) => console.warn('[ai] Pemanasan model gagal: ' + sanitizeAIError(e)));
       } catch (e) { /* pemanasan bersifat opsional */ }
-    }, 2000);
+    }, 2000));
   }
 }
 
@@ -1728,8 +1856,45 @@ app.use('/api/', apiLimiter);
 // supaya bisa dibedakan antara "memang pakai file" dan "DATABASE_URL
 // diisi tapi DB gagal connect saat boot" — dulu keduanya tampil
 // sebagai "file", yang bikin data hilang tanpa jejak sulit ditelusuri.
-app.get('/health', (req, res) => res.json({
+// ---- Diagnostik konfigurasi (mode zero-config) ----
+// Situs tetap hidup tanpa env apa pun; yang kurang dilaporkan di sini
+// (tanpa rahasia) supaya pemilik tahu apa yang perlu diisi di Vercel.
+function storageIsEphemeral() {
+  return !pool && !DATA_FILE_INFO.persistent && (IS_PRODUCTION || RUNNING_ON_VERCEL);
+}
+function adminLoginStatus() {
+  if (ADMIN_LOGIN_BLOCKED_REASON) return 'disabled';
+  if (adminSeedSource === 'temporary') return 'temporary';
+  if (adminSeedSource === 'existing') return 'existing';
+  return adminSeedSource || 'enabled'; // 'env' | 'development'
+}
+function configWarnings() {
+  const out = [];
+  if (storageIsEphemeral()) {
+    out.push(DATABASE_KIND === 'file'
+      ? 'DATABASE_URL belum diisi: data reservasi hanya tersimpan sementara dan bisa hilang. Isi DATABASE_URL (PostgreSQL) agar permanen.'
+      : 'DATABASE_URL tidak bisa dihubungi: data sementara disimpan di file dan bisa hilang. Periksa DATABASE_URL.');
+  }
+  if (JWT_SECRET_INFO.source === 'random') {
+    out.push('JWT_SECRET belum diisi: memakai kunci acak per proses' +
+      (ADMIN_LOGIN_BLOCKED_REASON ? ' sehingga login admin dinonaktifkan (503).' : ' sehingga sesi admin hilang saat restart.'));
+  } else if (JWT_SECRET_INFO.source === 'database_url') {
+    out.push('JWT_SECRET belum diisi: memakai kunci turunan DATABASE_URL. Disarankan isi JWT_SECRET (min. 32 karakter).');
+  }
+  if (adminSeedSource === 'temporary') {
+    out.push('ADMIN_EMAIL/ADMIN_PASSWORD belum diisi: akun admin sementara dibuat, password ada di log deployment.');
+  } else if (adminSeedSource === 'existing' && IS_PRODUCTION) {
+    out.push('ADMIN_EMAIL/ADMIN_PASSWORD belum diisi: memakai akun admin yang sudah tersimpan.');
+  }
+  for (const w of adminSeedWarnings) if (!out.includes(w)) out.push(w);
+  return out;
+}
+
+app.get(['/health', '/api/health'], (req, res) => res.json({
   ok: true,
+  warnings: configWarnings(),
+  admin_login: adminLoginStatus(),
+  jwt_secret_source: JWT_SECRET_INFO.source,
   storage: pool ? activeDatabaseKind() : 'file',
   configured_storage: DATABASE_KIND,
   db_connected: !!pool,
@@ -1950,6 +2115,13 @@ app.post('/api/reservations', reservationLimiter, upload.single('proof'), (req, 
     if (slots.length !== beforeDedupe && !slots.length) {
       return res.status(400).json({ error: 'Jadwal tidak valid' });
     }
+    // Tanggal yang sudah lewat (menurut WIB) ditolak — sama seperti jalur
+    // booking AI. Dulu formulir publik menerimanya sehingga reservasi
+    // "kemarin" masuk antrean admin dan pengingat tidak pernah terkirim.
+    const todayWib = todayJakarta();
+    if (slots.some((slot) => slot.date < todayWib)) {
+      return res.status(400).json({ error: 'Tanggal jadwal sudah lewat. Silakan pilih tanggal hari ini atau setelahnya.' });
+    }
 
     // Bentrok jadwal: bidan tidak bisa di dua rumah pada jam yang sama dan
     // butuh waktu perjalanan. Mode 'block' menolak, 'warn' tetap menerima
@@ -2017,7 +2189,13 @@ app.post('/api/reservations', reservationLimiter, upload.single('proof'), (req, 
     save();
     res.status(201).json({
       ok: true, id, total,
-      schedule_warning: conflicts.length ? describeConflicts(conflicts) : null
+      schedule_warning: conflicts.length ? describeConflicts(conflicts) : null,
+      // Mode zero-config tanpa database: reservasi diterima, tapi pasien
+      // diminta konfirmasi juga lewat WhatsApp supaya tidak ada pesanan
+      // yang terlewat bila penyimpanan sementara ter-reset.
+      storage_warning: storageIsEphemeral()
+        ? 'Reservasi Anda sudah kami terima. Sistem sedang memakai penyimpanan sementara, jadi mohon konfirmasi juga lewat WhatsApp agar jadwal Anda pasti tercatat.'
+        : null
     });
   } catch (error) {
     console.error(error);
@@ -2075,6 +2253,9 @@ const loginCleanupTimer = setInterval(() => {
 }, 30 * 60 * 1000);
 if (loginCleanupTimer.unref) loginCleanupTimer.unref();
 app.post('/api/auth/login', authLimiter, (req, res) => {
+  if (ADMIN_LOGIN_BLOCKED_REASON) {
+    return res.status(503).json({ error: ADMIN_LOGIN_BLOCKED_REASON, code: 'ADMIN_LOGIN_UNAVAILABLE' });
+  }
   const key = req.ip;
   const now = Date.now();
   const current = loginAttempts.get(key) || { count: 0, resetAt: now + 15 * 60 * 1000 };
@@ -6569,7 +6750,7 @@ app.post('/api/admin/storage/test-connection', auth, async (req, res) => {
     if (built.kind === 'postgres') {
       const testPool = new PostgresPool({
         connectionString: built.conn,
-        ssl: IS_PRODUCTION ? { rejectUnauthorized: false } : (req.body && req.body.ssl === false ? undefined : { rejectUnauthorized: false }),
+        ssl: IS_PRODUCTION ? pgSslFor(built.conn) : (req.body && req.body.ssl === false ? undefined : { rejectUnauthorized: false }),
         max: 1,
         connectionTimeoutMillis: 10000
       });
@@ -7210,6 +7391,9 @@ app.put('/api/admin/profile', auth, (req, res) => {
     }
 
     Object.assign(admin, updates);
+    // Akun sementara (mode zero-config) berubah jadi akun biasa begitu
+    // password acaknya diganti pemilik.
+    if (updates.password_hash && admin.temporary) delete admin.temporary;
     save();
 
     // Return the updated admin record so the client can refresh its

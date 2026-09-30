@@ -395,6 +395,15 @@ document.getElementById('reservasiForm').addEventListener('submit', async (e) =>
     alertBox.innerHTML = `<div class="alert alert-success">
       ${window.t('form.success_top', { id: data.id, total: fmtRp(data.total) })}
     </div>`;
+    // Peringatan dari server (jadwal berdekatan / penyimpanan sementara)
+    // ditampilkan apa adanya — di-escape karena berasal dari respons API.
+    const escHtml = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    if (data.schedule_warning) {
+      alertBox.innerHTML += `<div class="alert alert-warning" data-role="schedule-warning">⏰ ${escHtml(data.schedule_warning)}</div>`;
+    }
+    if (data.storage_warning) {
+      alertBox.innerHTML += `<div class="alert alert-warning" data-role="storage-warning">⚠️ ${escHtml(data.storage_warning)}</div>`;
+    }
     setTimeout(() => {
       const phone = (SETTINGS.phone || '085887018194').replace(/\D/g,'').replace(/^0/, '62');
       const wa = `https://wa.me/${phone}?text=${encodeURIComponent('Halo Admin, saya baru saja reservasi #' + data.id + ' atas nama ' + fd.get('patient_name'))}`;

@@ -8,6 +8,15 @@ const bad = (l, e) => { fail++; masalah.push(l + (e ? ' — ' + e : '')); consol
 const check = (l, c, e) => c ? ok(l, e) : bad(l, e);
 const api = async (p, o) => { const r = await fetch(BASE + p, o); const t = await r.text(); let j = null; try { j = JSON.parse(t); } catch {} return { status: r.status, json: j, text: t, headers: r.headers }; };
 
+// Tanggal relatif (WIB) untuk data yang WAJIB di masa depan (reservasi
+// publik & booking AI menolak tanggal lewat). Tanggal hard-code dulu
+// membuat audit gagal begitu kalender melewatinya.
+const hari = (n) => new Date(Date.now() + 7 * 3600 * 1000 + n * 24 * 3600 * 1000).toISOString().slice(0, 10);
+const TGL_BOOKING = hari(7);
+const BULAN_BOOKING = TGL_BOOKING.slice(0, 7);
+const TGL_BAYAR = hari(8);
+const TGL_SLOT = hari(20);
+
 const PNG_1x1 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==';
 
 (async () => {
@@ -90,7 +99,7 @@ const PNG_1x1 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8D
 
   console.log('\n[19] AI booking (blok) end-to-end');
   const waWebhookPayload = { entry: [{ changes: [{ value: { messages: [{ from: '6281200009999', type: 'text', text: { body: 'BOOKNOW' } }], contacts: [{ wa_id: '6281200009999', profile: { name: 'Bunda WA' } }] } }] }] };
-  const bookingInfo = { patient_name: 'Bunda Booking', whatsapp: '081200001234', address: 'Alamat booking otomatis', items: [{ name: layanan, qty: 1 }], slots: [{ date: '2026-09-29', time: '13:00' }] };
+  const bookingInfo = { patient_name: 'Bunda Booking', whatsapp: '081200001234', address: 'Alamat booking otomatis', items: [{ name: layanan, qty: 1 }], slots: [{ date: TGL_BOOKING, time: '13:00' }] };
   // Kirim lewat chat web dengan pesan penanda; stub AI menjawab blok bila pesan memuat BOOKBLOCK
   const aiReply = await api('/api/ai/chat', { method: 'POST', headers: H, body: JSON.stringify({ message: 'BOOKBLOCK ' + JSON.stringify(bookingInfo), session_id: 'audit-booking' }) });
   check('chat memproses blok booking', aiReply.status === 200 && aiReply.json.booking && aiReply.json.booking.created === true, JSON.stringify(aiReply.json.booking));
@@ -106,7 +115,7 @@ const PNG_1x1 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8D
     await api('/api/admin/reservations/' + bk.id, { method: 'PATCH', headers: H, body: JSON.stringify({ status: 'approved', payment_status: 'lunas' }) });
     const cal = (await api('/api/calendar')).json;
     check('reservasi AI masuk kalender publik setelah approve', cal.some((e) => e.id === bk.id));
-    const recap = (await api('/api/admin/recap?month=2026-09', { headers: H })).json;
+    const recap = (await api('/api/admin/recap?month=' + BULAN_BOOKING, { headers: H })).json;
     check('reservasi AI ikut terhitung di rekap bulanan', recap.totalOmzet >= harga, 'omzet=' + recap.totalOmzet);
     const notif = (await api('/api/admin/notifications?since=0', { headers: H })).json;
     check('notifikasi admin memuat reservasi AI', notif.new.some((x) => x.id === bk.id));
@@ -120,14 +129,14 @@ const PNG_1x1 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8D
   check('percakapan WA tercatat di log AI', aiLogs.length >= 1, aiLogs.length + ' pesan');
 
   console.log('\n[21] Integrasi: kwitansi -> reservasi mirror -> rekap');
-  const kw = await api('/api/admin/receipts', { method: 'POST', headers: H, body: JSON.stringify({ patient_name: 'Audit Mirror', whatsapp: '081200007777', address: 'Alamat mirror', service_date: '2026-09-18', service_time: '15:00', items: [{ name: layanan, price: harga, qty: 1 }] }) });
+  const kw = await api('/api/admin/receipts', { method: 'POST', headers: H, body: JSON.stringify({ patient_name: 'Audit Mirror', whatsapp: '081200007777', address: 'Alamat mirror', service_date: TGL_BOOKING, service_time: '15:00', items: [{ name: layanan, price: harga, qty: 1 }] }) });
   const daftarRes = (await api('/api/admin/reservations', { headers: H })).json;
   const mirror = daftarRes.find((x) => x.patient_name === 'Audit Mirror');
   check('kwitansi membuat reservasi mirror', !!mirror, mirror ? 'status=' + mirror.status + ' bayar=' + mirror.payment_status : '(tidak ada)');
   check('mirror berstatus approved & lunas', mirror && mirror.status === 'approved' && mirror.payment_status === 'lunas');
-  const recap2 = (await api('/api/admin/recap?month=2026-09', { headers: H })).json;
+  const recap2 = (await api('/api/admin/recap?month=' + BULAN_BOOKING, { headers: H })).json;
   check('omzet rekap bertambah dari kwitansi', recap2.totalOmzet >= harga * 2, 'omzet=' + recap2.totalOmzet);
-  const kwKe2 = await api('/api/admin/receipts', { method: 'POST', headers: H, body: JSON.stringify({ patient_name: 'Audit Mirror', whatsapp: '081200007777', address: 'Alamat mirror', service_date: '2026-09-18', service_time: '15:00', items: [{ name: layanan, price: harga, qty: 1 }] }) });
+  const kwKe2 = await api('/api/admin/receipts', { method: 'POST', headers: H, body: JSON.stringify({ patient_name: 'Audit Mirror', whatsapp: '081200007777', address: 'Alamat mirror', service_date: TGL_BOOKING, service_time: '15:00', items: [{ name: layanan, price: harga, qty: 1 }] }) });
   const daftarRes2 = (await api('/api/admin/reservations', { headers: H })).json;
   check('kwitansi kembar tidak menggandakan reservasi', daftarRes2.filter((x) => x.patient_name === 'Audit Mirror').length === 1);
 
@@ -135,9 +144,9 @@ const PNG_1x1 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8D
   // ada harus ditandai lunas (dulu kwitansinya diam-diam dilewati sehingga
   // pendapatan yang benar-benar diterima tidak masuk Rekap/P&L).
   const fdBayar = (f) => { const x = new FormData(); Object.entries(f).forEach(([k, v]) => x.set(k, v)); return x; };
-  const resBayar = await api('/api/reservations', { method: 'POST', body: fdBayar({ patient_name: 'Audit Bayar', whatsapp: '081200000099', address: 'Alamat audit', payment_method: 'COD', items: JSON.stringify([{ name: layanan, qty: 1 }]), slots: JSON.stringify([{ date: '2026-09-19', time: '09:00' }]) }) });
+  const resBayar = await api('/api/reservations', { method: 'POST', body: fdBayar({ patient_name: 'Audit Bayar', whatsapp: '081200000099', address: 'Alamat audit', payment_method: 'COD', items: JSON.stringify([{ name: layanan, qty: 1 }]), slots: JSON.stringify([{ date: TGL_BAYAR, time: '09:00' }]) }) });
   const resBayarId = resBayar.json && resBayar.json.id;
-  await api('/api/admin/receipts', { method: 'POST', headers: H, body: JSON.stringify({ patient_name: 'Audit Bayar', whatsapp: '081200000099', address: 'Alamat audit', service_date: '2026-09-19', service_time: '09:00', items: [{ name: layanan, price: harga, qty: 1 }] }) });
+  await api('/api/admin/receipts', { method: 'POST', headers: H, body: JSON.stringify({ patient_name: 'Audit Bayar', whatsapp: '081200000099', address: 'Alamat audit', service_date: TGL_BAYAR, service_time: '09:00', items: [{ name: layanan, price: harga, qty: 1 }] }) });
   const resSetelah = (await api('/api/admin/reservations', { headers: H })).json.filter((x) => x.patient_name === 'Audit Bayar');
   check('kwitansi untuk booking yang sudah ada tidak menggandakan reservasi', resSetelah.length === 1, resSetelah.length + ' reservasi');
   check('kwitansi menandai reservasi itu lunas (omzet tidak hilang)', !!resSetelah[0] && resSetelah[0].payment_status === 'lunas' && resSetelah[0].status === 'approved', resSetelah[0] ? resSetelah[0].payment_status : '-');
@@ -145,26 +154,26 @@ const PNG_1x1 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8D
 
   console.log('\n[22] Jadwal bentrok, paket sesi, pengingat, PWA (fitur baru)');
   await api('/api/admin/settings', { method: 'PUT', headers: H, body: JSON.stringify({ session_duration_minutes: 60, travel_buffer_minutes: 30, scheduling_mode: 'warn', max_sessions_per_day: 4 }) });
-  const av = (await api('/api/availability?date=2026-10-20')).json;
+  const av = (await api('/api/availability?date=' + TGL_SLOT)).json;
   check('endpoint ketersediaan jadwal', av && Array.isArray(av.free_slots) && typeof av.sessions_today === 'number', 'kosong=' + (av && av.free_slots.length));
   const fd2 = (f) => { const x = new FormData(); Object.entries(f).forEach(([k, v]) => x.set(k, v)); return x; };
-  let rb = await api('/api/reservations', { method: 'POST', body: fd2({ patient_name: 'Audit Slot A', whatsapp: '081299900001', address: 'Alamat audit', payment_method: 'COD', items: JSON.stringify([{ name: layanan, qty: 1 }]), slots: JSON.stringify([{ date: '2026-10-20', time: '09:00' }]) }) });
+  let rb = await api('/api/reservations', { method: 'POST', body: fd2({ patient_name: 'Audit Slot A', whatsapp: '081299900001', address: 'Alamat audit', payment_method: 'COD', items: JSON.stringify([{ name: layanan, qty: 1 }]), slots: JSON.stringify([{ date: TGL_SLOT, time: '09:00' }]) }) });
   check('slot pertama diterima', rb.status === 201, 'status ' + rb.status);
-  rb = await api('/api/reservations', { method: 'POST', body: fd2({ patient_name: 'Audit Slot B', whatsapp: '081299900002', address: 'Alamat audit', payment_method: 'COD', items: JSON.stringify([{ name: layanan, qty: 1 }]), slots: JSON.stringify([{ date: '2026-10-20', time: '09:15' }]) }) });
+  rb = await api('/api/reservations', { method: 'POST', body: fd2({ patient_name: 'Audit Slot B', whatsapp: '081299900002', address: 'Alamat audit', payment_method: 'COD', items: JSON.stringify([{ name: layanan, qty: 1 }]), slots: JSON.stringify([{ date: TGL_SLOT, time: '09:15' }]) }) });
   check('slot bentrok diberi peringatan (mode warn)', rb.status === 201 && !!rb.json.schedule_warning, (rb.json && rb.json.schedule_warning || '').slice(0, 60));
   await api('/api/admin/settings', { method: 'PUT', headers: H, body: JSON.stringify({ scheduling_mode: 'block' }) });
-  rb = await api('/api/reservations', { method: 'POST', body: fd2({ patient_name: 'Audit Slot C', whatsapp: '081299900003', address: 'Alamat audit', payment_method: 'COD', items: JSON.stringify([{ name: layanan, qty: 1 }]), slots: JSON.stringify([{ date: '2026-10-20', time: '09:20' }]) }) });
+  rb = await api('/api/reservations', { method: 'POST', body: fd2({ patient_name: 'Audit Slot C', whatsapp: '081299900003', address: 'Alamat audit', payment_method: 'COD', items: JSON.stringify([{ name: layanan, qty: 1 }]), slots: JSON.stringify([{ date: TGL_SLOT, time: '09:20' }]) }) });
   check('mode block menolak slot bentrok (409)', rb.status === 409, 'status ' + rb.status);
   await api('/api/admin/settings', { method: 'PUT', headers: H, body: JSON.stringify({ scheduling_mode: 'warn' }) });
 
   const paket2 = (svc2.flatMap((c) => c.items).find((i) => /(\d+)\s*(Days?|x)\b/i.test(i.name)) || {}).name || layanan;
-  const kwPkg = await api('/api/admin/receipts', { method: 'POST', headers: H, body: JSON.stringify({ patient_name: 'Audit Paket', whatsapp: '081299900004', address: 'Alamat audit', service_date: '2026-10-21', service_time: '09:00', items: [{ name: paket2, price: 100000, qty: 1 }] }) });
+  const kwPkg = await api('/api/admin/receipts', { method: 'POST', headers: H, body: JSON.stringify({ patient_name: 'Audit Paket', whatsapp: '081299900004', address: 'Alamat audit', service_date: hari(21), service_time: '09:00', items: [{ name: paket2, price: 100000, qty: 1 }] }) });
   check('kwitansi paket membuat catatan sisa sesi', !!(kwPkg.json && kwPkg.json.package_created), JSON.stringify(kwPkg.json && kwPkg.json.package_created));
   const pk = (await api('/api/admin/packages?status=active', { headers: H })).json;
   const myPkg = (pk.packages || []).find((p) => p.patient_name === 'Audit Paket');
   check('paket tampil dengan sisa sesi', !!myPkg, myPkg ? ('sisa ' + myPkg.remaining_sessions + '/' + myPkg.total_sessions) : '-');
   if (myPkg) {
-    const use = await api('/api/admin/packages/' + myPkg.id + '/use', { method: 'POST', headers: H, body: JSON.stringify({ date: '2026-10-22' }) });
+    const use = await api('/api/admin/packages/' + myPkg.id + '/use', { method: 'POST', headers: H, body: JSON.stringify({ date: hari(22) }) });
     check('pakai 1 sesi mengurangi sisa', use.status === 200 && use.json.remaining_sessions === myPkg.remaining_sessions - 1, 'sisa=' + use.json.remaining_sessions);
     const undo = await api('/api/admin/packages/' + myPkg.id + '/undo', { method: 'POST', headers: H, body: '{}' });
     check('batalkan sesi mengembalikan sisa', undo.json.remaining_sessions === myPkg.remaining_sessions);
@@ -242,7 +251,7 @@ const PNG_1x1 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8D
 
   // --- pemakaian dari reservasi ---
   const fdStok = (f) => { const x = new FormData(); Object.entries(f).forEach(([k, v]) => x.set(k, v)); return x; };
-  const resStok = await api('/api/reservations', { method: 'POST', body: fdStok({ patient_name: 'Audit Stok', whatsapp: '081299900123', address: 'Alamat audit', payment_method: 'COD', items: JSON.stringify([{ name: layanan, qty: 1 }]), slots: JSON.stringify([{ date: '2026-11-02', time: '09:00' }]) }) });
+  const resStok = await api('/api/reservations', { method: 'POST', body: fdStok({ patient_name: 'Audit Stok', whatsapp: '081299900123', address: 'Alamat audit', payment_method: 'COD', items: JSON.stringify([{ name: layanan, qty: 1 }]), slots: JSON.stringify([{ date: hari(33), time: '09:00' }]) }) });
   check('reservasi uji pemakaian bahan dibuat', resStok.status === 201, 'status ' + resStok.status);
   const resStokId = resStok.json && resStok.json.id;
   const pending = (await api('/api/admin/supplies/pending-uses?days=3650', { headers: H })).json;

@@ -156,3 +156,168 @@ test('Dua instance PostgreSQL: tulisan A tidak tertimpa tulisan B (dan sebalikny
   assert.ok(!/save gagal/.test(a._logs()), 'log A bersih:\n' + a._logs().slice(-800));
   assert.ok(!/save gagal/.test(b._logs()), 'log B bersih:\n' + b._logs().slice(-800));
 });
+
+async function resetPg() {
+  const { Client } = require('pg');
+  const cleaner = new Client({ connectionString: TEST_PG_URL });
+  await cleaner.connect();
+  await cleaner.query('DROP TABLE IF EXISTS app_state');
+  await cleaner.query('DROP TABLE IF EXISTS share_tokens');
+  await cleaner.end();
+}
+
+async function stopAll(children) {
+  for (const c of children) {
+    if (c.exitCode === null) {
+      c.kill('SIGTERM');
+      await Promise.race([new Promise((r) => c.once('exit', r)), new Promise((r) => setTimeout(r, 5000))]);
+    }
+  }
+}
+
+function futureDate(days) {
+  return new Date(Date.now() + days * 24 * 3600 * 1000).toISOString().slice(0, 10);
+}
+
+async function postReservation(base, name, wa, date, time) {
+  const r = await fetch(base + '/api/reservations', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      patient_name: name, whatsapp: wa, address: 'Jl. Uji Konflik 1',
+      payment_method: 'COD',
+      items: JSON.stringify([{ name: 'Massage Ibu Hamil', qty: 1 }]),
+      slots: JSON.stringify([{ date, time }])
+    })
+  });
+  assert.equal(r.status, 201, 'reservasi ' + name + ' diterima');
+  return r.json();
+}
+
+async function readBlob() {
+  const { Client } = require('pg');
+  const c = new Client({ connectionString: TEST_PG_URL });
+  await c.connect();
+  try {
+    const r = await c.query('SELECT data, rev FROM app_state WHERE id = 1');
+    return r.rows.length ? { state: r.rows[0].data, rev: Number(r.rows[0].rev) } : null;
+  } finally { await c.end(); }
+}
+
+async function waitForBlob(pred, label) {
+  const deadline = Date.now() + 10000;
+  let last = null;
+  while (Date.now() < deadline) {
+    last = await readBlob();
+    if (last && pred(last)) return last;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  throw new Error('Timeout menunggu ' + label + ': ' + JSON.stringify(last && { rev: last.rev, n: (last.state.reservations || []).length }));
+}
+
+// Konflik DETERMINISTIK: tidak bergantung timing refresh/TTL. Tulisan
+// "instance lain" disuntikkan langsung ke database (rev + 1) sementara
+// memori instance A masih memegang rev lama. Tulisan A berikutnya PASTI
+// ditolak conditional write (STORAGE_WRITE_CONFLICT) → A wajib memuat
+// ulang, menggabungkan, dan menulis ulang tanpa kehilangan data siapa pun.
+// Sekaligus membuktikan NODE_ENV=production bisa memakai PostgreSQL lokal
+// tanpa SSL (dulu SSL dipaksakan → gagal connect → diam-diam mode file).
+test('Konflik tulisan deterministik: tulisan instance lain tidak tertimpa (production + PG lokal tanpa SSL)', { timeout: 90000, skip: !TEST_PG_URL && 'butuh env TEST_PG_URL (PostgreSQL uji)' }, async (t) => {
+  await resetPg();
+  const port = await freePort();
+  const base = `http://127.0.0.1:${port}`;
+  const a = startServer(port, { DATA_FILE: '', NODE_ENV: 'production' });
+  t.after(() => stopAll([a]));
+
+  const h = await waitForHealth(base, a, 'A');
+  assert.equal(h.storage, 'postgres', 'production harus tetap connect ke PG lokal: ' + JSON.stringify(h));
+  assert.equal(h.db_connected, true);
+
+  const date = futureDate(4);
+  await postReservation(base, 'Bunda Pertama', '081200000041', date, '09:00');
+  const before = await waitForBlob((b) => (b.state.reservations || []).some((r) => r.patient_name === 'Bunda Pertama'), 'reservasi pertama');
+
+  // Suntikkan tulisan "instance lain" langsung ke database.
+  const injected = before.state;
+  injected._seq = injected._seq || {};
+  const nextId = (injected._seq.reservations || 0) + 1;
+  injected._seq.reservations = nextId;
+  injected.reservations.push({
+    id: nextId, patient_name: 'Bunda Instance Lain', whatsapp: '6281200000042', address: 'Jl. Lain',
+    items: [{ name: 'Massage Ibu Hamil', price: 80000, qty: 1 }], slots: [{ date, time: '11:00' }],
+    total: 80000, reservation_date: date, reservation_time: '11:00', payment_method: 'COD',
+    status: 'pending', payment_status: 'unpaid', created_at: new Date().toISOString()
+  });
+  {
+    const { Client } = require('pg');
+    const c = new Client({ connectionString: TEST_PG_URL });
+    await c.connect();
+    const r = await c.query('UPDATE app_state SET data = $1::jsonb, rev = rev + 1 WHERE id = 1 AND rev = $2 RETURNING rev', [JSON.stringify(injected), before.rev]);
+    await c.end();
+    assert.equal(r.rowCount, 1, 'injeksi harus sukses');
+  }
+  const injectedRev = before.rev + 1;
+
+  // A menulis dengan rev basi (POST tidak melewati refresh bacaan).
+  await postReservation(base, 'Bunda Ketiga', '081200000043', date, '14:00');
+
+  const after = await waitForBlob((b) => b.rev > injectedRev && (b.state.reservations || []).some((r) => r.patient_name === 'Bunda Ketiga'), 'tulisan A setelah konflik');
+  const names = after.state.reservations.map((r) => r.patient_name).sort();
+  assert.deepEqual(names, ['Bunda Instance Lain', 'Bunda Ketiga', 'Bunda Pertama'], 'tidak ada tulisan yang hilang');
+  const ids = after.state.reservations.map((r) => r.id);
+  assert.equal(new Set(ids).size, ids.length, 'ID unik setelah merge: ' + JSON.stringify(ids));
+  assert.ok(after.state._seq.reservations >= Math.max(...ids), '_seq tidak mundur');
+
+  // Memori A juga harus melihat tulisan instance lain (hasil merge dimuat balik).
+  const login = await fetch(base + '/api/auth/login', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: 'admin@test.local', password: 'very-secure-test-password' })
+  });
+  assert.equal(login.status, 200);
+  const { token } = await login.json();
+  const rows = await (await fetch(base + '/api/admin/reservations', { headers: { Authorization: 'Bearer ' + token } })).json();
+  assert.deepEqual(rows.map((r) => r.patient_name).sort(), names);
+  assert.ok(!/save gagal/.test(a._logs()), 'log A bersih:\n' + a._logs().slice(-800));
+});
+
+// Zero-config dengan HANYA DATABASE_URL (tanpa JWT_SECRET/ADMIN_*): kunci
+// JWT diturunkan dari DATABASE_URL sehingga SAMA di semua instance, akun
+// admin sementara dibuat sekali lalu dipakai ulang instance berikutnya,
+// dan token dari instance A diterima instance B.
+test('Zero-config + DATABASE_URL: kunci JWT turunan sama antar instance, admin sementara dipakai ulang', { timeout: 90000, skip: !TEST_PG_URL && 'butuh env TEST_PG_URL (PostgreSQL uji)' }, async (t) => {
+  await resetPg();
+  const noEnv = { DATA_FILE: '', NODE_ENV: 'production', JWT_SECRET: '', ADMIN_EMAIL: '', ADMIN_PASSWORD: '' };
+  const portA = await freePort();
+  const portB = await freePort();
+  const baseA = `http://127.0.0.1:${portA}`;
+  const baseB = `http://127.0.0.1:${portB}`;
+  const a = startServer(portA, noEnv);
+  t.after(() => stopAll([a]));
+  const hA = await waitForHealth(baseA, a, 'A');
+  assert.equal(hA.storage, 'postgres');
+  assert.equal(hA.jwt_secret_source, 'database_url');
+  assert.equal(hA.admin_login, 'temporary');
+  const m = a._logs().match(/password : (\S+)/);
+  assert.ok(m, 'password sementara tercetak di log A');
+
+  // Instance B menyala SETELAH A menyimpan akun → memakai akun yang sama.
+  const b = startServer(portB, noEnv);
+  t.after(() => stopAll([b]));
+  const hB = await waitForHealth(baseB, b, 'B');
+  assert.equal(hB.jwt_secret_source, 'database_url');
+  assert.equal(hB.admin_login, 'existing');
+  assert.ok(!/password : /.test(b._logs()), 'B tidak boleh membuat akun sementara baru');
+
+  const login = await fetch(baseA + '/api/auth/login', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: 'admin@adzkiya.id', password: m[1] })
+  });
+  assert.equal(login.status, 200);
+  const { token } = await login.json();
+  const onB = await fetch(baseB + '/api/admin/reservations', { headers: { Authorization: 'Bearer ' + token } });
+  assert.equal(onB.status, 200, 'token dari A harus diterima B (kunci turunan sama)');
+
+  // Reservasi di mode ini tersimpan permanen → tanpa storage_warning.
+  const created = await postReservation(baseB, 'Bunda Zero Config DB', '081200000051', futureDate(5), '10:00');
+  assert.equal(created.storage_warning, null);
+});

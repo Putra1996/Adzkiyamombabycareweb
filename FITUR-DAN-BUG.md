@@ -364,3 +364,74 @@ kalender kosong, panel admin & chat AI mati, PWA mati.
   akun di `data/app.db` yang sempat ter-commit (hash bcrypt password 8 karakter
   umum). Data reservasi di berkas itu adalah data contoh Juni 2026, tetap
   hapus dari riwayat Git bila dianggap sensitif.
+
+## Audit lanjutan: mode zero-config — fitur publik selalu hidup (30 September 2026)
+
+Gejala: setelah PR #5, `https://adzkiyamombabycareweb.vercel.app/api/health`
+(dan SEMUA `/api/*`) membalas
+`{"error":"Server belum siap ...","detail":"ADMIN_EMAIL dan ADMIN_PASSWORD wajib diisi pada production"}`.
+Beranda statis tampil, tetapi katalog, formulir reservasi, kalender, dan
+pengaturan publik mati — terlihat seperti "banyak fitur hilang".
+
+### Akar masalah & perbaikan
+
+1. **Boot "wajib env"** — `seedAdmin()` melempar error bila
+   `ADMIN_EMAIL`/`ADMIN_PASSWORD` kosong, dan `JWT_SECRET` kosong melempar
+   error saat modul dimuat. Sekarang:
+   - `JWT_SECRET` berjenjang: env → turunan HMAC `DATABASE_URL` (stabil
+     antar instance) → acak per proses. Di Vercel dengan kunci acak, **login
+     admin ditutup 503** dengan pesan jelas (token tidak aman antar
+     instance) — perilaku yang benar, bukan bug. `JWT_SECRET` yang diisi tapi
+     **<32 karakter tetap gagal keras**.
+   - `seedAdmin()` tidak pernah mematikan situs: pakai akun admin lama bila
+     ada; bila tidak, buat akun **sementara** dengan password acak yang hanya
+     tercetak di log deployment. `ADMIN_PASSWORD` <12 karakter diabaikan +
+     peringatan. Flag `temporary` hilang setelah password diganti.
+2. **MySQL tak terjangkau mematikan boot** (tanpa try/catch, beda dengan
+   Postgres) → kini jatuh ke mode file + probe berkala.
+3. **SSL dipaksakan ke PostgreSQL lokal** di production → gagal connect lalu
+   diam-diam mode file. `pgSslFor()` tidak memaksa SSL untuk host lokal /
+   `sslmode=disable`.
+4. **`/api/health` tidak ada** (hanya `/health`) → ditambahkan alias, plus
+   `warnings`, `admin_login`, `jwt_secret_source`.
+5. **Tanpa database, pasien tidak diberi tahu** → respons reservasi memuat
+   `storage_warning`, ditampilkan di `public/reservasi.html` &
+   `docs/reservasi.html` (di-escape). `schedule_warning` (jadwal berdekatan)
+   yang dulu dikirim server tapi tidak pernah ditampilkan kini juga tampil.
+6. `api/index.js`: bila `server.js` gagal dimuat (hanya kasus JWT_SECRET
+   pendek), balas JSON yang menjelaskan cara memperbaiki — bukan crash
+   generik Vercel.
+
+### Bug lain yang ketemu saat audit (ikut diperbaiki)
+
+- **Formulir publik menerima tanggal yang sudah lewat** (`/api/reservations`),
+  padahal jalur booking AI menolaknya → kini ditolak 400 menurut tanggal WIB.
+- **Panel admin — Rekap:** `loadRecap()` tidak mengecek ulang setelah
+  `await` kedua; bila admin pindah halaman saat kwitansi dimuat, muncul
+  `TypeError: Cannot set properties of null` (unhandled rejection). Hal sama
+  pada kartu error Dashboard (`statGrid`) & Kwitansi (`kwList`). Pesan error
+  kini juga di-escape.
+- **`test/admin-dom.test.js` tidak pernah selesai** — interval polling
+  jsdom menahan proses Node (`node --test` menggantung selamanya bila jsdom
+  terpasang); bug Rekap di atas tersembunyi karenanya. Timer kini dilacak
+  dan dibersihkan.
+- **Tanggal hard-code kedaluwarsa** di `tools/audit-features.js`
+  (`2026-09-29` → audit gagal sejak 30 Sep), `tools/audit-integration.js`
+  (Desember 2026), dan `test/api.test.js` → diganti tanggal relatif.
+- Timer latar (`startBackgroundJobs`) kini `.unref()`.
+
+### Verifikasi
+
+- `node --test test/*.test.js`: **120 tes — 117 lulus, 0 gagal, 3 dilewati**
+  (butuh `TEST_PG_URL`). Dengan jsdom + PostgreSQL embedded:
+  **120/120 lulus**.
+- `TEST_PG_URL=… node --test test/pg-multiinstance.test.js`: **3/3** —
+  termasuk uji konflik tulisan **deterministik** (tulisan instance lain
+  disuntikkan langsung ke DB; A wajib merge tanpa kehilangan data) dan
+  zero-config dengan hanya `DATABASE_URL` (kunci JWT turunan sama antar
+  instance, admin sementara dipakai ulang).
+- Uji baru `test/vercel-zeroconfig.test.js` (8 tes): tanpa env apa pun
+  situs hidup & login 503; admin sementara; akun lama dipakai; password
+  pendek tidak mematikan situs; JWT_SECRET pendek tetap gagal keras;
+  `pgSslFor`; formulir menampilkan peringatan.
+- Audit menyeluruh: **96 + 137 = 233 pemeriksaan, 0 masalah**.

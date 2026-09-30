@@ -22,19 +22,45 @@ if (process.env.VERCEL && !process.env.NODE_ENV) {
   process.env.NODE_ENV = 'production';
 }
 
-const app = require('../server.js');
+// Muat server.js sekali. Bila gagal (satu-satunya kasus yang SENGAJA fatal:
+// JWT_SECRET diisi tapi kurang dari 32 karakter), jangan biarkan Vercel
+// menampilkan crash generik — balas JSON yang menjelaskan cara memperbaiki.
+let app = null;
+let loadError = null;
+try {
+  app = require('../server.js');
+} catch (err) {
+  loadError = err;
+  console.error('[vercel] server.js gagal dimuat:', err && err.stack ? err.stack : err);
+}
+
+function sendJsonError(res, status, message, err) {
+  res.statusCode = status;
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-store');
+  res.end(JSON.stringify({
+    ok: false,
+    error: message,
+    detail: String((err && err.message) || err || '').slice(0, 300)
+  }));
+}
 
 module.exports = async function handler(req, res) {
+  if (!app) {
+    sendJsonError(res, 500,
+      'Konfigurasi server salah. Periksa env di Vercel (JWT_SECRET, bila diisi, wajib minimal 32 karakter) lalu Redeploy.',
+      loadError);
+    return;
+  }
   try {
     await app.ensureBooted();
   } catch (err) {
+    // Mode zero-config: boot praktis tidak pernah gagal lagi (database
+    // yang tak terjangkau → mode file, env admin kosong → akun sementara).
+    // Blok ini hanya jaring pengaman terakhir; boot dicoba ulang di
+    // request berikutnya.
     console.error('[vercel] boot gagal:', err && err.stack ? err.stack : err);
-    res.statusCode = 500;
-    res.setHeader('Content-Type', 'application/json; charset=utf-8');
-    res.end(JSON.stringify({
-      error: 'Server belum siap: periksa env DATABASE_URL / JWT_SECRET / ADMIN_EMAIL / ADMIN_PASSWORD lalu coba lagi.',
-      detail: String((err && err.message) || err || 'boot gagal').slice(0, 300)
-    }));
+    sendJsonError(res, 500, 'Boot server gagal sementara, silakan coba lagi sebentar.', err);
     return;
   }
   // Pengingat otomatis dsb. hanya berjalan saat instance hangat (Fluid

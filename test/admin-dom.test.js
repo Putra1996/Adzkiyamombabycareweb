@@ -134,10 +134,31 @@ function jsonResponse(payload) {
   };
 }
 
+// Setiap jendela jsdom WAJIB ditutup: admin.js memasang setInterval
+// (polling notifikasi, dsb.) yang kalau dibiarkan menahan proses Node
+// selamanya — `node --test` tampak lulus tapi tidak pernah selesai.
+// Karena itu semua timer dilacak lalu dibersihkan setelah seluruh tes
+// selesai (window.close() tidak dipakai: render async yang masih berjalan
+// akan menyentuh document yang sudah dibuang → unhandledRejection palsu).
+const OPEN_WINDOWS = [];
+test.after(() => {
+  for (const w of OPEN_WINDOWS.splice(0)) {
+    for (const id of w.__intervals || []) { try { w.clearInterval(id); } catch { /* abaikan */ } }
+    for (const id of w.__timeouts || []) { try { w.clearTimeout(id); } catch { /* abaikan */ } }
+  }
+});
+
 async function bootAdmin() {
   const html = fs.readFileSync(path.join(ROOT, 'public/admin.html'), 'utf8');
   const dom = new JSDOM(html, { runScripts: 'dangerously', pretendToBeVisual: true, url: 'https://contoh.up.railway.app/admin' });
   const { window } = dom;
+  OPEN_WINDOWS.push(window);
+  window.__intervals = [];
+  window.__timeouts = [];
+  const origSetInterval = window.setInterval.bind(window);
+  const origSetTimeout = window.setTimeout.bind(window);
+  window.setInterval = (...a) => { const id = origSetInterval(...a); window.__intervals.push(id); return id; };
+  window.setTimeout = (...a) => { const id = origSetTimeout(...a); window.__timeouts.push(id); return id; };
   const runtimeErrors = [];
 
   window.localStorage.setItem('adm_token', 'token-uji');
