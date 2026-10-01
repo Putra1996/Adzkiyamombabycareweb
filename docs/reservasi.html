@@ -30,7 +30,7 @@
 <nav class="nav">
   <div class="nav-inner">
     <a href="index.html" class="brand">
-      <div class="brand-logo"><img src="img/logo.png" alt="Adzkiya Mom Baby Care" loading="lazy" decoding="async" onerror="this.parentElement.innerHTML='🌸';this.parentElement.classList.add('fallback');" style="width:100%;height:100%;object-fit:contain;"></div>
+      <div class="brand-logo"><img src="img/logo.png" alt="Adzkiya Mom Baby Care" decoding="async" onerror="this.parentElement.innerHTML='🌸';this.parentElement.classList.add('fallback');" style="width:100%;height:100%;object-fit:contain;"></div>
       <div class="brand-text"><span id="brandName">Adzkiya Mom Baby Care</span><small>Mom & Baby Care</small></div>
     </a>
     <button class="mobile-toggle" onclick="document.getElementById('navLinks').classList.toggle('open')" aria-label="Buka menu">☰</button>
@@ -162,13 +162,17 @@
 <script defer src="js/i18n.js"></script>
 <script defer src="js/main.js"></script>
 <script defer src="js/kalender.js"></script>
-<script defer>
+<script>
 let SERVICES = [];
 let SETTINGS = {};
 let cart = []; // {name, price, qty}
 let slots = []; // {date, time}
-const reservationApiBase = String(window.ADZKIYA_API_BASE || '').replace(/\/$/, '');
-const reservationApiUrl = path => reservationApiBase + (path.startsWith('/') ? path : '/' + path);
+// CATATAN: `defer` DIABAIKAN browser untuk skrip inline — skrip ini jalan
+// SEBELUM api-config.js/main.js/kalender.js. Karena itu basis API dibaca
+// saat dipakai (bukan saat skrip dimuat; dulu di GitHub Pages hasilnya
+// selalu '' → reservasi dikirim ke github.io/api → 404), dan bootstrap()
+// baru dijalankan pada DOMContentLoaded (setelah semua skrip defer).
+const reservationApiUrl = path => String(window.ADZKIYA_API_BASE || '').replace(/\/$/, '') + (path.startsWith('/') ? path : '/' + path);
 
 // Escape untuk menyisipkan data (yg di-set admin) ke innerHTML dgn aman.
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
@@ -203,6 +207,10 @@ async function bootstrap() {
     if (typeof SETTINGS_DATA !== 'undefined') SETTINGS = SETTINGS_DATA;
     document.getElementById('alertBox').innerHTML = '<div class="alert alert-error">' + window.t('form.alert_offline') + '</div>';
   }
+  // Respons tak terduga (null, objek error, proxy) tidak boleh mematikan form.
+  if (!SETTINGS || typeof SETTINGS !== 'object' || Array.isArray(SETTINGS)) SETTINGS = {};
+  if (!Array.isArray(SERVICES)) SERVICES = [];
+  SERVICES = SERVICES.filter(category => category && typeof category === 'object');
   // Cache blackout dates for fast lookups during form rendering.
   BLACKOUT_DATES = new Set(Array.isArray(SETTINGS.blackout_dates) ? SETTINGS.blackout_dates : []);
   BLACKOUT_NOTES = (SETTINGS.blackout_notes && typeof SETTINGS.blackout_notes === 'object') ? SETTINGS.blackout_notes : {};
@@ -377,7 +385,7 @@ document.getElementById('reservasiForm').addEventListener('submit', async (e) =>
     const note = blackoutNote(conflict.date);
     const locale = (window.getLang && window.getLang() === 'en') ? 'en-US' : 'id-ID';
     const formatted = new Date(conflict.date + 'T00:00:00').toLocaleDateString(locale, { weekday: 'long', day: '2-digit', month: 'long', year: 'numeric' });
-    alertBox.innerHTML = `<div class="alert alert-error">${window.t('form.error_blackout', { date: formatted })}${note ? ` <em>(${note})</em>` : ''}</div>`;
+    alertBox.innerHTML = `<div class="alert alert-error">${window.t('form.error_blackout', { date: formatted })}${note ? ` <em>(${esc(note)})</em>` : ''}</div>`;
     renderSlots();
     return;
   }
@@ -422,15 +430,15 @@ document.getElementById('reservasiForm').addEventListener('submit', async (e) =>
     document.getElementById('paymentInfo').style.display = 'none';
     window.scrollTo({ top: 0, behavior: 'smooth' });
   } catch (err) {
-    alertBox.innerHTML = `<div class="alert alert-error">❌ ${err.message}</div>`;
+    alertBox.innerHTML = `<div class="alert alert-error">❌ ${esc(err.message)}</div>`;
   } finally {
     btn.disabled = false; btn.innerHTML = window.t('form.submit');
   }
 });
 
-bootstrap();
 // Bind language toggle + re-render form labels on lang change
 document.addEventListener('DOMContentLoaded', () => {
+  bootstrap();
   if (window.i18n) {
     window.i18n.bindToggle(document.getElementById('langToggle'));
     // Re-render slot rows so blackout hints switch to the new language.

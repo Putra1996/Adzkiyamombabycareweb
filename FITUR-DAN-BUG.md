@@ -358,7 +358,8 @@ kalender kosong, panel admin & chat AI mati, PWA mati.
 
 - Di Vercel Project Settings → Environment Variables, isi: `DATABASE_URL`
   (wajib), `JWT_SECRET`, `ADMIN_EMAIL`, `ADMIN_PASSWORD`, opsional
-  `CRON_SECRET` & `ALLOWED_ORIGINS=https://putra1996.github.io`.
+  `CRON_SECRET`. (`ALLOWED_ORIGINS` TIDAK perlu diisi — lihat bagian
+  "Bug CORS" di bawah.)
   Panduan lengkap: `DEPLOYMENT.md` §0.
 - **Ganti password admin** bila pernah memakai password lama yang sama dengan
   akun di `data/app.db` yang sempat ter-commit (hash bcrypt password 8 karakter
@@ -435,3 +436,257 @@ pengaturan publik mati — terlihat seperti "banyak fitur hilang".
   pendek tidak mematikan situs; JWT_SECRET pendek tetap gagal keras;
   `pgSslFor`; formulir menampilkan peringatan.
 - Audit menyeluruh: **96 + 137 = 233 pemeriksaan, 0 masalah**.
+
+## Bug CORS: "Origin tidak diizinkan" saat login admin di vercel.app (30 September 2026)
+
+Gejala: setelah env `ALLOWED_ORIGINS=https://putra1996.github.io` diisi di
+Vercel (mengikuti saran dokumentasi lama), login `/admin` dan kirim
+reservasi di `adzkiyamombabycareweb.vercel.app` gagal dengan
+`❌ Origin tidak diizinkan` (HTTP 403).
+
+Akar masalah: browser SELALU mengirim header `Origin` pada POST/PUT/PATCH/
+DELETE, termasuk permintaan same-origin. Middleware CORS menolak semua
+origin yang tidak ada di `ALLOWED_ORIGINS` — termasuk domain situs itu
+sendiri.
+
+Perbaikan (`server.js`):
+- Permintaan same-origin (host di `Origin` = `Host`/`X-Forwarded-Host`)
+  selalu diizinkan.
+- Domain deployment Vercel sendiri (`VERCEL_URL`, `VERCEL_BRANCH_URL`,
+  `VERCEL_PROJECT_PRODUCTION_URL`) dan GitHub Pages selalu diizinkan walau
+  `ALLOWED_ORIGINS` diisi.
+- Origin asing tetap ditolak 403.
+
+Solusi instan tanpa deploy kode: hapus env `ALLOWED_ORIGINS` di Vercel lalu
+Redeploy (GitHub Pages sudah diizinkan bawaan).
+
+Tes regresi: `test/vercel-zeroconfig.test.js` → "ALLOWED_ORIGINS diisi:
+POST same-origin dari situs sendiri TIDAK boleh ditolak 403".
+
+## Audit mendalam: dependensi & XSS (1 Oktober 2026)
+
+### Kerentanan dependensi (`npm audit`: 7 → 0)
+- **multer ≤2.3.0 (HIGH)**: 5 advisory DoS / bypass batas upload. Terkena
+  langsung karena `POST /api/reservations` (upload bukti) terbuka publik.
+  Diperbarui ke **2.4.0**. Uji upload nyata setelah upgrade: PNG valid
+  diterima; PNG palsu (isi HTML), SVG, file >5 MB, dan dua file ditolak;
+  `/api/proof/:id` tetap wajib token.
+- **express 4.22.2 → 4.22.3** (qs 6.16.0, body-parser 1.20.8).
+- **ip-address → 10.7.2** (lewat express-rate-limit).
+- **brace-expansion**: override lama `minimatch → brace-expansion 1.1.18`
+  justru memaksa versi yang rentan DAN salah mayor ke minimatch@5. Diganti
+  override `brace-expansion@1 → 1.1.21`; override `readdir-glob` dihapus.
+- `engines.node` = `22.x` → peringatan build Vercel soal `>=20` hilang.
+- Peringatan `npm warn deprecated` (rimraf@2, glob@7, inflight, fstream,
+  lodash.isequal) berasal dari dependensi internal **exceljs 4.4.0** (versi
+  terbaru). Tidak berbahaya, bukan kerentanan; hanya hilang bila exceljs
+  diganti.
+
+### XSS (ditemukan & diperbaiki)
+- **Gambar tersimpan disajikan dengan mime bebas** (`/api/logo`, `/api/hero`,
+  `/api/qris`, `/api/social-icon/:idx`): mime berasal dari data yang bisa
+  diisi lewat `PUT /api/admin/settings` atau **file backup yang di-restore**.
+  `text/html`/`image/svg+xml` → halaman berskrip di origin panel admin
+  (token admin di localStorage). Kini mime dipaksa ke PNG/JPEG/WebP/GIF +
+  CSP `sandbox`. `/api/proof/:id` juga dibatasi ke gambar/PDF (dibuka lewat
+  `blob:` yang mewarisi origin admin).
+- **reservasi.html**: pesan error server dimasukkan mentah ke `innerHTML`,
+  padahal server memantulkan input (`layanan "<nama>" tidak ada di
+  katalog`). Catatan tanggal libur juga mentah. Keduanya di-escape.
+- **Beranda (main.js)**: nama/kategori layanan mentah ke `innerHTML` dan
+  `onclick="goReserve('…')"` hanya meng-escape `'`. Laten (katalog statis),
+  diperbaiki: escape + event listener. Grid tidak crash lagi bila
+  `/api/services` mengembalikan objek error (429/500).
+- **admin.js**: 4 pesan error mentah ke `innerHTML` → `esc()`.
+- `kwitansi-share.html`: `esc()` kini juga meng-escape `'`.
+- `/api/health` memperingatkan bila token WhatsApp terisi tetapi App Secret
+  kosong (webhook menerima pesan palsu).
+
+### Verifikasi
+- Tes baru `test/xss-admin.test.js` (butuh jsdom): server sungguhan + AI
+  tiruan yang membeo-kan HTML penyerang; payload lewat formulir reservasi,
+  chat AI, dan webhook WhatsApp; SEMUA halaman panel admin + modal log AI
+  dirender di jsdom dan diperiksa tidak ada elemen/atribut aktif. Diuji
+  tajam: menghapus satu `esc()` / whitelist mime / main.js lama → tes gagal.
+- `npm run check` OK; `node --test test/*.test.js`: 125 tes, 122 lulus,
+  0 gagal, 3 dilewati; audit 96/0 + 137/0; `npm audit`: 0 kerentanan.
+
+## Kecepatan & audit fitur (1 Oktober 2026)
+
+### Penyimpanan & server (diukur di PostgreSQL lokal, data lama 60 reservasi / 40 bukti 300 KB)
+
+| Ukuran | Sebelum | Sesudah |
+|---|---|---|
+| Blob state (dibaca/ditulis tiap perubahan) | 16.225 KB | **38 KB** |
+| Boot instance | 1.669 ms | 819 ms |
+| `/api/calendar` setelah TTL 5 dtk | 190 ms | **21 ms** |
+| Buka bukti transfer | 254 ms | 10 ms |
+| Tulisan admin (stabil, TERMASUK tulis DB) | 16 ms (belum tersimpan!) | 5–19 ms (sudah tersimpan) |
+| `require('server.js')` (cold start) | 332–477 ms | 152–156 ms |
+
+- **Bukti transfer & gambar pengaturan (logo/hero/QRIS) pindah ke tabel
+  `app_blobs`**; state hanya menyimpan rujukan (`proof_ref`, `logo_ref`, …).
+  Data lama dimigrasikan otomatis saat simpan berikutnya (10 bukti per simpan).
+  Mode file tetap inline. Backup tetap memuat gambar (di-inline-kan ulang) dan
+  pindah database dari panel membawa bukti + gambar. Gambar lama dibersihkan
+  otomatis (> 24 jam, tidak dirujuk).
+- **Refresh bacaan** hanya membaca kolom `rev` (0,4 ms); blob diunduh hanya
+  bila instance lain benar-benar menulis.
+- **Boot tidak lagi menulis ulang seluruh state** di setiap cold start (dulu
+  rev naik setiap boot → tulisan sia-sia + semua instance lain mengunduh ulang).
+- **Simpan sebelum respons di Vercel** (`PERSIST_BEFORE_RESPONSE`, otomatis di
+  Vercel): dulu 201 dikirim lalu simpan menunggu timer 200 ms yang bisa
+  dibekukan Vercel → RISIKO data hilang. Kini gagal simpan → 503 (bukan 2xx
+  palsu). Webhook WhatsApp memakai `waitUntil` Vercel.
+- **Cache CDN Vercel** untuk endpoint publik (`/api/services` 1 hari,
+  pengaturan/kalender 10 dtk + stale-while-revalidate, gambar 60 dtk), selalu
+  `Vary: Origin`; endpoint admin tetap `no-store`; error tidak di-cache.
+- exceljs & mysql2 dimuat saat dipakai saja.
+- Konflik tulis: pemindahan gambar ke `app_blobs` tidak dianggap "perubahan
+  pengaturan", jadi tidak menimpa pengaturan yang diubah instance lain.
+
+### Frontend
+- **Logo bawaan 1024×1280 (145 KB) → 512×640 (21 KB)**; logo lama di
+  database otomatis dilayani versi baru. Dimuat di setiap halaman + favicon.
+- **Panel admin: Chart.js diunduh DUA KALI** setiap dibuka (skrip cadangan
+  inline selalu jalan sebelum skrip utama) dan URL cadangan
+  `chart.umd.min.js` tidak ada di paket npm (unpkg 404). Kini dimuat sekali,
+  setelah login, dengan SRI; halaman login tidak lagi menunggu CDN.
+- **Panel admin: pembukaan 4 langkah berantai → paralel** (stats juga tidak
+  diambil dua kali).
+- Beranda: Google Fonts tidak memblokir render; `main.js` defer; gambar
+  logo `decoding=async`; service worker `adzkiya-v2`.
+
+### Bug yang ditemukan audit fitur (diperbaiki)
+1. **GitHub Pages: halaman reservasi tidak berfungsi** — `<script defer>`
+   inline diabaikan browser, sehingga basis API dibaca sebelum
+   `api-config.js` jalan → layanan dimuat & reservasi dikirim ke
+   `github.io/api` (404). Juga race `fmtRp is not defined`.
+2. **GitHub Pages: beranda tidak pernah memuat pengaturan** (masalah urutan
+   yang sama) dan gambar hero rusak.
+3. **Tautan kwitansi kosong/tidak valid macet di "Memuat..."** (`window.t`
+   dipanggil sebelum i18n.js dimuat).
+4. **Logo 404 di reservasi & panel admin (Vercel)** — `img/logo.png` tidak
+   ada di `public/`.
+5. **Rating testimoni di luar 1–5 membuat seluruh pengaturan beranda gagal
+   dirender** (RangeError) — kini dibatasi 1–5.
+
+### Verifikasi
+- Tes baru: `test/perf-storage.test.js` (12; 7 butuh `TEST_PG_URL`) dan
+  `test/frontend-perf.test.js` (7; simulasi GitHub Pages di jsdom). Diuji
+  tajam: versi lama reservasi/beranda/merge settings → tes gagal.
+- `node --test test/*.test.js`: 144 tes, 135 lulus, 0 gagal, 9 dilewati;
+  dengan PostgreSQL: perf-storage 12/12 + pg-multiinstance 3/3 (juga dengan
+  `PERSIST_BEFORE_RESPONSE=1`); audit 96/0 + 137/0 (dua mode); `npm audit` 0;
+  sapuan jsdom semua halaman + 14 menu admin: 0 error runtime.
+
+### Belum diperbaiki (risiko rendah, perlu keputusan)
+- ~~Edit yang kalah konflik antar instance hilang~~ dan ~~reservasi yang
+  dihapus muncul lagi~~ — **sudah diperbaiki** dengan three-way merge, lihat
+  "Audit stabilitas" di bawah.
+
+## Audit stabilitas (1 Oktober 2026)
+
+Diuji dengan: fuzzer semua rute (`tools/audit-robustness.js`, 112 rute,
+±2.700 request input rusak + cek integritas data), dua instance pada
+PostgreSQL sungguhan, database dimatikan/dibekukan saat server berjalan,
+soak 90 detik (20 koneksi paralel), dan simulasi API gagal di semua halaman.
+
+### Crash & hang (diperbaiki)
+- **Proses mati saat koneksi database idle diputus** (Neon/Supabase rutin
+  melakukannya): pool `pg` tidak punya listener `'error'` → "Unhandled 'error'
+  event" → seluruh server mati. Kini koneksi putus dibuang, query berikutnya
+  membuka koneksi baru (diuji: koneksi diputus paksa, server tetap hidup).
+- **Query database tanpa batas waktu**: koneksi "setengah putus" bisa menahan
+  request sampai dibunuh platform. Kini `query_timeout` 20 dtk
+  (`PG_QUERY_TIMEOUT_MS`) + TCP keepalive; refresh bacaan menunggu maks 2,5 dtk
+  lalu menyajikan dari memori (diuji: semua proses PostgreSQL di-SIGSTOP →
+  GET tetap 200, tulisan 503 jelas, pulih otomatis setelah SIGCONT).
+- **Error async Express 4** (handler `async` yang melempar) dulu membuat
+  request menggantung/proses crash → kini diteruskan ke error handler (500 rapi).
+- **Tanpa penanganan level proses**: kini `unhandledRejection` dicatat,
+  `uncaughtException` dicatat lalu shutdown rapi; shutdown idempoten dengan
+  batas paksa 10 dtk (tidak menggantung).
+
+### Input rusak (diperbaiki — dulu 500 / crash / data rusak)
+- JSON rusak → **400**, body terlalu besar → **413** (dulu 500).
+- Kwitansi dengan item rusak (`items` bukan daftar, harga teks, qty 0) dulu
+  crash atau menyimpan total `NaN` → kini divalidasi (400).
+- **Restore backup rusak dengan mode "replace" MENGHAPUS SEMUA DATA lalu
+  crash** di elemen `null` → kini divalidasi SEBELUM data diubah.
+- Pengaturan bertipe salah (objek di `phone`, teks di `testimonials`/
+  `blackout_dates`) tersimpan dan merusak beranda/kalender → kini wajib sejenis
+  dengan nilai lama (400); kolom internal `*_ref` tidak bisa ditulis; rating
+  testimoni dijepit 1–5; tanggal libur yang tidak valid dibuang.
+- Kirim peringatan stok tanpa barang menipis: 500 → 400.
+
+### Integritas data antar instance (diperbaiki)
+Merge lama berbasis gabungan (union) tanpa titik acuan. Terbukti di
+PostgreSQL dengan dua instance:
+- reservasi yang **dihapus hidup lagi**,
+- reservasi yang **dipindah jadwalnya menjadi dobel**,
+- perubahan dari instance yang kalah konflik **hilang** padahal sudah dijawab
+  "berhasil" (juga dua admin mengubah reservasi berbeda bersamaan).
+
+Kini **three-way merge per ID** terhadap isi database yang terakhir dilihat
+instance (`syncedBase`): hanya yang berubah sejak itu yang dihitung; dua sisi
+mengubah item yang sama → digabung per kolom; hapus vs ubah → yang mengubah
+menang (tidak ada data hilang diam-diam); dua item baru dengan ID sama →
+keduanya disimpan dan rujukan kwitansi ikut dipindah. Memori juga tidak lagi
+ditimpa snapshot lama setelah simpan (perubahan yang masuk SELAMA penulisan
+tetap ada). Refresh kini juga berjalan sebelum tulisan (instance basi tidak
+menerima booking di slot yang sudah terisi), dan bacaan yang lebih tua dari
+rev yang dipegang diabaikan. Hasil uji: 9/9 skenario (hapus, pindah jadwal,
+ubah bersamaan, 25 tulisan serentak satu instance, 30 tulisan serentak dua
+instance → semua tersimpan tepat sekali, tanpa ID ganda), mode biasa & Vercel.
+
+### Reservasi dobel setelah gangguan (diperbaiki)
+Saat database gangguan, pelanggan menerima 503 "belum tersimpan, coba lagi" —
+padahal reservasinya tetap tersimpan begitu database pulih. Kirim ulang =
+reservasi dobel. Kini kiriman **identik** (nama, WhatsApp, layanan, jadwal)
+dalam 30 menit mengembalikan reservasi yang sama (`duplicate: true`), juga di
+mode "block" (dulu ditolak karena "bentrok" dengan dirinya sendiri).
+
+### Privasi (diperbaiki)
+- **Nama pasien lain bocor ke publik**: saat jadwal bentrok, respons
+  `POST /api/reservations` (tanpa login) memuat nama pasien yang sudah booking
+  di jam itu (`schedule_warning`, dan di mode "block" seluruh daftar
+  `conflicts` berisi nama + ID). Begitu juga teks yang dikirim ke asisten AI
+  publik. Kini respons publik tanpa nama/ID; admin tetap melihatnya di catatan.
+- Daftar bentrok yang disimpan tumbuh kuadratik di slot ramai (±18 KB per
+  reservasi pada uji soak) → dibatasi 10 entri / 5 baris teks.
+
+### Frontend saat API gagal (diperbaiki)
+Diuji 5 halaman × 4 mode (jaringan putus, 500, 503 halaman HTML, 200 `null`):
+- `reservasi.html` crash (TypeError) bila pengaturan `null` → form mati.
+- `kalender.html` diam-diam menampilkan **semua tanggal kosong** saat gagal
+  memuat → pelanggan mengira semua jadwal tersedia. Kini muncul peringatan +
+  tombol "Coba lagi".
+- `kwitansi-share.html` menyebut "link tidak valid/kadaluarsa" saat server
+  gangguan dan judul tetap "Memuat kwitansi..." → kini "Server sedang
+  gangguan, kwitansi Anda aman" + tombol "Coba lagi".
+Hasil: 0 error JavaScript, semua halaman menampilkan pesan yang jelas.
+
+### Memori & beban
+Soak 90 dtk (20 koneksi, ±25.500 request campuran publik/admin/booking):
+0 error, 0 respons 5xx, server tetap hidup. Bacaan saja (144.000 request):
+heap setelah GC tetap 12 MB → **tidak ada kebocoran**. Dengan tulisan, heap
+naik sebanding data yang memang bertambah.
+
+### Alat & tes baru
+- `tools/audit-robustness.js` — fuzzer semua rute + cek integritas data
+  (`node --require ./tools/audit-no-ratelimit.js server.js` lalu
+  `BASE=… node tools/audit-robustness.js`); `tools/audit-no-ratelimit.js`
+  hanya untuk audit (mematikan rate limit agar fuzzer tidak berhenti di 429).
+- `test/stability.test.js` (input rusak, restore, pengaturan, privasi, dedupe),
+  `test/merge-threeway.test.js` (8 tes unit merge),
+  `test/frontend-resilience.test.js` (jsdom), dan tes PostgreSQL baru di
+  `test/pg-multiinstance.test.js`. Diuji tajam: tes frontend gagal 3/3 pada
+  versi lama; skenario multi-instance gagal 4/7 pada merge lama.
+
+### Verifikasi
+- `npm run check` OK; `node --test test/*.test.js`: 157 tes — 147 lulus,
+  0 gagal, 10 dilewati; **dengan PostgreSQL: 157/157 lulus**.
+- `tools/audit-integration.js` 96/0, `tools/audit-features.js` 137/0 (server &
+  data segar), fuzzer 0 masalah, `npm audit` 0 kerentanan.
+

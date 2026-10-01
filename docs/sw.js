@@ -13,7 +13,7 @@
  *   • Hanya aset statis (CSS/JS/gambar) yang di-cache, dan selalu
  *     diperbarui di latar belakang (stale-while-revalidate).
  */
-const VERSION = 'adzkiya-v1';
+const VERSION = 'adzkiya-v2'; // naikkan setiap aset statis berubah signifikan
 const STATIC_CACHE = VERSION + '-static';
 
 const PRECACHE = [

@@ -270,3 +270,38 @@ test('Formulir reservasi menampilkan storage_warning & schedule_warning (ter-esc
     assert.match(html, /escHtml\(data\.storage_warning\)/, f + ' harus meng-escape pesan server');
   }
 });
+
+test('ALLOWED_ORIGINS diisi: POST same-origin dari situs sendiri TIDAK boleh ditolak 403', { timeout: 60000 }, async (t) => {
+  const s = await startVercel(t, {
+    JWT_SECRET: 'zeroconfig-test-secret-lebih-dari-32-karakter',
+    ADMIN_EMAIL: 'admin@test.local', ADMIN_PASSWORD: 'very-secure-test-password',
+    ALLOWED_ORIGINS: 'https://putra1996.github.io',
+    VERCEL_PROJECT_PRODUCTION_URL: 'adzkiyamombabycareweb.vercel.app'
+  });
+  const loginBody = JSON.stringify({ email: 'admin@test.local', password: 'very-secure-test-password' });
+  const post = (headers) => getJson(s.base + '/api/auth/login', {
+    method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: loginBody
+  });
+
+  // 1) Origin = host permintaan itu sendiri (browser di vercel.app → API vercel.app).
+  const same = await post({ Origin: s.base });
+  assert.equal(same.status, 200, 'same-origin (Host) harus lolos: ' + JSON.stringify(same.body));
+
+  // 2) Di balik proxy Vercel: host asli ada di X-Forwarded-Host.
+  const proxied = await post({ Origin: 'https://adzkiya-custom.example', 'X-Forwarded-Host': 'adzkiya-custom.example' });
+  assert.equal(proxied.status, 200, 'same-origin (X-Forwarded-Host) harus lolos');
+
+  // 3) Domain produksi Vercel (System Env) selalu boleh.
+  const prodDomain = await post({ Origin: 'https://adzkiyamombabycareweb.vercel.app' });
+  assert.equal(prodDomain.status, 200, 'domain produksi Vercel harus lolos');
+
+  // 4) Origin yang memang diizinkan (GitHub Pages) tetap lolos + header CORS.
+  const gh = await post({ Origin: 'https://putra1996.github.io' });
+  assert.equal(gh.status, 200);
+  assert.equal(gh.headers.get('access-control-allow-origin'), 'https://putra1996.github.io');
+
+  // 5) Origin asing tetap DITOLAK.
+  const evil = await post({ Origin: 'https://situs-jahat.example' });
+  assert.equal(evil.status, 403);
+  assert.equal(evil.body.error, 'Origin tidak diizinkan');
+});

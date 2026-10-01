@@ -48,7 +48,7 @@ Project Settings → Environment Variables (semua environment):
 | `ADMIN_PASSWORD` | Password awal admin, minimal **12 karakter**. | Sama seperti di atas. Password <12 karakter **diabaikan** (bukan mematikan situs) + peringatan di `/health`. |
 | `ADMIN_NAME` | (opsional) Nama admin. | — |
 | `CRON_SECRET` | (opsional tapi disarankan) Kunci untuk `/api/cron/reminders`; Vercel mengirimkannya sebagai `Authorization: Bearer <nilai>`. | — |
-| `ALLOWED_ORIGINS` | (opsional) Isi `https://putra1996.github.io` bila ingin mengunci CORS untuk cermin GitHub Pages. Same-origin Vercel tidak butuh CORS. | — |
+| `ALLOWED_ORIGINS` | (opsional, **sebaiknya dikosongkan/dihapus**) Daftar origin tambahan dipisah koma. GitHub Pages (`https://putra1996.github.io`), domain Vercel project ini, dan permintaan same-origin **sudah otomatis diizinkan**. ⚠️ Versi sebelum perbaikan CORS: mengisi variabel ini membuat login admin & reservasi di vercel.app ditolak **403 "Origin tidak diizinkan"**. | Semua origin boleh memanggil API tanpa header CORS (aman untuk same-origin). |
 | `NODEJS_HELPERS` | (opsional) Isi `0` bila terjadi masalah parsing body pada upload/multipart. | — |
 
 `GET /api/health` kini memuat:

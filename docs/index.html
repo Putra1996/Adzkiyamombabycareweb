@@ -7,7 +7,10 @@
 <meta name="description" content="Spa & treatment khusus ibu hamil, nifas, bayi, dan balita. Home service area Nusawungu, Cilacap. Bidan profesional bersertifikat.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Playfair+Display:wght@600;700&display=swap" rel="stylesheet">
+<!-- Font TIDAK memblokir render: teks langsung tampil dengan font sistem,
+     lalu berganti saat Google Fonts selesai (display=swap). -->
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Playfair+Display:wght@600;700&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+<noscript><link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Playfair+Display:wght@600;700&display=swap" rel="stylesheet"></noscript>
 <link rel="stylesheet" href="css/style.css">
 <link rel="icon" href="img/logo.png">
 <link rel="manifest" href="manifest.webmanifest">
@@ -19,7 +22,7 @@
   <div class="nav-inner">
     <a href="index.html" class="brand">
       <div class="brand-logo" id="brandLogoImg">
-        <img src="img/logo.png" alt="Adzkiya" onerror="this.parentElement.innerHTML='🌸';this.parentElement.classList.add('fallback');" style="width:100%;height:100%;object-fit:contain;">
+        <img src="img/logo.png" alt="Adzkiya" decoding="async" onerror="this.parentElement.innerHTML='🌸';this.parentElement.classList.add('fallback');" style="width:100%;height:100%;object-fit:contain;">
       </div>
       <div class="brand-text">
         <span id="brandName">Adzkiya Mom Baby Care</span>
@@ -107,7 +110,7 @@
   <div class="container">
     <div class="about-grid">
       <div class="about-visual" id="aboutVisual">
-        <img src="img/logo.png" alt="Adzkiya" onerror="this.parentElement.innerHTML='🌷'" style="width:65%;height:auto;object-fit:contain;">
+        <img src="img/logo.png" alt="Adzkiya" loading="lazy" decoding="async" onerror="this.parentElement.innerHTML='🌷'" style="width:65%;height:auto;object-fit:contain;">
       </div>
       <div class="about-content">
         <span class="section-eyebrow" data-i18n="home.about_eyebrow">Tentang Adzkiya</span>
@@ -189,7 +192,7 @@
 
 <script defer src="js/api-config.js"></script>
 <script defer src="js/i18n.js"></script>
-  <script src="js/main.js"></script>
+<script defer src="js/main.js"></script>
 <script>
 // Escape utk menyisipkan data (di-set admin) ke innerHTML dgn aman.
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
@@ -200,7 +203,12 @@ function safeUrl(u) { u = String(u || '').trim(); return /^https?:\/\//i.test(u)
 // Dipakai bersama js/main.js (var, bukan const, agar tidak bentrok).
 var ADZKIYA_API_BASE = String((typeof window !== 'undefined' && window.ADZKIYA_API_BASE) || '').replace(/\/$/, '');
 var adzkiyaApiUrl = function (path) { return ADZKIYA_API_BASE + (String(path).charAt(0) === '/' ? path : '/' + path); };
-// Load business settings to update name/contact/hero
+// Load business settings to update name/contact/hero.
+// Dijalankan setelah skrip defer (api-config.js) selesai: di GitHub Pages
+// base URL API baru terisi saat itu — dulu fetch langsung saat parsing
+// menuju github.io/api/... (404) sehingga nama, kontak, jam, dan testimoni
+// tidak pernah tampil di mirror Pages.
+function loadPublicSettings() {
 fetch(adzkiyaApiUrl('/api/public-settings')).then(r => r.json()).then(s => {
   if (s.business_name) {
     document.getElementById('brandName').textContent = s.business_name;
@@ -216,7 +224,7 @@ fetch(adzkiyaApiUrl('/api/public-settings')).then(r => r.json()).then(s => {
   if (s.area) document.getElementById('contactArea').textContent = s.area;
   if (s.practitioner) document.getElementById('practitionerName').textContent = s.practitioner.split(',')[0];
   if (s.has_hero) {
-    document.getElementById('heroBg').style.backgroundImage = `url(/api/hero)`;
+    document.getElementById('heroBg').style.backgroundImage = `url(${adzkiyaApiUrl('/api/hero')})`;
     document.getElementById('heroBg').classList.add('active');
   }
 
@@ -228,7 +236,10 @@ fetch(adzkiyaApiUrl('/api/public-settings')).then(r => r.json()).then(s => {
       tg.innerHTML = '<div style="text-align:center;color:var(--text-soft);grid-column:1/-1;padding:30px;">Belum ada testimoni.</div>';
     } else {
       tg.innerHTML = list.map(t => {
-        const stars = '★'.repeat(t.rating || 5) + '☆'.repeat(5 - (t.rating || 5));
+        // Rating di luar 1..5 (mis. 6 atau "abc") dulu melempar RangeError
+        // dan mematikan SELURUH render pengaturan (nama, kontak, jam).
+        const rating = Math.min(5, Math.max(1, Math.round(Number(t.rating)) || 5));
+        const stars = '★'.repeat(rating) + '☆'.repeat(5 - rating);
         const initial = (t.name || '?').trim().charAt(0).toUpperCase();
         const safe = (str) => String(str || '').replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
         return `
@@ -308,7 +319,10 @@ fetch(adzkiyaApiUrl('/api/public-settings')).then(r => r.json()).then(s => {
   } else {
     if (contactCard) contactCard.style.display = 'none';
   }
-});
+}).catch((e) => { try { console.warn('[beranda] pengaturan gagal dimuat:', e && e.message); } catch (x) {} });
+}
+if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', loadPublicSettings);
+else loadPublicSettings();
 </script>
 
 <!-- ============================================

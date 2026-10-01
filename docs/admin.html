@@ -17,34 +17,13 @@
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
 <link rel="stylesheet" href="css/style.css">
 <link rel="icon" href="img/logo.png">
-<!-- Chart.js with multi-CDN fallback. Loaded with defer so it doesn't
-     block first paint — the dashboard renders table-mode immediately and
-     swaps to chart-mode when Chart.js finishes loading. If the primary
-     CDN is blocked (some Indonesian mobile ISPs throttle cdn.jsdelivr.net),
-     unpkg.com is loaded as a backup. If neither loads within 8s, the
-     dashboard stays in table-mode for the rest of the session. -->
-<script defer src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"
-        onerror="window.__chartJsFailed = (window.__chartJsFailed || 0) + 1; if (window.__chartJsFailed >= 2) { window.dispatchEvent(new Event('chartjs:unavailable')); }"></script>
-<script>
-  // Try a second CDN if the first fails (8s timeout). Each <script>
-  // gets crossorigin=anonymous so the browser can retry cross-domain
-  // without CORS grief. If BOTH fail, fire 'chartjs:unavailable' so
-  // admin.js can switch the dashboard to its table fallback.
-  (function loadChartWithFallback() {
-    if (window.Chart) return;
-    var s = document.createElement('script');
-    s.src = 'https://unpkg.com/chart.js@4.4.0/dist/chart.umd.min.js';
-    s.async = true;
-    s.defer = true;
-    s.crossOrigin = 'anonymous';
-    var done = false;
-    function fallback() { if (!done) { done = true; window.dispatchEvent(new Event('chartjs:unavailable')); } }
-    s.onload = function() { done = true; };
-    s.onerror = function() { fallback(); };
-    document.head.appendChild(s);
-    setTimeout(function() { if (!window.Chart && !done) fallback(); }, 8000);
-  })();
-</script>
+<!-- Chart.js TIDAK dimuat di sini lagi. Dulu: (1) skrip cadangan inline
+     selalu jalan sebelum skrip utama (window.Chart belum ada) sehingga
+     Chart.js diunduh DUA KALI setiap panel dibuka; (2) URL cadangan
+     chart.umd.min.js tidak ada di paket npm → unpkg 404; (3) admin.js
+     (termasuk form login) menunggu unduhan CDN. Sekarang admin.js memuatnya
+     sekali, setelah login, lewat ensureChartJs() (dengan SRI + cadangan). -->
+<link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
 </head>
 <body>
 

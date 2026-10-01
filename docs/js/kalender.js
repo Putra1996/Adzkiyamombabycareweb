@@ -27,23 +27,58 @@ let blackoutNotes = {};      // { 'YYYY-MM-DD': 'Libur Natal', ... }
 // blackout_dates + blackout_notes — they're the admin's "tanggal
 // libur" config (e.g. hari besar / cuti). Both fetches run in
 // parallel; either failure is non-fatal.
+let loadFailed = false;
 async function loadEvents() {
+  loadFailed = false;
   try {
     const [calRes, settingsRes] = await Promise.all([
       fetch(adzkiyaApiUrl('/api/calendar')),
       fetch(adzkiyaApiUrl('/api/public-settings')),
     ]);
-    events = calRes.ok ? await calRes.json() : [];
+    // Gagal memuat jadwal TIDAK boleh tampil sebagai "semua tanggal kosong"
+    // — pelanggan bisa memilih jadwal berdasarkan info yang keliru.
+    if (!calRes.ok) throw new Error('HTTP ' + calRes.status);
+    const data = await calRes.json();
+    if (!Array.isArray(data)) throw new Error('format kalender tidak dikenal');
+    events = data.filter((e) => e && typeof e === 'object');
     if (settingsRes.ok) {
-      const s = await settingsRes.json();
-      blackoutSet = new Set(Array.isArray(s.blackout_dates) ? s.blackout_dates : []);
-      blackoutNotes = (s.blackout_notes && typeof s.blackout_notes === 'object') ? s.blackout_notes : {};
+      const s = await settingsRes.json().catch(() => null);
+      if (s && typeof s === 'object') {
+        blackoutSet = new Set(Array.isArray(s.blackout_dates) ? s.blackout_dates : []);
+        blackoutNotes = (s.blackout_notes && typeof s.blackout_notes === 'object') ? s.blackout_notes : {};
+      }
     }
   } catch (e) {
     events = [];
+    loadFailed = true;
     console.warn('Calendar data not loaded:', e);
   }
+  renderLoadNotice();
   renderCalendar();
+}
+
+function renderLoadNotice() {
+  let box = document.getElementById('calLoadNotice');
+  if (!loadFailed) { if (box) box.remove(); return; }
+  const grid = document.getElementById('calGrid');
+  if (!grid) return;
+  if (!box) {
+    box = document.createElement('div');
+    box.id = 'calLoadNotice';
+    box.className = 'alert alert-error';
+    box.setAttribute('role', 'alert');
+    box.style.margin = '0 0 12px';
+    grid.parentNode.insertBefore(box, grid);
+  }
+  const t = (k, fb) => (typeof window.t === 'function' ? window.t(k, fb) : fb);
+  box.textContent = t('kalender.load_failed', '⚠️ Data jadwal belum berhasil dimuat, jadi ketersediaan di kalender ini belum pasti. Silakan coba lagi atau hubungi admin via WhatsApp.') + ' ';
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'btn btn-outline';
+  btn.style.marginLeft = '6px';
+  btn.textContent = t('kalender.retry', '🔄 Coba lagi');
+  btn.addEventListener('click', () => { btn.disabled = true; loadEvents(); });
+  box.appendChild(btn);
 }
 
 function countEventsOn(dateStr) {

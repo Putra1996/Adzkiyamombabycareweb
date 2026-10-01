@@ -321,3 +321,99 @@ test('Zero-config + DATABASE_URL: kunci JWT turunan sama antar instance, admin s
   const created = await postReservation(baseB, 'Bunda Zero Config DB', '081200000051', futureDate(5), '10:00');
   assert.equal(created.storage_warning, null);
 });
+
+// Three-way merge: hapus, pindah jadwal, dan perubahan bersamaan dari dua
+// instance. Dulu (merge union) reservasi yang dihapus hidup lagi, pindah
+// jadwal membuat dobel, dan perubahan instance yang kalah rev hilang.
+test('Dua instance PostgreSQL: hapus/pindah jadwal/ubah bersamaan tidak hidup lagi, dobel, atau hilang', { timeout: 120000, skip: !TEST_PG_URL && 'butuh env TEST_PG_URL (PostgreSQL uji)' }, async (t) => {
+  const { Client } = require('pg');
+  const cleaner = new Client({ connectionString: TEST_PG_URL });
+  await cleaner.connect();
+  await cleaner.query('DROP TABLE IF EXISTS app_state');
+  await cleaner.query('DROP TABLE IF EXISTS share_tokens');
+  await cleaner.end();
+  const portA = await freePort();
+  const portB = await freePort();
+  const A = `http://127.0.0.1:${portA}`;
+  const B = `http://127.0.0.1:${portB}`;
+  const a = startServer(portA, { DATA_FILE: '' });
+  const b = startServer(portB, { DATA_FILE: '' });
+  t.after(async () => {
+    for (const c of [a, b]) {
+      if (c.exitCode === null && c.signalCode === null) {
+        c.kill('SIGTERM');
+        await Promise.race([new Promise((r) => c.once('exit', r)), new Promise((r) => setTimeout(r, 5000))]);
+      }
+    }
+  });
+  await waitForHealth(A, a, 'A');
+  await waitForHealth(B, b, 'B');
+  const login = async (base) => (await (await fetch(base + '/api/auth/login', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: 'admin@test.local', password: 'very-secure-test-password' })
+  })).json()).token;
+  const ta = await login(A);
+  const tb = await login(B);
+  const H = (tok) => ({ Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' });
+  let day = 30;
+  async function reserve(base, name) {
+    const date = new Date(Date.now() + (day++) * 864e5).toISOString().slice(0, 10);
+    const r = await fetch(base + '/api/reservations', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ patient_name: name, whatsapp: '0812' + (30000000 + day), address: 'Jl. Uji', payment_method: 'COD',
+        items: JSON.stringify([{ name: 'Massage Ibu Hamil', qty: 1 }]), slots: JSON.stringify([{ date, time: '09:00' }]) })
+    });
+    assert.equal(r.status, 201, 'reservasi ' + name);
+    return (await r.json()).id;
+  }
+  const list = async (base, tok) => (await fetch(base + '/api/admin/reservations', { headers: H(tok) })).json();
+  async function dbRows() {
+    const c = new Client({ connectionString: TEST_PG_URL });
+    await c.connect();
+    try { return (await c.query('SELECT data FROM app_state WHERE id = 1')).rows[0].data.reservations; } finally { await c.end(); }
+  }
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const syncB = async () => { await sleep(5300); await list(B, tb); };
+
+  const idX = await reserve(A, 'Hapus Saya');
+  const idT = await reserve(A, 'Pindah Jadwal');
+  const idU1 = await reserve(A, 'Ubah A');
+  const idU2 = await reserve(A, 'Ubah B');
+  await syncB(); // B kini mengenal keempatnya
+
+  // 1) A menghapus X, B menulis dari memori basi → X tidak boleh hidup lagi.
+  assert.equal((await fetch(`${A}/api/admin/reservations/${idX}`, { method: 'DELETE', headers: H(ta) })).status, 200);
+  await sleep(400);
+  await reserve(B, 'Tulisan B');
+  await sleep(800);
+  await syncB();
+  let rows = await dbRows();
+  assert.equal(rows.filter((r) => r.patient_name === 'Hapus Saya').length, 0, 'reservasi yang dihapus hidup lagi');
+  assert.ok(!(await list(B, tb)).some((r) => r.patient_name === 'Hapus Saya'), 'B masih menampilkan reservasi yang dihapus');
+
+  // 2) A memindah jadwal T → B tidak boleh menampilkan/menyimpan dobel.
+  const newDate = new Date(Date.now() + 200 * 864e5).toISOString().slice(0, 10);
+  assert.equal((await fetch(`${A}/api/admin/reservations/${idT}`, { method: 'PATCH', headers: H(ta), body: JSON.stringify({ service_slots: [{ date: newDate, time: '10:00' }] }) })).status, 200);
+  await sleep(500);
+  await syncB();
+  await reserve(B, 'Tulisan B2');
+  await sleep(800);
+  rows = await dbRows();
+  assert.equal(rows.filter((r) => r.patient_name === 'Pindah Jadwal').length, 1, 'pindah jadwal membuat dobel di database');
+  assert.equal((await list(B, tb)).filter((r) => r.patient_name === 'Pindah Jadwal').length, 1, 'pindah jadwal membuat dobel di B');
+
+  // 3) A dan B mengubah reservasi BERBEDA bersamaan → keduanya tersimpan.
+  await syncB();
+  const [ra, rb] = await Promise.all([
+    fetch(`${A}/api/admin/reservations/${idU1}`, { method: 'PATCH', headers: H(ta), body: JSON.stringify({ status: 'approved' }) }),
+    fetch(`${B}/api/admin/reservations/${idU2}`, { method: 'PATCH', headers: H(tb), body: JSON.stringify({ status: 'rejected' }) })
+  ]);
+  assert.equal(ra.status, 200);
+  assert.equal(rb.status, 200);
+  await sleep(1500);
+  rows = await dbRows();
+  assert.equal(rows.find((r) => r.id === idU1).status, 'approved', 'perubahan A hilang');
+  assert.equal(rows.find((r) => r.id === idU2).status, 'rejected', 'perubahan B hilang');
+  assert.equal(new Set(rows.map((r) => r.id)).size, rows.length, 'ID ganda di database');
+  assert.ok(!/save gagal/.test(a._logs() + b._logs()), 'log bersih');
+});

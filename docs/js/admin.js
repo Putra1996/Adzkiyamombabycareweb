@@ -104,6 +104,69 @@ async function api(path, opts = {}) {
   return data;
 }
 
+// ---- Prefetch paralel ----
+// Dulu pembukaan panel berjalan BERANTAI: validasi token (stats) → pengaturan
+// → reservasi → stats+grafik = 4 perjalanan bolak-balik ke server
+// (serverless: masing-masing ratusan ms). Sekarang semuanya dimulai
+// bersamaan; halaman memakai hasil prefetch bila masih segar (≤20 detik).
+const PREFETCH = new Map();
+function prefetchApi(path) {
+  const p = api(path);
+  p.catch(() => {});
+  PREFETCH.set(path, { p, at: Date.now() });
+  return p;
+}
+function apiPrefetched(path) {
+  const e = PREFETCH.get(path);
+  if (e) {
+    PREFETCH.delete(path);
+    if (Date.now() - e.at < 20000) return e.p;
+  }
+  return api(path);
+}
+
+// ---- Chart.js: dimuat sekali, setelah login, dengan SRI + cadangan ----
+// chart.umd.js = berkas resmi (sudah minified) yang ditunjuk field
+// "jsdelivr"/"unpkg" paket npm, jadi byte-nya identik di kedua CDN dan
+// hash SRI di bawah berlaku untuk keduanya.
+const CHARTJS_SOURCES = [
+  'https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.js',
+  'https://unpkg.com/chart.js@4.4.0/dist/chart.umd.js'
+];
+const CHARTJS_SRI = 'sha384-FcQlsUOd0TJjROrBxhJdUhXTUgNJQxTMcxZe6nHbaEfFL1zjQ+bq/uRoBQxb0KMo';
+let CHARTJS_PROMISE = null;
+function ensureChartJs() {
+  if (typeof window.Chart === 'function') return Promise.resolve(true);
+  if (window.__chartJsFailed === true) return Promise.resolve(false);
+  if (CHARTJS_PROMISE) return CHARTJS_PROMISE;
+  CHARTJS_PROMISE = new Promise((resolve) => {
+    let i = 0;
+    const next = () => {
+      if (typeof window.Chart === 'function') return resolve(true);
+      if (i >= CHARTJS_SOURCES.length) { window.__chartJsFailed = true; return resolve(false); }
+      const s = document.createElement('script');
+      s.src = CHARTJS_SOURCES[i++];
+      s.async = true;
+      s.crossOrigin = 'anonymous';
+      s.integrity = CHARTJS_SRI;
+      let settled = false;
+      const done = (ok) => { if (settled) return; settled = true; clearTimeout(timer); if (ok && typeof window.Chart === 'function') resolve(true); else next(); };
+      const timer = setTimeout(() => done(false), 8000);
+      s.onload = () => done(true);
+      s.onerror = () => done(false);
+      document.head.appendChild(s);
+    };
+    next();
+  });
+  return CHARTJS_PROMISE;
+}
+// Tunggu Chart.js maksimal `maxMs` (unduhan berjalan paralel dengan
+// permintaan data, jadi biasanya tidak menambah waktu). Lewat batas →
+// grafik tampil sebagai tabel (fallback yang sudah ada).
+function chartReady(maxMs = 3000) {
+  return Promise.race([ensureChartJs(), new Promise((r) => setTimeout(() => r(false), maxMs))]);
+}
+
 async function fetchProtectedBlob(path) {
   const res = await fetch(apiUrl(path), { headers: { Authorization: 'Bearer ' + TOKEN } });
   if (res.status === 401) { logout(); throw new Error('Sesi berakhir. Silakan masuk kembali.'); }
@@ -162,6 +225,11 @@ async function showApp() {
   document.getElementById('loginView').style.display = 'none';
   document.getElementById('appView').style.display = 'block';
   initTheme(); setupNav();
+  // Mulai semua permintaan awal BERSAMAAN (lihat prefetchApi) + unduh
+  // Chart.js di latar.
+  ['/api/admin/reservations', '/api/admin/stats', '/api/admin/charts', '/api/admin/settings']
+    .forEach((p) => { if (!PREFETCH.has(p)) prefetchApi(p); });
+  ensureChartJs();
   await loadCache();
   navigate('dashboard');
   startNotifPolling();
@@ -183,7 +251,7 @@ async function loadCache() {
   try {
     [SERVICES, SETTINGS] = await Promise.all([
       fetch(apiUrl('/api/services')).then(r => { if (!r.ok) throw new Error(r.statusText); return r.json(); }),
-      api('/api/admin/settings')
+      apiPrefetched('/api/admin/settings')
     ]);
   } catch (e) {}
 }
@@ -272,7 +340,7 @@ document.getElementById('loginForm').addEventListener('submit', async (e) => {
     localStorage.setItem('adm_user', JSON.stringify(USER));
     showApp();
   } catch (err) {
-    alertBox.innerHTML = `<div class="alert alert-error">❌ ${err.message}</div>`;
+    alertBox.innerHTML = `<div class="alert alert-error">❌ ${esc(err.message)}</div>`;
   }
 });
 
@@ -416,17 +484,18 @@ async function renderDashboard() {
   `;
   // Populate Reservasi Terbaru FIRST so it shows even before stats
   // resolve — at least the section is anchored at the top of the page.
+  // Tiga permintaan dimulai bersamaan (dulu reservasi dulu, baru stats).
+  const pRows = apiPrefetched('/api/admin/reservations');
+  const pStatsCharts = Promise.all([apiPrefetched('/api/admin/stats'), apiPrefetched('/api/admin/charts')]);
+  pStatsCharts.catch(() => {});
   try {
-    const rows = await api('/api/admin/reservations');
+    const rows = await pRows;
     renderRecentList(rows.slice(0, 8));
   } catch (e) {
-    document.getElementById('recentSkeleton').innerHTML = '<div class="alert alert-error">' + e.message + '</div>';
+    document.getElementById('recentSkeleton').innerHTML = '<div class="alert alert-error">' + esc(e.message) + '</div>';
   }
   try {
-    const [stats, charts] = await Promise.all([
-      api('/api/admin/stats'),
-      api('/api/admin/charts')
-    ]);
+    const [stats, charts] = await pStatsCharts;
     document.getElementById('statGrid').innerHTML = `
       <div class="stat-card"><div class="label">Pending</div><div class="value">${stats.pending}</div></div>
       <div class="stat-card"><div class="label">Approved</div><div class="value">${stats.approved}</div></div>
@@ -452,7 +521,9 @@ async function renderDashboard() {
       const grid = document.getElementById('statGrid');
       if (grid && grid.parentNode) grid.parentNode.insertBefore(banner, grid);
     }
-    drawCharts(charts);
+    await chartReady();
+    // Admin bisa sudah pindah halaman selama menunggu.
+    if (document.getElementById('chOmzetDay')) drawCharts(charts);
   } catch (e) {
     // Elemen bisa sudah hilang bila admin pindah halaman saat request gagal.
     const box = document.getElementById('statGrid');
@@ -722,7 +793,7 @@ async function loadReservations(refetch) {
   // Render yang lebih baru sudah dimulai — jangan menimpa hasilnya.
   if (!isLatestRender('reservations', _token342)) return;
     } catch (e) {
-      document.getElementById('reservationsList').innerHTML = `<div class="alert alert-error">${e.message}</div>`;
+      document.getElementById('reservationsList').innerHTML = `<div class="alert alert-error">${esc(e.message)}</div>`;
       return;
     }
   }
@@ -3826,7 +3897,7 @@ function renderAcctPnl() {
       </div>
     </div>
   `;
-  drawAcctCharts(d);
+  chartReady().then(() => { if (document.getElementById('acctIncomeChart') || document.getElementById('acctExpenseChart')) drawAcctCharts(d); });
 }
 
 function drawAcctCharts(d) {
@@ -6604,7 +6675,7 @@ async function renderNotifications() {
     NOTIF_LAST_DATA = d;
     document.getElementById('notifPageList').innerHTML = renderNotifList(d);
   } catch (e) {
-    document.getElementById('notifPageList').innerHTML = `<div class="alert alert-error">${e.message}</div>`;
+    document.getElementById('notifPageList').innerHTML = `<div class="alert alert-error">${esc(e.message)}</div>`;
   }
 }
 
@@ -7621,7 +7692,10 @@ if (API_BASE) {
 // fallback instead of trying to instantiate Chart() in vain.
 window.addEventListener('chartjs:unavailable', () => { window.__chartJsFailed = true; });
 if (TOKEN && USER) {
-  api('/api/admin/stats').then(() => showApp()).catch(() => showLogin());
+  // Validasi token memakai permintaan stats yang SAMA dengan yang dipakai
+  // dasbor; data dasbor lain ikut diambil paralel.
+  ['/api/admin/reservations', '/api/admin/charts', '/api/admin/settings'].forEach(prefetchApi);
+  prefetchApi('/api/admin/stats').then(() => showApp()).catch(() => showLogin());
 } else {
   showLogin();
 }
