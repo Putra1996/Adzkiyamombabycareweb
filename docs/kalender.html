@@ -97,14 +97,14 @@
 <script defer src="js/i18n.js"></script>
 <script defer src="js/main.js"></script>
 <script defer src="js/kalender.js"></script>
-<script defer>
+<script>
 // Bind the language toggle button (kalender.js builds the calendar;
 // main.js binds i18n:applied to re-render services if any). Re-render
 // the calendar grid on language change so blackout labels switch.
 document.addEventListener('DOMContentLoaded', () => {
   if (window.i18n) window.i18n.bindToggle(document.getElementById('langToggle'));
 });
-document.addEventListener('i18n:applied', () => { try { renderCalendar(); } catch {} });
+document.addEventListener('i18n:applied', () => { try { if (typeof renderLoadNotice === 'function') renderLoadNotice(); renderCalendar(); } catch {} });
 </script>
 <script>
 if ('serviceWorker' in navigator) {

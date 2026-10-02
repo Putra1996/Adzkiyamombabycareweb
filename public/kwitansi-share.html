@@ -83,7 +83,7 @@
 
 <script src="js/api-config.js"></script>
 <script src="/js/i18n.js" defer></script>
-<script defer>
+<script>
 const PAGE_STYLESHEET = '/css/style.css';
 
 // BASE URL API dari js/api-config.js (kosong = same-origin di Vercel/
@@ -93,7 +93,7 @@ function adzkiyaApiUrl(path) {
   return base + (String(path).startsWith('/') ? path : '/' + path);
 }
 
-function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'})[c]); }
+function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]); }
 function fmtRp(n) { return 'Rp ' + (Number(n) || 0).toLocaleString('id-ID'); }
 function fmtDate(s) { return s ? new Date(s).toLocaleDateString('id-ID', { day:'2-digit', month:'long', year:'numeric' }) : '-'; }
 function fmtDateTime(s) { return s ? new Date(s).toLocaleString('id-ID', { day:'2-digit', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit' }) : '-'; }
@@ -198,10 +198,15 @@ async function init() {
     return;
   }
   const url = adzkiyaApiUrl('/api/public/receipt/') + encodeURIComponent(token);
+  let serverTrouble = false;
   try {
-    const res = await fetch(url);
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error || window.t('share.error_invalid'));
+    let res;
+    try { res = await fetch(url); } catch (netErr) { serverTrouble = true; throw netErr; }
+    const data = await res.json().catch(() => null);
+    // 5xx / respons bukan JSON = gangguan server, BUKAN link yang salah.
+    if (res.status >= 500 || (!res.ok && !data)) { serverTrouble = true; throw new Error('HTTP ' + res.status); }
+    if (!res.ok) throw new Error((data && data.error) || window.t('share.error_invalid'));
+    if (!data || !data.receipt || typeof data.receipt !== 'object') { serverTrouble = true; throw new Error('format respons tidak dikenal'); }
     KW_RECEIPT = data.receipt;
     KW_BUSINESS = data.business;
     panel.style.display = 'none';
@@ -224,6 +229,21 @@ async function init() {
     if (printHint) printHint.textContent = '';
   } catch (e) {
     panel.querySelector('#statusIcon').textContent = '⚠️';
+    document.getElementById('pageTitle').textContent = window.t('share.title_failed', '📄 Kwitansi belum dapat ditampilkan');
+    document.getElementById('pageSubtitle').textContent = '';
+    if (serverTrouble) {
+      document.getElementById('statusText').textContent = window.t('share.error_server', 'Server sedang gangguan');
+      detail.textContent = window.t('share.error_server_detail', 'Kwitansi Anda aman — server hanya sedang sibuk atau koneksi terputus. Silakan coba lagi beberapa saat lagi.');
+      const retry = document.createElement('button');
+      retry.type = 'button';
+      retry.className = 'btn btn-primary';
+      retry.style.marginTop = '12px';
+      retry.textContent = window.t('share.retry', '🔄 Coba lagi');
+      retry.addEventListener('click', () => location.reload());
+      detail.appendChild(document.createElement('br'));
+      detail.appendChild(retry);
+      return;
+    }
     document.getElementById('statusText').textContent = e.message || window.t('share.error_invalid');
     // Be specific about the failure mode so the customer can tell the
     // admin the right thing. We classify based on the original token
@@ -379,7 +399,10 @@ async function copyLink() {
   }
 }
 
-init();
+// `defer` diabaikan untuk skrip inline: skrip ini jalan sebelum i18n.js
+// (defer). Tunggu DOMContentLoaded supaya window.t sudah ada — dulu tautan
+// kosong/tidak valid memicu TypeError dan halaman macet di "Memuat...".
+if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init); else init();
 </script>
 </body>
 </html>

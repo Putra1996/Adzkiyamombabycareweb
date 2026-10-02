@@ -11,11 +11,40 @@ const fs = require('fs');
 const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const ExcelJS = require('exceljs');
-const mysql = require('mysql2/promise');
+// Modul berat dimuat SAAT DIPAKAI (bukan saat boot): exceljs (~170 ms) hanya
+// untuk ekspor Excel, mysql2 (~70 ms) hanya bila DATABASE_URL MySQL. Di
+// Vercel setiap cold start membayar waktu require — ini memangkasnya ±2/3.
+let _ExcelJS = null;
+function getExcelJS() { return _ExcelJS || (_ExcelJS = require('exceljs')); }
+// Event 'error' pada pool/koneksi yang TIDAK didengarkan membuat Node
+// melempar dan SELURUH PROSES MATI. PostgreSQL serverless (Neon, Supabase)
+// rutin memutus koneksi idle → dulu server crash ("Unhandled 'error' event").
+// Koneksi yang putus cukup dibuang pool; query berikutnya membuka yang baru.
+function logIdleDbError(e) {
+  console.warn('[db] koneksi idle terputus (pool akan membuat koneksi baru):', sanitizeDbError(e));
+}
+const mysql = {
+  createConnection: (...args) => require('mysql2/promise').createConnection(...args),
+  createPool: (...args) => {
+    const p = require('mysql2/promise').createPool(...args);
+    try { if (p && typeof p.on === 'function') p.on('error', logIdleDbError); } catch { /* opsional */ }
+    return p;
+  }
+};
 const compression = require('compression');
 const rateLimit = require('express-rate-limit');
-const { Pool: PostgresPool } = require('pg');
+const { Pool: RawPostgresPool } = require('pg');
+// Batas waktu query (sisi klien) + TCP keepalive: koneksi "setengah putus"
+// (umum di serverless) atau query yang tertahan tidak boleh menggantung
+// request sampai dibunuh platform. statement_timeout SENGAJA tidak dipakai —
+// dikirim sebagai startup parameter yang bisa ditolak pooler (PgBouncer).
+const PG_QUERY_TIMEOUT_MS = Math.max(1000, Number(process.env.PG_QUERY_TIMEOUT_MS) || 20000);
+class PostgresPool extends RawPostgresPool {
+  constructor(options) {
+    super({ query_timeout: PG_QUERY_TIMEOUT_MS, keepAlive: true, ...options });
+    this.on('error', logIdleDbError);
+  }
+}
 // pdf-parse v2 has heavy transitive deps (pdfjs-dist + worker). Load it
 // lazily inside the /api/admin/receipts/import-pdf handler so a broken
 // pdf-parse install never crashes the boot of the rest of the API.
@@ -97,6 +126,24 @@ function shiftMonthStr(monthStr, deltaMonths) {
 }
 
 const app = express();
+// Express 4 TIDAK menangkap error dari handler async: request menggantung
+// tanpa jawaban dan error menjadi unhandledRejection (di Node ≥ 15 proses
+// mati). Semua handler async yang didaftarkan lewat app.METHOD/app.use
+// dibungkus agar error-nya diteruskan ke middleware error (→ JSON 500).
+function wrapAsyncHandler(fn) {
+  if (typeof fn !== 'function' || fn.length >= 4) return fn;
+  if (!fn.constructor || fn.constructor.name !== 'AsyncFunction') return fn;
+  return function asyncRouteGuard(req, res, next) {
+    return fn.call(this, req, res, next).catch(next);
+  };
+}
+for (const method of ['get', 'post', 'put', 'patch', 'delete', 'all', 'use']) {
+  const original = app[method].bind(app);
+  app[method] = function guardedRouteMethod(...args) {
+    if (method === 'get' && args.length === 1 && typeof args[0] === 'string') return original(...args); // app.get('setting')
+    return original(...args.map(wrapAsyncHandler));
+  };
+}
 const PORT = parseInt(process.env.PORT || '3000', 10);
 // ---- RUNTIME: Vercel Function vs server biasa (Railway/local) ----
 // Vercel menyuntikkan env VERCEL=1. Di sana server.js TIDAK boleh memanggil
@@ -218,9 +265,14 @@ let dbStateRev = 0;
 // Baseline JSON settings/admins saat terakhir dimuat/ditulis oleh instance
 // ini — dipakai untuk memutuskan siapa yang menang saat konflik.
 const loadedBaseline = { settings: 'null', admins: '[]' };
+// syncedBase = salinan isi database pada dbStateRev (yang terakhir dimuat/
+// ditulis instance ini). Menjadi titik acuan three-way merge: hanya yang
+// berubah SEJAK syncedBase yang dianggap perubahan sisi mana pun.
+let syncedBase = null;
 function refreshLoadedBaseline(stateObj) {
   loadedBaseline.settings = JSON.stringify((stateObj && stateObj.settings) != null ? stateObj.settings : null);
   loadedBaseline.admins = JSON.stringify((stateObj && stateObj.admins) || []);
+  try { syncedBase = JSON.parse(JSON.stringify(stateObj || {})); } catch { syncedBase = null; }
 }
 // Pesan error terakhir saat mencoba connect ke DB (disanitasi — tanpa
 // URL/kredensial). Ditampilkan di /health supaya kasus "DATABASE_URL
@@ -542,6 +594,122 @@ function mergeTransactionalState(dbStateInput, liveStateInput) {
   return { state: target, report };
 }
 
+// THREE-WAY MERGE antar instance (dipakai saat konflik tulis & refresh baca).
+// mergeTransactionalState() di atas hanya MENAMBAH (union + dedupe kunci
+// nama|tanggal|total) — cocok untuk menyalin data darurat, tetapi untuk dua
+// instance yang hidup bersamaan ia keliru:
+//   • reservasi yang DIHAPUS instance lain muncul lagi (resurrection),
+//   • reservasi yang DIPINDAH jadwalnya jadi dobel (kunci berubah),
+//   • perubahan status/kolom dari instance yang kalah rev dibuang diam-diam.
+// Di sini setiap item dibandingkan per ID terhadap `base` (isi database yang
+// terakhir dilihat instance ini): hanya sisi yang MENGUBAH sejak base yang
+// dihitung. Bila kedua sisi mengubah item yang sama, digabung per kolom
+// (kolom yang kita ubah menang). Hapus vs ubah → yang mengubah menang
+// (tidak ada data yang hilang diam-diam).
+const MERGE_COLLECTIONS = ['reservations', 'receipts', 'expenses', 'broadcasts', 'packages', 'supplies', 'supply_moves', 'supply_recipes'];
+const MERGE_REF_FIELDS = { reservations: ['reservation_id'], supplies: ['supply_id'], packages: ['package_id'] };
+function stableJson(v) { return v === undefined ? undefined : JSON.stringify(v); }
+function mergeItemFields(b, o, t) {
+  const out = {};
+  const keys = new Set([...Object.keys(t || {}), ...Object.keys(o || {}), ...Object.keys(b || {})]);
+  for (const k of keys) {
+    const oursChanged = stableJson(o && o[k]) !== stableJson(b && b[k]);
+    const v = oursChanged ? (o ? o[k] : undefined) : (t ? t[k] : undefined);
+    if (v !== undefined) out[k] = v;
+  }
+  return out;
+}
+function threeWayMergeState(baseInput, oursInput, theirsInput) {
+  const base = normalizeStateObject(JSON.parse(JSON.stringify(baseInput || {})));
+  const ours = normalizeStateObject(JSON.parse(JSON.stringify(oursInput || {})));
+  const out = normalizeStateObject(JSON.parse(JSON.stringify(theirsInput || {})));
+  const remap = {}; // koleksi → Map(idLama → idBaru) untuk tabrakan ID item baru
+  for (const col of MERGE_COLLECTIONS) {
+    const idx = (arr) => { const m = new Map(); for (const x of arr) if (x && x.id != null) m.set(String(x.id), x); return m; };
+    const b = idx(base[col]), o = idx(ours[col]), t = idx(out[col]);
+    const result = new Map(t);
+    const collisions = [];
+    const ids = new Set([...o.keys(), ...b.keys()]);
+    for (const id of ids) {
+      const bj = stableJson(b.get(id)), oj = stableJson(o.get(id)), tj = stableJson(t.get(id));
+      if (oj === bj || oj === tj) continue;            // kita tidak mengubah / hasil sama
+      if (tj === bj) {                                  // hanya kita yang mengubah
+        if (oj === undefined) result.delete(id); else result.set(id, o.get(id));
+        continue;
+      }
+      if (bj === undefined) { collisions.push(o.get(id)); continue; } // dua item baru, ID sama
+      if (oj === undefined) continue;                   // kita hapus, mereka ubah → simpan versi mereka
+      if (tj === undefined) { result.set(id, o.get(id)); continue; } // mereka hapus, kita ubah → simpan versi kita
+      result.set(id, mergeItemFields(b.get(id), o.get(id), t.get(id)));
+    }
+    // Urutan: ikuti database, lalu item baru kita sesuai urutan kita.
+    const arr = [];
+    const placed = new Set();
+    for (const x of out[col]) {
+      if (!x || x.id == null) { arr.push(x); continue; }
+      const k = String(x.id);
+      if (result.has(k) && !placed.has(k)) { arr.push(result.get(k)); placed.add(k); }
+    }
+    for (const x of ours[col]) {
+      if (!x || x.id == null) {
+        // Item tanpa ID (data lama): pertahankan bila belum ada yang identik.
+        const j = stableJson(x);
+        if (!arr.some((y) => stableJson(y) === j)) arr.push(x);
+        continue;
+      }
+      const k = String(x.id);
+      if (result.has(k) && !placed.has(k)) { arr.push(result.get(k)); placed.add(k); }
+    }
+    let next = Math.max(Number(out._seq[col]) || 0, Number(ours._seq[col]) || 0,
+      ...arr.map((x) => Number(x && x.id) || 0), ...collisions.map((x) => Number(x && x.id) || 0));
+    for (const item of collisions) {
+      next += 1;
+      remap[col] = remap[col] || new Map();
+      remap[col].set(String(item.id), next);
+      arr.push({ ...item, id: next });
+    }
+    out[col] = arr;
+    out._seq[col] = Math.max(next, Number(out._seq[col]) || 0, Number(ours._seq[col]) || 0);
+  }
+  // Rujukan dari item baru kita ke item baru kita yang ID-nya dipindah.
+  for (const [col, fields] of Object.entries(MERGE_REF_FIELDS)) {
+    const m = remap[col];
+    if (!m) continue;
+    const baseIds = new Set();
+    for (const c of MERGE_COLLECTIONS) for (const x of base[c]) if (x && x.id != null) baseIds.add(c + ':' + x.id);
+    for (const c of MERGE_COLLECTIONS) {
+      for (const x of out[c]) {
+        if (!x || baseIds.has(c + ':' + x.id)) continue;
+        const fromOurs = ours[c].some((y) => y && y.id === x.id && stableJson(y) === stableJson(x));
+        if (!fromOurs) continue;
+        for (const f of fields) if (x[f] != null && m.has(String(x[f]))) x[f] = m.get(String(x[f]));
+      }
+    }
+  }
+  // Penomoran & penghitung: ambil yang terbesar.
+  for (const [k, v] of Object.entries(ours._seq || {})) out._seq[k] = Math.max(Number(out._seq[k]) || 0, Number(v) || 0);
+  for (const [k, v] of Object.entries(ours.invoice_counters || {})) {
+    if (typeof v === 'number') out.invoice_counters[k] = Math.max(Number(out.invoice_counters[k]) || 0, v);
+    else if (out.invoice_counters[k] === undefined) out.invoice_counters[k] = v;
+  }
+  // Token kwitansi: three-way per token.
+  for (const tok of new Set([...Object.keys(ours.share_tokens), ...Object.keys(base.share_tokens)])) {
+    const bj = stableJson(base.share_tokens[tok]), oj = stableJson(ours.share_tokens[tok]), tj = stableJson(out.share_tokens[tok]);
+    if (oj === bj || oj === tj) continue;
+    if (oj === undefined) { if (tj === bj) delete out.share_tokens[tok]; continue; }
+    out.share_tokens[tok] = ours.share_tokens[tok];
+  }
+  // Kunci tingkat-atas lain (kategori pengeluaran, dsb.): yang kita ubah menang.
+  const handled = new Set([...MERGE_COLLECTIONS, '_seq', 'invoice_counters', 'share_tokens', 'settings', 'admins']);
+  for (const k of new Set([...Object.keys(ours), ...Object.keys(base)])) {
+    if (handled.has(k)) continue;
+    if (stableJson(ours[k]) === stableJson(base[k])) continue;
+    if (ours[k] === undefined) delete out[k]; else out[k] = ours[k];
+  }
+  // settings & admins diputuskan pemanggil (aturan baseline yang sudah ada).
+  return out;
+}
+
 // Probe berkala: kalau database kembali bisa dihubungi, catat di status
 // (tidak otomatis memindahkan penyimpanan — lihat catatan di atas).
 function startDbRetryLoop() {
@@ -692,6 +860,272 @@ async function readCurrentDbState() {
   return null;
 }
 
+// Hanya nomor revisi (beberapa byte) — dipakai refresh bacaan supaya blob
+// state (bisa belasan MB) TIDAK diunduh ulang setiap TTL bila tidak ada
+// instance lain yang menulis. Dulu setiap refresh mengunduh + mem-parse
+// seluruh blob hanya untuk membandingkan rev.
+async function readCurrentDbRev() {
+  if (!pool) return null;
+  const kind = activeDatabaseKind();
+  if (kind === 'postgres') {
+    const result = await pool.query('SELECT rev FROM app_state WHERE id = 1');
+    return result.rows.length ? (Number(result.rows[0].rev) || 0) : 0;
+  }
+  if (kind === 'mysql') {
+    const [rows] = await pool.execute('SELECT rev FROM app_state WHERE id = 1');
+    return rows.length ? (Number(rows[0].rev) || 0) : 0;
+  }
+  return null;
+}
+
+// ---- Berkas besar (bukti transfer) DI LUAR blob state ----
+// Dulu bukti transfer (hingga 4 MB → ~5,4 MB base64 per berkas) disimpan di
+// dalam blob app_state. Akibatnya SETIAP tulisan (reservasi baru, ubah
+// status, dsb.) mengunggah ulang seluruh blob dan setiap refresh
+// mengunduhnya lagi — 40 bukti ≈ 16 MB per operasi, makin lama makin
+// lambat. Sekarang bukti disimpan per baris di tabel app_blobs; reservasi
+// hanya menyimpan rujukan `proof_ref`. Mode file (tanpa database) tetap
+// menyimpan inline seperti dulu.
+let blobTableReadyFor = null;
+async function ensureBlobTable() {
+  if (!pool) return false;
+  if (blobTableReadyFor === pool) return true;
+  const kind = activeDatabaseKind();
+  if (kind === 'postgres') {
+    await pool.query('CREATE TABLE IF NOT EXISTS app_blobs (k TEXT PRIMARY KEY, mime TEXT, data TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP)');
+  } else if (kind === 'mysql') {
+    await pool.execute('CREATE TABLE IF NOT EXISTS app_blobs (k VARCHAR(96) PRIMARY KEY, mime VARCHAR(100), data LONGTEXT NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)');
+  } else {
+    return false;
+  }
+  blobTableReadyFor = pool;
+  return true;
+}
+
+async function putBlob(b64, mime, prefix = 'proof') {
+  if (!(await ensureBlobTable())) return null;
+  const k = prefix + '_' + crypto.randomUUID();
+  if (activeDatabaseKind() === 'postgres') {
+    await pool.query('INSERT INTO app_blobs (k, mime, data) VALUES ($1, $2, $3)', [k, mime || null, b64]);
+  } else {
+    await pool.execute('INSERT INTO app_blobs (k, mime, data) VALUES (?, ?, ?)', [k, mime || null, b64]);
+  }
+  return k;
+}
+
+async function getBlob(k) {
+  if (!k || !(await ensureBlobTable())) return null;
+  if (activeDatabaseKind() === 'postgres') {
+    const r = await pool.query('SELECT mime, data FROM app_blobs WHERE k = $1', [k]);
+    return r.rows.length ? { mime: r.rows[0].mime, b64: r.rows[0].data } : null;
+  }
+  const [rows] = await pool.execute('SELECT mime, data FROM app_blobs WHERE k = ?', [k]);
+  return rows.length ? { mime: rows[0].mime, b64: rows[0].data } : null;
+}
+
+async function deleteBlob(k) {
+  try {
+    if (!k || !(await ensureBlobTable())) return;
+    if (activeDatabaseKind() === 'postgres') await pool.query('DELETE FROM app_blobs WHERE k = $1', [k]);
+    else await pool.execute('DELETE FROM app_blobs WHERE k = ?', [k]);
+  } catch (e) { console.warn('[blob] gagal menghapus:', sanitizeDbError(e)); }
+}
+
+// Dipanggil di jalur simpan (berurutan lewat saveChain) SEBELUM blob state
+// ditulis: bukti inline dipindah ke app_blobs. Sekaligus memigrasikan data
+// lama secara bertahap (maks. PROOF_OFFLOAD_BATCH per simpan supaya satu
+// permintaan tidak lama). Gagal → tetap inline (tidak ada data hilang).
+const PROOF_OFFLOAD_BATCH = 10;
+async function offloadInlineProofs() {
+  if (!pool || activeDatabaseKind() === 'file') return 0;
+  let moved = 0;
+  for (const r of DB.reservations || []) {
+    if (moved >= PROOF_OFFLOAD_BATCH) break;
+    if (!r || !r.proof_b64) continue;
+    const b64 = r.proof_b64;
+    let k;
+    try { k = await putBlob(b64, r.proof_mime); } catch (e) {
+      console.warn('[blob] bukti tetap inline (gagal dipindah):', sanitizeDbError(e));
+      return moved;
+    }
+    if (!k) return moved;
+    // Reservasi bisa berubah selama await — pindahkan hanya bila isinya
+    // masih bukti yang sama.
+    if (r.proof_b64 === b64) {
+      r.proof_ref = k;
+      r.proof_b64 = null;
+      moved++;
+    } else {
+      deleteBlob(k);
+    }
+  }
+  return moved;
+}
+
+// ---- Gambar pengaturan (logo / hero / QRIS) di app_blobs ----
+// Sama seperti bukti transfer: gambar dulu disimpan base64 di blob state
+// sehingga SETIAP tulisan (reservasi, ubah status, ...) ikut mengirim ulang
+// gambar ke database — foto hero bisa berukuran megabyte. Sekarang gambar
+// dipindah ke app_blobs; settings hanya menyimpan `<jenis>_ref`. Rujukan
+// bersifat tetap (unggah baru = rujukan baru) sehingga aman di-cache di
+// memori per instance.
+const SETTING_IMAGE_KINDS = ['logo', 'hero', 'qris'];
+const settingImageCache = new Map(); // ref -> { b64, mime }
+// ref -> sha256 isi inline asalnya; dipakai saat konflik tulis untuk
+// mengenali perubahan settings yang HANYA berupa pemindahan gambar.
+const offloadedFromHash = new Map();
+const sha256Hex = (str) => crypto.createHash('sha256').update(String(str)).digest('hex');
+
+// Logo bawaan lama berukuran 1024×1280 (145 KB). Diganti versi 512 px
+// (21 KB) — database yang masih menyimpan logo lama otomatis dilayani
+// versi baru, dan versi baru itulah yang dipindah ke app_blobs.
+const OLD_SEED_LOGO_SHA256 = '6e2c64cefedce9dbdd45dc113f8a91478013df85968ca0394d31a61b0c3debba';
+let oldSeedLogoMemo = { src: null, isOld: false };
+function isOldSeedLogo(b64) {
+  if (!b64) return false;
+  if (oldSeedLogoMemo.src !== b64) oldSeedLogoMemo = { src: b64, isOld: sha256Hex(b64) === OLD_SEED_LOGO_SHA256 };
+  return oldSeedLogoMemo.isOld;
+}
+function upgradeSettingImageB64(kind, b64) {
+  if (kind === 'logo' && isOldSeedLogo(b64)) return loadSeedLogoB64() || b64;
+  return b64;
+}
+function hasSettingImage(s, kind) {
+  return !!(s && (s[kind + '_b64'] || s[kind + '_ref']));
+}
+async function readSettingImage(kind) {
+  const s = DB.settings || {};
+  if (s[kind + '_b64']) return { b64: upgradeSettingImageB64(kind, s[kind + '_b64']), mime: s[kind + '_mime'] };
+  const ref = s[kind + '_ref'];
+  if (!ref) return null;
+  if (settingImageCache.has(ref)) return settingImageCache.get(ref);
+  const blob = await getBlob(ref);
+  if (!blob) return null;
+  const val = { b64: blob.b64, mime: s[kind + '_mime'] || blob.mime };
+  if (settingImageCache.size > 12) settingImageCache.clear();
+  settingImageCache.set(ref, val);
+  return val;
+}
+async function offloadSettingImages() {
+  if (!pool || activeDatabaseKind() === 'file' || !DB.settings) return 0;
+  let moved = 0;
+  for (const kind of SETTING_IMAGE_KINDS) {
+    const b64 = DB.settings[kind + '_b64'];
+    if (!b64) continue;
+    const mime = DB.settings[kind + '_mime'];
+    const payload = upgradeSettingImageB64(kind, b64);
+    let k;
+    try { k = await putBlob(payload, mime, 'img_' + kind); } catch (e) {
+      console.warn('[blob] gambar tetap inline (gagal dipindah):', sanitizeDbError(e));
+      return moved;
+    }
+    if (!k) return moved;
+    if (DB.settings && DB.settings[kind + '_b64'] === b64) {
+      DB.settings[kind + '_ref'] = k;
+      DB.settings[kind + '_b64'] = null;
+      settingImageCache.set(k, { b64: payload, mime });
+      if (offloadedFromHash.size > 50) offloadedFromHash.clear();
+      offloadedFromHash.set(k, sha256Hex(b64));
+      moved++;
+    } else {
+      deleteBlob(k);
+    }
+  }
+  return moved;
+}
+// Apakah settings KITA benar-benar diubah admin sejak dimuat? Pemindahan
+// gambar ke app_blobs (b64 → ref dengan isi sama) BUKAN perubahan: saat
+// konflik tulis, settings database yang dipakai supaya perubahan
+// pengaturan dari instance lain tidak tertimpa oleh salinan lama kita.
+function stripSettingImageKeys(st) {
+  const o = { ...(st || {}) };
+  for (const k of SETTING_IMAGE_KINDS) { delete o[k + '_b64']; delete o[k + '_ref']; }
+  return o;
+}
+function settingsChangedSinceLoad(oursSettings) {
+  const cur = JSON.stringify(oursSettings != null ? oursSettings : null);
+  if (cur === loadedBaseline.settings) return false;
+  let base;
+  try { base = JSON.parse(loadedBaseline.settings); } catch { return true; }
+  if (!base || !oursSettings) return true;
+  if (JSON.stringify(stripSettingImageKeys(oursSettings)) !== JSON.stringify(stripSettingImageKeys(base))) return true;
+  for (const k of SETTING_IMAGE_KINDS) {
+    const oB64 = oursSettings[k + '_b64'] || null, oRef = oursSettings[k + '_ref'] || null;
+    const bB64 = base[k + '_b64'] || null, bRef = base[k + '_ref'] || null;
+    if (oB64 === bB64 && oRef === bRef) continue;
+    // Satu-satunya perbedaan yang dimaafkan: gambar inline di baseline kini
+    // dirujuk lewat ref yang kita buat dari isi yang sama.
+    if (!oB64 && oRef && bB64 && offloadedFromHash.get(oRef) === sha256Hex(bB64)) continue;
+    return true;
+  }
+  return false;
+}
+
+// Gambar lama yang sudah diganti/dihapus dibersihkan berkala. Hanya blob
+// berumur > 24 jam yang tidak dirujuk pengaturan saat ini — jeda panjang
+// ini melindungi tulisan instance lain yang sedang berjalan.
+let lastSettingBlobGcAt = 0;
+async function gcOrphanSettingBlobs() {
+  if (!pool || activeDatabaseKind() === 'file' || !DB.settings) return;
+  if (Date.now() - lastSettingBlobGcAt < 6 * 3600e3) return;
+  lastSettingBlobGcAt = Date.now();
+  try {
+    if (!(await ensureBlobTable())) return;
+    const keep = SETTING_IMAGE_KINDS.map((k) => DB.settings[k + '_ref']).filter(Boolean);
+    if (activeDatabaseKind() === 'postgres') {
+      await pool.query(
+        "DELETE FROM app_blobs WHERE k LIKE 'img\\_%' AND created_at < CURRENT_TIMESTAMP - INTERVAL '24 hours' AND NOT (k = ANY($1::text[]))",
+        [keep]
+      );
+    } else {
+      const notIn = keep.length ? ' AND k NOT IN (' + keep.map(() => '?').join(',') + ')' : '';
+      await pool.execute(
+        "DELETE FROM app_blobs WHERE k LIKE 'img\\_%' AND created_at < (CURRENT_TIMESTAMP - INTERVAL 24 HOUR)" + notIn,
+        keep
+      );
+    }
+  } catch (e) { console.warn('[blob] pembersihan gambar lama gagal:', sanitizeDbError(e)); }
+}
+// Salinan pengaturan dengan gambar di-inline-kan kembali (untuk backup &
+// pindah database) — rujukan app_blobs tidak berarti di database lain.
+async function inlineSettingImages(settings) {
+  const out = { ...(settings || {}) };
+  for (const kind of SETTING_IMAGE_KINDS) {
+    const ref = out[kind + '_ref'];
+    if (!ref) continue;
+    if (!out[kind + '_b64']) {
+      let img = settingImageCache.get(ref) || null;
+      if (!img) {
+        try { const b = await getBlob(ref); if (b) img = { b64: b.b64, mime: b.mime }; } catch (e) {
+          console.warn('[blob] gagal menarik gambar ' + kind + ':', sanitizeDbError(e));
+          continue; // biarkan rujukan — lebih baik daripada kehilangan gambar
+        }
+      }
+      if (img) {
+        out[kind + '_b64'] = img.b64;
+        out[kind + '_mime'] = out[kind + '_mime'] || img.mime;
+      }
+    }
+    delete out[kind + '_ref'];
+  }
+  return out;
+}
+
+async function inlineProofRefsFromCurrentPool() {
+  if (!pool) return;
+  for (const r of DB.reservations || []) {
+    if (!r || !r.proof_ref || r.proof_b64) continue;
+    try {
+      const blob = await getBlob(r.proof_ref);
+      if (blob) {
+        r.proof_b64 = blob.b64;
+        r.proof_mime = r.proof_mime || blob.mime;
+        delete r.proof_ref;
+      }
+    } catch (e) { console.warn('[blob] gagal menarik bukti sebelum pindah database:', sanitizeDbError(e)); }
+  }
+}
+
 async function persistSnapshot(json, expectRev) {
   // activeDatabaseKind() — bukan DATABASE_KIND — supaya tulisan mengikuti
   // koneksi yang sedang dipakai (termasuk koneksi yang dipasang dari panel).
@@ -763,50 +1197,77 @@ function applyStateInPlace(stateObj) {
     else DB.settings = stateObj.settings;
   }
   DB.admins = stateObj.admins || [];
+  // Kunci tingkat-atas lain (mis. expense_categories) ikut dimuat.
+  const known = new Set(['admins', 'reservations', 'receipts', 'broadcasts', 'expenses', 'packages', 'supplies', 'supply_moves', 'supply_recipes', '_seq', 'invoice_counters', 'share_tokens', 'settings']);
+  for (const [k, v] of Object.entries(stateObj)) {
+    if (!known.has(k) && k !== '__proto__' && k !== 'constructor' && k !== 'prototype') DB[k] = v;
+  }
 }
 
 // Batas percobaan merge-rewrite saat konflik antar instance.
 const STORAGE_SAVE_RETRIES = 6;
 async function persistWithRetry() {
+  await offloadInlineProofs();
+  await offloadSettingImages();
   // JSON diambil SAAT MENULIS (bukan saat save() dipanggil) supaya state
   // hasil refreshFromDbIfStale() yang segar ikut terbawa.
-  let mine = JSON.stringify(DB);
+  const snapshotJson = JSON.stringify(DB);
+  let mine = snapshotJson;
+  // Titik acuan merge: isi database pada rev yang kita pegang.
+  let base = syncedBase;
+  let merged = false;
   for (let attempt = 1; attempt <= STORAGE_SAVE_RETRIES; attempt++) {
     try {
       dbStateRev = await persistSnapshot(mine, dbStateRev);
       try {
-        const parsed = JSON.parse(mine);
-        // PENTING: hasil gabungan harus DIMUAT BALIK ke memori. Tanpa ini,
-        // instance yang kalah rev menulis data gabungan ke database tetapi
-        // GET-nya sendiri tetap tidak melihat tulisan instance lain.
-        applyStateInPlace(parsed);
-        refreshLoadedBaseline(parsed);
-      } catch { /* muat balik opsional */ }
+        const written = JSON.parse(mine);
+        if (merged) {
+          // Hasil gabungan (berisi tulisan instance lain) harus DIMUAT BALIK
+          // ke memori — tanpa ini GET instance ini tidak melihat tulisan
+          // instance lain. Tetapi perubahan memori yang terjadi SELAMA
+          // penulisan (request lain di instance ini) tidak boleh ikut
+          // terhapus: muat balik juga lewat three-way merge.
+          const t0 = JSON.parse(snapshotJson);
+          const nowMem = JSON.parse(JSON.stringify(DB));
+          const reapplied = threeWayMergeState(t0, nowMem, written);
+          reapplied.settings = stableJson(nowMem.settings) !== stableJson(t0.settings) ? nowMem.settings : written.settings;
+          reapplied.admins = stableJson(nowMem.admins) !== stableJson(t0.admins) ? nowMem.admins : written.admins;
+          applyStateInPlace(reapplied);
+        }
+        refreshLoadedBaseline(written);
+      } catch (e) { console.error('[storage] muat balik hasil simpan gagal:', e.message); }
+      keepAlive(gcOrphanSettingBlobs());
       return;
     } catch (e) {
       if (!/STORAGE_WRITE_CONFLICT/.test(e.message) || attempt === STORAGE_SAVE_RETRIES) throw e;
       // Instance lain menulis lebih dulu. Muat state terbaru, GABUNGKAN
-      // data transaksional (dedupe — tidak ada reservasi/kwitansi yang
-      // tertimpa), lalu tulis ulang dengan revisi terbaru.
+      // (three-way terhadap base), lalu tulis ulang dengan revisi terbaru.
       const fresh = await readCurrentDbState();
       if (!fresh) throw e;
       const ours = JSON.parse(mine);
-      const { state: merged } = mergeTransactionalState(fresh.state, ours);
+      let next;
+      if (base) {
+        next = threeWayMergeState(base, ours, fresh.state);
+      } else {
+        // Tanpa titik acuan (mis. baru pindah dari mode darurat): union aman.
+        next = mergeTransactionalState(fresh.state, ours).state;
+      }
       // Pengaturan & akun admin: versi KITA menang hanya bila KITA yang
-      // mengubahnya sejak muatan terakhir; kalau tidak, ikuti database
-      // (mergeTransactionalState sengaja tidak menyentuh keduanya).
-      if (JSON.stringify(ours.settings != null ? ours.settings : null) !== loadedBaseline.settings) {
-        merged.settings = ours.settings != null ? ours.settings : null;
+      // mengubahnya sejak muatan terakhir; kalau tidak, ikuti database.
+      if (settingsChangedSinceLoad(ours.settings)) {
+        next.settings = ours.settings != null ? ours.settings : null;
       } else if (fresh.state && fresh.state.settings != null) {
-        merged.settings = fresh.state.settings;
+        next.settings = fresh.state.settings;
       }
       if (JSON.stringify(ours.admins || []) !== loadedBaseline.admins) {
-        merged.admins = ours.admins || [];
+        next.admins = ours.admins || [];
+      } else {
+        next.admins = (fresh.state && fresh.state.admins) || ours.admins || [];
       }
-      // Jaga-lah agar tidak ada ID ganda di hasil gabungan (salinan dari
-      // dua instance bisa sama-sama id 1).
-      renumberDuplicateIds(merged);
-      mine = JSON.stringify(merged);
+      renumberDuplicateIds(next);
+      mine = JSON.stringify(next);
+      base = fresh.state;
+      merged = true;
       dbStateRev = fresh.rev;
       await new Promise((resolve) => setTimeout(resolve, 40 * attempt));
     }
@@ -839,11 +1300,36 @@ function renumberDuplicateIds(state) {
   }
 }
 
+let lastSaveError = null;
 function queueSave() {
   saveChain = saveChain
     .then(() => persistWithRetry())
-    .catch((error) => console.error(`[storage] ${activeDatabaseKind()} save gagal:`, error.message));
+    .then(() => { lastSaveError = null; }, (error) => {
+      lastSaveError = error;
+      console.error(`[storage] ${activeDatabaseKind()} save gagal:`, error.message);
+    });
   return saveChain;
+}
+
+// Seperti flush(), tetapi melempar bila simpan TERAKHIR gagal — dipakai
+// middleware "simpan sebelum respons" supaya klien tidak diberi 2xx untuk
+// data yang belum masuk database.
+async function flushOrThrow() {
+  await flush();
+  if (lastSaveError) throw lastSaveError;
+}
+
+// Serverless (Vercel): pekerjaan yang masih berjalan SETELAH respons
+// dikirim bisa dibekukan/dihentikan platform — terutama saat trafik sepi.
+// keepAlive() mendaftarkan promise ke runtime Vercel (mekanisme yang sama
+// dengan waitUntil() di paket resmi @vercel/functions: konteks request di
+// globalThis[Symbol.for('@vercel/request-context')]). Di luar Vercel no-op.
+function keepAlive(promise) {
+  try {
+    const ctx = globalThis[Symbol.for('@vercel/request-context')]?.get?.();
+    if (ctx && typeof ctx.waitUntil === 'function') ctx.waitUntil(promise);
+  } catch (e) { /* konteks tidak tersedia: abaikan */ }
+  return promise;
 }
 
 // ---- Refresh bacaan dari database (serverless multi-instance) ----
@@ -853,28 +1339,41 @@ function queueSave() {
 // sekali per TTL supaya murah; tulisan selalu divalidasi rev di
 // persistWithRetry.
 const DB_REFRESH_TTL_MS = 5000;
+const REFRESH_WAIT_MS = 2500;
 let lastDbRefreshAt = 0;
 async function refreshFromDbIfStale(force) {
   if (!pool || activeDatabaseKind() === 'file') return;
   const now = Date.now();
   if (!force && now - lastDbRefreshAt < DB_REFRESH_TTL_MS) return;
   lastDbRefreshAt = now;
+  const rev = await readCurrentDbRev();
+  // Rev hanya naik. Bacaan yang lebih tua dari yang sudah kita pegang
+  // (mis. tulisan kita sendiri selesai saat refresh ini menunggu) diabaikan
+  // — menerapkannya akan menghapus tulisan kita dari memori.
+  if (rev === null || rev <= dbStateRev) return;
   const fresh = await readCurrentDbState();
-  if (!fresh || !fresh.state || fresh.rev === dbStateRev) return;
-  // Gabungkan: data transaksional dari database, tulisan kita yang belum
-  // tersimpan tetap ikut (dedupe). Settings/admins hanya diikuti bila
-  // memori ini tidak punya perubahan yang belum tersimpan.
-  const { state: merged } = mergeTransactionalState(fresh.state, DB);
+  if (!fresh || !fresh.state || fresh.rev <= dbStateRev) return;
+  // Three-way: perubahan instance lain (termasuk HAPUS dan pindah jadwal)
+  // diterapkan; perubahan kita yang belum tersimpan tetap ada.
+  const mem = JSON.parse(JSON.stringify(DB));
+  const merged = syncedBase
+    ? threeWayMergeState(syncedBase, mem, fresh.state)
+    : mergeTransactionalState(fresh.state, mem).state;
   renumberDuplicateIds(merged);
   normalizeStateObject(merged);
-  if (JSON.stringify(DB.settings != null ? DB.settings : null) === loadedBaseline.settings) {
-    merged.settings = (fresh.state.settings != null) ? fresh.state.settings : merged.settings;
-  }
-  if (JSON.stringify(DB.admins || []) === loadedBaseline.admins) {
-    merged.admins = (fresh.state.admins) || merged.admins;
-  }
+  const settingsClean = JSON.stringify(DB.settings != null ? DB.settings : null) === loadedBaseline.settings;
+  const adminsClean = JSON.stringify(DB.admins || []) === loadedBaseline.admins;
+  merged.settings = settingsClean ? ((fresh.state.settings != null) ? fresh.state.settings : mem.settings) : mem.settings;
+  merged.admins = adminsClean ? (fresh.state.admins || mem.admins || []) : (mem.admins || []);
   applyStateInPlace(merged);
   dbStateRev = fresh.rev;
+  // Baseline baru = isi database yang baru dibaca. Bagian yang masih kotor
+  // (settings/admins yang kita ubah tapi belum tersimpan) tetap ditandai
+  // kotor supaya tidak tertimpa refresh berikutnya.
+  const prevSettings = loadedBaseline.settings, prevAdmins = loadedBaseline.admins;
+  refreshLoadedBaseline(fresh.state);
+  if (!settingsClean) loadedBaseline.settings = prevSettings;
+  if (!adminsClean) loadedBaseline.admins = prevAdmins;
 }
 
 function save() {
@@ -895,14 +1394,34 @@ async function flush() {
 }
 
 let server;
-async function shutdown() {
-  await flush();
-  if (server) await new Promise((resolve) => server.close(resolve));
-  if (pool) await pool.end();
-  process.exit(0);
+let shuttingDown = false;
+async function shutdown(signal, exitCode = 0) {
+  // Sekali saja (SIGTERM lalu SIGINT tidak menjalankan dua kali), dan
+  // dijamin selesai: simpan gagal / koneksi keep-alive yang menggantung
+  // tidak boleh menahan proses — batas 10 detik lalu keluar paksa.
+  if (shuttingDown) return;
+  shuttingDown = true;
+  const force = setTimeout(() => process.exit(exitCode || 1), 10000);
+  if (force.unref) force.unref();
+  try { await flush(); } catch (e) { console.error('[shutdown] simpan terakhir gagal:', e && e.message); exitCode = exitCode || 1; }
+  try { if (server) await new Promise((resolve) => server.close(() => resolve())); } catch { /* sudah tertutup */ }
+  try { if (pool) await pool.end(); } catch { /* abaikan */ }
+  process.exit(exitCode);
 }
-process.on('SIGTERM', shutdown);
-process.on('SIGINT', shutdown);
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
+// Jaring pengaman terakhir. Promise yang lupa di-catch dulu MEMATIKAN
+// proses (perilaku bawaan Node ≥ 15) — kini dicatat dan server tetap
+// melayani. Exception sinkron yang tak tertangkap membuat state tidak
+// pasti: di server biasa data disimpan lalu proses keluar (platform /
+// process manager menyalakan ulang); di Vercel runtime yang mengelola.
+process.on('unhandledRejection', (reason) => {
+  console.error('[proses] promise ditolak tanpa penanganan (server tetap jalan):', reason && reason.stack ? reason.stack : reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('[proses] error tak tertangkap:', err && err.stack ? err.stack : err);
+  if (!RUNNING_ON_VERCEL) shutdown('uncaughtException', 1);
+});
 
 function nextId(t) { DB._seq[t] = (DB._seq[t] || 0) + 1; return DB._seq[t]; }
 
@@ -1096,8 +1615,9 @@ function seedAdmin() {
   }
 }
 
-function seedSettings() {
-  if (DB.settings) return;
+let seedLogoB64Memo;
+function loadSeedLogoB64() {
+  if (seedLogoB64Memo !== undefined) return seedLogoB64Memo;
   let logo_b64 = null;
   try {
     const p = path.join(__dirname, 'seed-logo.b64');
@@ -1109,6 +1629,13 @@ function seedSettings() {
     // bentuk modul supaya /api/logo tetap berfungsi di sana.
     try { logo_b64 = String(require('./seed-logo.js') || '').trim() || null; } catch (e) {}
   }
+  seedLogoB64Memo = logo_b64 || null;
+  return seedLogoB64Memo;
+}
+
+function seedSettings() {
+  if (DB.settings) return;
+  const logo_b64 = loadSeedLogoB64();
   DB.settings = {
     business_name: 'Adzkiya Mom Baby Care',
     tagline: 'Layanan Kesehatan Ibu & Anak Terpercaya',
@@ -1306,6 +1833,11 @@ function ensureNewSettings() {
 //      app DIPAKAI LANGSUNG sebagai request handler, tanpa app.listen().
 async function boot() {
   await initStorage();
+  // Dulu boot SELALU menulis ulang seluruh state (rev naik di setiap cold
+  // start Vercel → tulisan sia-sia + semua instance lain harus mengunduh
+  // ulang state). Sekarang hanya bila boot benar-benar mengubah sesuatu
+  // (seed awal, pengaturan baru, migrasi) atau baris database belum ada.
+  const bootSnapshot = JSON.stringify(DB);
   seedAdmin();
   seedSettings();
   ensureNewSettings();
@@ -1320,7 +1852,9 @@ async function boot() {
   // unref: timer pembersihan tidak boleh menahan proses hidup (penting agar
   // tool/test yang me-require modul ini bisa keluar dengan normal).
   if (pruneTimer.unref) pruneTimer.unref();
-  await queueSave();
+  const needsRow = activeDatabaseKind() !== 'file' && !dbStateRev;
+  const needsFile = activeDatabaseKind() === 'file' && !fs.existsSync(DATA_FILE);
+  if (needsRow || needsFile || JSON.stringify(DB) !== bootSnapshot) await queueSave();
 }
 
 // Pekerjaan latar (pengingat otomatis, peringatan stok, pemanasan AI).
@@ -1430,6 +1964,8 @@ if (RUNNING_ON_VERCEL) {
 module.exports = app;
 module.exports.ensureBooted = ensureBooted;
 module.exports.startBackgroundJobs = startBackgroundJobs;
+// Internal — hanya untuk tes unit (test/merge-threeway.test.js).
+module.exports._internals = { threeWayMergeState };
 
 // ---- SERVICES CATALOG ----
 const SERVICES = [
@@ -1628,8 +2164,28 @@ const allowedOrigins = process.env.ALLOWED_ORIGINS
 // (docs/) tidak bisa memanggil API Railway — halaman tampil tanpa layanan,
 // kalender kosong, dsb. Hanya origin milik repo ini + localhost (dev).
 const DEFAULT_ALLOWED_ORIGINS = new Set(['https://putra1996.github.io']);
+// Domain milik deployment Vercel ini sendiri (disuntikkan otomatis oleh
+// Vercel sebagai System Environment Variables) — selalu boleh.
+for (const key of ['VERCEL_URL', 'VERCEL_BRANCH_URL', 'VERCEL_PROJECT_PRODUCTION_URL']) {
+  const host = String(process.env[key] || '').trim().replace(/^https?:\/\//, '').replace(/\/$/, '').toLowerCase();
+  if (host) DEFAULT_ALLOWED_ORIGINS.add('https://' + host);
+}
+// Permintaan SAME-ORIGIN (halaman dan API di host yang sama) selalu boleh.
+// BUG LAMA: begitu ALLOWED_ORIGINS diisi (mis. hanya GitHub Pages), POST
+// dari situs itu sendiri — login admin, kirim reservasi — ditolak 403
+// "Origin tidak diizinkan", karena browser selalu mengirim header Origin
+// pada POST/PUT/PATCH/DELETE walau same-origin.
+function isSameOriginRequest(req, origin) {
+  let originHost;
+  try { originHost = new URL(origin).host.toLowerCase(); } catch (e) { return false; }
+  const hosts = [req.headers['x-forwarded-host'], req.headers.host]
+    .filter(Boolean)
+    .map((h) => String(h).split(',')[0].trim().toLowerCase());
+  return hosts.includes(originHost);
+}
 app.use((req, res, next) => {
   const origin = req.headers.origin;
+  if (origin && isSameOriginRequest(req, origin)) return next();
   if (!allowedOrigins && origin) {
     const normalized = origin.replace(/\/$/, '');
     const isDefaultAllowed = DEFAULT_ALLOWED_ORIGINS.has(normalized.toLowerCase());
@@ -1650,7 +2206,7 @@ app.use((req, res, next) => {
     }
     const normalized = origin.replace(/\/$/, '');
     const localOrigin = !IS_PRODUCTION && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(normalized);
-    if (!allowedOrigins.has(normalized) && !localOrigin) {
+    if (!allowedOrigins.has(normalized) && !DEFAULT_ALLOWED_ORIGINS.has(normalized.toLowerCase()) && !localOrigin) {
       return res.status(403).json({ error: 'Origin tidak diizinkan' });
     }
     res.setHeader('Access-Control-Allow-Origin', origin);
@@ -1833,14 +2389,54 @@ function calcReservationTotal(r) {
 // Admin settings get/put + upload
 // Admin backup/restore
 
-// Refresh state dari database untuk GET /api/* (maks sekali per TTL).
+// SIMPAN SEBELUM RESPONS (serverless). save() menunda penulisan 200 ms
+// lewat timer; di server biasa itu aman, tetapi di Vercel proses bisa
+// dibekukan begitu respons terkirim → reservasi/perubahan admin tampak
+// "berhasil" padahal belum pernah masuk database. Untuk permintaan yang
+// mengubah data, res.end ditahan sampai simpanan selesai. Bila simpan
+// gagal, klien menerima 503 (bukan 2xx palsu).
+const PERSIST_BEFORE_RESPONSE = RUNNING_ON_VERCEL || /^(1|true|yes)$/i.test(String(process.env.PERSIST_BEFORE_RESPONSE || ''));
+app.use((req, res, next) => {
+  if (!PERSIST_BEFORE_RESPONSE || req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') return next();
+  const origEnd = res.end;
+  let held = false;
+  res.end = function (...args) {
+    if (held) return origEnd.apply(res, args);
+    held = true;
+    flushOrThrow().then(() => origEnd.apply(res, args), (err) => {
+      console.error('[storage] simpan-sebelum-respons gagal:', err && err.message);
+      if (!res.headersSent && res.statusCode < 400) {
+        const body = JSON.stringify({ error: 'Perubahan belum tersimpan ke database (gangguan koneksi). Silakan coba lagi sebentar lagi.' });
+        res.statusCode = 503;
+        res.setHeader('Content-Type', 'application/json; charset=utf-8');
+        res.setHeader('Content-Length', Buffer.byteLength(body));
+        res.removeHeader('ETag');
+        return origEnd.call(res, body);
+      }
+      return origEnd.apply(res, args);
+    });
+    return res;
+  };
+  next();
+});
+
+// Refresh state dari database untuk request /api/* (maks sekali per TTL).
+// Termasuk TULISAN: instance basi yang langsung mengubah memori lamanya bisa
+// menerima booking di slot yang sudah terisi di instance lain.
 // Di platform serverless multi-instance (Vercel), instance ini bisa saja
 // sudah lama tidak menerima tulisan — kalender & daftar admin harus tetap
 // menampilkan data terbaru dari instance lain. Tulisan tidak melalui sini
 // (mereka divalidasi rev di persistWithRetry).
 app.use((req, res, next) => {
-  if ((req.method === 'GET' || req.method === 'HEAD') && req.path.startsWith('/api/')) {
-    refreshFromDbIfStale().then(() => next(), () => next());
+  if (req.method !== 'OPTIONS' && req.path.startsWith('/api/')) {
+    // Refresh hanya optimasi: bila database lambat/membeku, jangan tahan
+    // request lebih dari REFRESH_WAIT_MS — sajikan dari memori, refresh
+    // tetap selesai di latar (dijaga pengecekan rev).
+    let done = false;
+    const go = () => { if (!done) { done = true; next(); } };
+    const timer = setTimeout(go, REFRESH_WAIT_MS);
+    if (timer.unref) timer.unref();
+    keepAlive(refreshFromDbIfStale().catch(() => {})).then(() => { clearTimeout(timer); go(); });
     return;
   }
   next();
@@ -1887,6 +2483,10 @@ function configWarnings() {
     out.push('ADMIN_EMAIL/ADMIN_PASSWORD belum diisi: memakai akun admin yang sudah tersimpan.');
   }
   for (const w of adminSeedWarnings) if (!out.includes(w)) out.push(w);
+  const st = (DB && DB.settings) || {};
+  if (st.ai_assistant_enabled && st.ai_assistant_access_token && !st.ai_assistant_app_secret) {
+    out.push('WhatsApp App Secret belum diisi: webhook menerima pesan palsu (bisa menghabiskan kuota AI & mengirim WA atas nama bisnis). Isi App Secret di Pengaturan → Asisten AI.');
+  }
   return out;
 }
 
@@ -1984,10 +2584,27 @@ Disallow: /api/admin/
 Sitemap: ${base}/sitemap.xml
 `);
 });
-app.get('/api/services', (req, res) => res.json(SERVICES));
+// CACHE EDGE (Vercel CDN) untuk endpoint PUBLIK yang sama bagi semua
+// pengunjung. Tanpa ini setiap kunjungan beranda memanggil fungsi serverless
+// (logo, layanan, pengaturan) — termasuk cold start beberapa detik. Dengan
+// s-maxage + stale-while-revalidate CDN menjawab seketika dan memperbarui di
+// belakang layar. Cache CDN otomatis dibuang setiap deploy.
+// `Vary: Origin` WAJIB: respons lintas-origin (GitHub Pages) membawa header
+// CORS, respons same-origin tidak — keduanya tidak boleh tertukar di cache.
+// Hanya dipanggil pada respons sukses (429/404/500 tidak pernah di-cache).
+function edgeCache(res, sMaxAge, swr, browserMaxAge) {
+  res.setHeader('Cache-Control', browserMaxAge ? `public, max-age=${browserMaxAge}` : 'public, max-age=0, must-revalidate');
+  res.setHeader('Vercel-CDN-Cache-Control', `s-maxage=${sMaxAge}, stale-while-revalidate=${swr}`);
+  const vary = String(res.getHeader('Vary') || '');
+  if (!/\borigin\b/i.test(vary)) res.setHeader('Vary', vary ? vary + ', Origin' : 'Origin');
+}
+
+// Katalog layanan statis di kode → aman di-cache lama (berubah hanya saat deploy).
+app.get('/api/services', (req, res) => { edgeCache(res, 86400, 86400, 300); res.json(SERVICES); });
 
 app.get('/api/business', (req, res) => {
   const s = DB.settings || {};
+  edgeCache(res, 10, 300);
   res.json({
     name: s.business_name, tagline: s.tagline, address: s.address, phone: s.phone,
     area: s.area, type: s.type, practitioner: s.practitioner, instagram: s.instagram
@@ -1996,6 +2613,8 @@ app.get('/api/business', (req, res) => {
 
 app.get('/api/public-settings', (req, res) => {
   const s = DB.settings || {};
+  // Perubahan pengaturan dari panel terlihat di situs ≤ ±10 detik.
+  edgeCache(res, 10, 300);
   // Strip huge base64 blobs from socials; the frontend will fetch each
   // social's icon image from /api/social-icon/:idx if it has one.
   const socialsPublic = (s.socials || []).filter(x => x && x.url).map((x, i) => ({
@@ -2008,7 +2627,7 @@ app.get('/api/public-settings', (req, res) => {
   res.json({
     business_name: s.business_name, tagline: s.tagline, address: s.address, phone: s.phone,
     area: s.area, type: s.type, practitioner: s.practitioner, instagram: s.instagram,
-    has_logo: !!s.logo_b64, has_hero: !!s.hero_b64, has_qris: !!s.qris_b64,
+    has_logo: hasSettingImage(s, 'logo'), has_hero: hasSettingImage(s, 'hero'), has_qris: hasSettingImage(s, 'qris'),
     qris_link: s.qris_link || '',
     bank_accounts: s.bank_accounts || [],
     primary_color: s.primary_color, accent_color: s.accent_color,
@@ -2028,34 +2647,47 @@ app.get('/api/public-settings', (req, res) => {
 // the IG/TT/FB avatar next to the platform name). The index is the
 // position of the social in DB.settings.socials after filtering for
 // having a URL; we re-derive it the same way public-settings does.
+// SECURITY: gambar tersimpan (logo/hero/QRIS/ikon sosial) dilayani di
+// ORIGIN YANG SAMA dengan panel admin (token admin ada di localStorage).
+// Mime-nya berasal dari data tersimpan yang bisa diisi lewat PUT
+// /api/admin/settings atau file backup yang di-restore — kalau berisi
+// 'text/html' atau 'image/svg+xml', endpoint ini akan menyajikan halaman
+// berisi skrip = stored XSS. Maka mime DIPAKSA ke daftar gambar raster dan
+// respons diberi CSP sandbox (skrip apa pun tidak jalan meski dibuka
+// langsung di tab).
+const SAFE_IMAGE_MIMES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
+function sendStoredImage(res, b64, mime, fallbackMime, cache = true) {
+  const type = SAFE_IMAGE_MIMES.has(String(mime || '').toLowerCase()) ? String(mime).toLowerCase() : fallbackMime;
+  res.setHeader('Content-Type', type);
+  res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
+  // Edge: 60 dtk + revalidasi di belakang layar. Browser: logo/hero/ikon
+  // 1 jam; QRIS (data pembayaran) selalu dicek ulang ke CDN.
+  edgeCache(res, 60, 86400, cache ? 3600 : 0);
+  res.send(Buffer.from(String(b64), 'base64'));
+}
+
 app.get('/api/social-icon/:idx', (req, res) => {
   const target = parseInt(req.params.idx, 10);
   if (isNaN(target) || target < 0) return res.status(400).end();
   const visible = (DB.settings?.socials || []).filter(x => x && x.url);
   const item = visible[target];
   if (!item || !item.icon_b64) return res.status(404).end();
-  res.setHeader('Content-Type', item.icon_mime || 'image/png');
-  res.setHeader('Cache-Control', 'public, max-age=3600');
-  res.send(Buffer.from(item.icon_b64, 'base64'));
+  sendStoredImage(res, item.icon_b64, item.icon_mime, 'image/png');
 });
 
-app.get('/api/logo', (req, res) => {
-  const s = DB.settings; if (!s || !s.logo_b64) return res.status(404).end();
-  res.setHeader('Content-Type', s.logo_mime || 'image/png');
-  res.setHeader('Cache-Control', 'public, max-age=3600');
-  res.send(Buffer.from(s.logo_b64, 'base64'));
-});
-app.get('/api/hero', (req, res) => {
-  const s = DB.settings; if (!s || !s.hero_b64) return res.status(404).end();
-  res.setHeader('Content-Type', s.hero_mime || 'image/jpeg');
-  res.setHeader('Cache-Control', 'public, max-age=3600');
-  res.send(Buffer.from(s.hero_b64, 'base64'));
-});
-app.get('/api/qris', (req, res) => {
-  const s = DB.settings; if (!s || !s.qris_b64) return res.status(404).end();
-  res.setHeader('Content-Type', s.qris_mime || 'image/png');
-  res.send(Buffer.from(s.qris_b64, 'base64'));
-});
+async function serveSettingImage(res, kind, fallbackMime, cache = true) {
+  let img;
+  try { img = await readSettingImage(kind); } catch (e) {
+    console.warn('[blob] gagal membaca gambar ' + kind + ':', sanitizeDbError(e));
+    return res.status(503).json({ error: 'Gambar belum dapat dimuat, coba lagi.' });
+  }
+  if (!img || !img.b64) return res.status(404).end();
+  sendStoredImage(res, img.b64, img.mime, fallbackMime, cache);
+}
+
+app.get('/api/logo', (req, res) => serveSettingImage(res, 'logo', 'image/png'));
+app.get('/api/hero', (req, res) => serveSettingImage(res, 'hero', 'image/jpeg'));
+app.get('/api/qris', (req, res) => serveSettingImage(res, 'qris', 'image/png', false));
 
 // ===== RESERVATIONS (PUBLIC) =====
 app.post('/api/reservations', reservationLimiter, upload.single('proof'), (req, res) => {
@@ -2123,16 +2755,32 @@ app.post('/api/reservations', reservationLimiter, upload.single('proof'), (req, 
       return res.status(400).json({ error: 'Tanggal jadwal sudah lewat. Silakan pilih tanggal hari ini atau setelahnya.' });
     }
 
+    // Kiriman ulang yang IDENTIK (dobel klik, atau pelanggan mengirim ulang
+    // setelah 503 "belum tersimpan" — padahal reservasinya tetap tersimpan
+    // begitu database pulih) mengembalikan reservasi yang sudah ada, bukan
+    // membuat yang kedua. Dicek SEBELUM bentrok jadwal: kalau tidak, mode
+    // 'block' menolak kiriman ulang karena "bentrok" dengan dirinya sendiri.
+    const dupKey = reservationDedupeKey(b.patient_name, b.whatsapp, items, slots);
+    const dupSince = Date.now() - RESERVATION_DEDUPE_WINDOW_MS;
+    const existingDup = DB.reservations.find((r) => r && r.status !== 'rejected'
+      && Date.parse(r.created_at || 0) >= dupSince
+      && reservationDedupeKey(r.patient_name, r.whatsapp, r.items, r.slots) === dupKey);
+    if (existingDup) {
+      save(); // pastikan tetap diantrekan untuk disimpan
+      return res.status(201).json({ ok: true, id: existingDup.id, total: existingDup.total, duplicate: true, schedule_warning: null, storage_warning: null });
+    }
+
     // Bentrok jadwal: bidan tidak bisa di dua rumah pada jam yang sama dan
     // butuh waktu perjalanan. Mode 'block' menolak, 'warn' tetap menerima
     // tetapi menandai reservasi (admin melihat peringatan di panel).
     const conflicts = findScheduleConflicts(slots);
     const sched = schedConf();
     if (conflicts.length && sched.mode === 'block') {
+      // Endpoint PUBLIK: jangan bocorkan nama/ID pasien lain.
       return res.status(409).json({
-        error: 'Jadwal bentrok: ' + describeConflicts(conflicts) + '. Silakan pilih jam lain.',
+        error: 'Jadwal bentrok: ' + describeConflicts(conflicts, { publicView: true }) + '. Silakan pilih jam lain.',
         field: 'slot.time',
-        conflicts: conflicts
+        conflicts: publicConflicts(conflicts)
       });
     }
     const scheduleNote = conflicts.length ? 'Perlu dicek: ' + describeConflicts(conflicts) : '';
@@ -2178,7 +2826,8 @@ app.post('/api/reservations', reservationLimiter, upload.single('proof'), (req, 
       status: 'pending',
       payment_status: 'unpaid',
       created_at: new Date().toISOString(),
-      schedule_conflicts: conflicts.length ? conflicts : undefined
+      // Dibatasi: di slot ramai daftar bentrok tumbuh O(n²) di storage.
+      schedule_conflicts: conflicts.length ? conflicts.slice(0, MAX_STORED_CONFLICTS) : undefined
     };
     DB.reservations.push(rec);
     // Paket multi-sesi: bila layanan yang dipesan berbentuk paket, buat
@@ -2189,7 +2838,7 @@ app.post('/api/reservations', reservationLimiter, upload.single('proof'), (req, 
     save();
     res.status(201).json({
       ok: true, id, total,
-      schedule_warning: conflicts.length ? describeConflicts(conflicts) : null,
+      schedule_warning: conflicts.length ? describeConflicts(conflicts, { publicView: true }) : null,
       // Mode zero-config tanpa database: reservasi diterima, tapi pasien
       // diminta konfirmasi juga lewat WhatsApp supaya tidak ada pesanan
       // yang terlewat bila penyimpanan sementara ter-reset.
@@ -2204,6 +2853,9 @@ app.post('/api/reservations', reservationLimiter, upload.single('proof'), (req, 
 });
 
 app.get('/api/calendar', (req, res) => {
+  // Jadwal publik (tanpa nama pasien): segar ≤ ±10 detik. Bentrok jadwal
+  // tetap divalidasi server saat reservasi dikirim.
+  edgeCache(res, 10, 60);
   // Flatten slots from approved reservations
   const out = [];
   DB.reservations.filter(r => r.status === 'approved').forEach(r => {
@@ -2221,12 +2873,29 @@ app.get('/api/calendar', (req, res) => {
   res.json(out);
 });
 
-app.get('/api/proof/:id', auth, (req, res) => {
+app.get('/api/proof/:id', auth, async (req, res) => {
   const reservation = DB.reservations.find((item) => item.id === parseInt(req.params.id, 10));
-  if (!reservation || !reservation.proof_b64) return res.status(404).send('Bukti tidak ditemukan');
-  res.setHeader('Content-Type', reservation.proof_mime || 'application/octet-stream');
+  if (!reservation || !(reservation.proof_b64 || reservation.proof_ref)) return res.status(404).send('Bukti tidak ditemukan');
+  let proofB64 = reservation.proof_b64;
+  let proofMime = reservation.proof_mime;
+  if (!proofB64 && reservation.proof_ref) {
+    let blob = null;
+    try { blob = await getBlob(reservation.proof_ref); } catch (e) {
+      console.warn('[blob] gagal membaca bukti:', sanitizeDbError(e));
+      return res.status(503).send('Bukti sementara tidak bisa dibaca, coba lagi.');
+    }
+    if (!blob) return res.status(404).send('Bukti tidak ditemukan');
+    proofB64 = blob.b64;
+    proofMime = proofMime || blob.mime;
+  }
+  // Mime dari data tersimpan (bisa dari backup yang di-restore) — hanya
+  // gambar raster/PDF yang disajikan apa adanya; selain itu diunduh
+  // sebagai biner (panel membukanya lewat blob: yang mewarisi origin
+  // admin, jadi tipe HTML/SVG di sini = skrip jalan dengan token admin).
+  const pm = String(proofMime || '').toLowerCase();
+  res.setHeader('Content-Type', (SAFE_IMAGE_MIMES.has(pm) || pm === 'application/pdf') ? pm : 'application/octet-stream');
   res.setHeader('Cache-Control', 'private, no-store');
-  res.send(Buffer.from(reservation.proof_b64, 'base64'));
+  res.send(Buffer.from(proofB64, 'base64'));
 });
 
 // ===== AUTH =====
@@ -2432,11 +3101,36 @@ function findScheduleConflicts(slots, opts) {
   });
 }
 
-// Pesan ramah untuk pelanggan/admin.
-function describeConflicts(conflicts) {
-  return conflicts.map((c) => {
+const RESERVATION_DEDUPE_WINDOW_MS = 30 * 60 * 1000;
+function reservationDedupeKey(name, wa, items, slots) {
+  const n = String(name || '').trim().toLowerCase().replace(/\s+/g, ' ');
+  const w = String(wa || '').replace(/\D/g, '').replace(/^62/, '0');
+  const it = (Array.isArray(items) ? items : []).map((x) => String(x && x.name || '') + 'x' + (Number(x && x.qty) || 1)).sort().join(',');
+  const sl = (Array.isArray(slots) ? slots : []).map((x) => String(x && x.date || '') + ' ' + String(x && x.time || '')).sort().join(',');
+  return [n, w, it, sl].join('|');
+}
+
+// Pesan ramah untuk pelanggan/admin. publicView: tanpa nama pasien lain
+// (dipakai di respons endpoint publik). Daftar dibatasi supaya teks yang
+// disimpan di catatan reservasi tidak membengkak di slot yang ramai.
+const MAX_STORED_CONFLICTS = 10;
+function publicConflicts(conflicts) {
+  return (conflicts || []).slice(0, MAX_STORED_CONFLICTS).map((c) => {
+    const { patient_name, with_id, ...rest } = c || {};
+    return rest;
+  });
+}
+function describeConflicts(conflicts, opts) {
+  const publicView = !!(opts && opts.publicView);
+  const list = conflicts || [];
+  // Konstanta lokal: fungsi ini di-slice utuh oleh test/scheduling.test.js.
+  const MAX_DESCRIBED = 5;
+  const shown = list.slice(0, MAX_DESCRIBED);
+  const more = list.length - shown.length;
+  return shown.map((c) => {
     if (c.type === 'overlap') {
-      return `${c.date} ${c.request_time} bertabrakan dengan jadwal ${c.with_time}${c.patient_name ? ' (' + c.patient_name + ')' : ''} — butuh jeda ±${c.needs_minutes} menit perjalanan`;
+      const who = !publicView && c.patient_name ? ' (' + c.patient_name + ')' : '';
+      return `${c.date} ${c.request_time} bertabrakan dengan jadwal ${c.with_time}${who} — butuh jeda ±${c.needs_minutes} menit perjalanan`;
     }
     if (c.type === 'self') {
       return `dua sesi pada ${c.date} (${c.request_time} & ${c.with_time}) terlalu berdekatan`;
@@ -2445,7 +3139,7 @@ function describeConflicts(conflicts) {
       return `${c.date} sudah ada ${c.total - 1} sesi, batas harian ${c.limit}`;
     }
     return 'jadwal bertabrakan';
-  }).join('; ');
+  }).join('; ') + (more > 0 ? `; dan ${more} bentrok lainnya` : '');
 }
 
 // ===== PAKET SESI (multi-sesi) & SISA SESI =====
@@ -3326,7 +4020,7 @@ app.post('/api/admin/supplies/alerts/send', auth, async (req, res) => {
   } catch (e) {
     recordAIError(e);
     const msg = sanitizeAIError(e);
-    const code = /belum (diisi|dikonfigurasi)/i.test(msg) ? 400 : 500;
+    const code = /belum (diisi|dikonfigurasi)|tidak ada barang/i.test(msg) ? 400 : 500;
     res.status(code).json({ error: 'Gagal mengirim peringatan stok: ' + msg });
   }
 });
@@ -3593,7 +4287,7 @@ app.get('/api/admin/supplies/report', auth, (req, res) => {
 // pembukuan / dikirim ke akuntan).
 app.get('/api/admin/supplies/export.xlsx', auth, async (req, res) => {
   try {
-    const wb = new ExcelJS.Workbook();
+    const wb = new (getExcelJS()).Workbook();
     wb.creator = 'Adzkiya Mom Baby Care';
     wb.created = new Date();
     const pink = { argb: 'FFEE5A8A' };
@@ -3865,7 +4559,7 @@ function publicReservation(r) {
     service_name: r.service_name, service_price: r.service_price, qty: r.qty,
     reservation_date: r.reservation_date, reservation_time: r.reservation_time,
     total: r.total || calcReservationTotal(r),
-    payment_method: r.payment_method, proof_file: r.proof_b64 ? `/api/proof/${r.id}` : null,
+    payment_method: r.payment_method, proof_file: (r.proof_b64 || r.proof_ref) ? `/api/proof/${r.id}` : null,
     notes: r.notes, status: r.status, payment_status: r.payment_status, created_at: r.created_at
   };
 }
@@ -3961,7 +4655,9 @@ app.patch('/api/admin/reservations/:id', auth, (req, res) => {
 });
 
 app.delete('/api/admin/reservations/:id', auth, (req, res) => {
+  const gone = DB.reservations.find(x => x.id === parseInt(req.params.id));
   DB.reservations = DB.reservations.filter(x => x.id !== parseInt(req.params.id));
+  if (gone && gone.proof_ref) deleteBlob(gone.proof_ref);
   save();
   res.json({ ok: true });
 });
@@ -4344,7 +5040,7 @@ app.get('/api/admin/recap.xlsx', auth, async (req, res) => {
     const monthRows = DB.reservations.filter((r) => monthSet.has((r.reservation_date || '').slice(0, 7)))
       .sort((a, b) => a.reservation_date.localeCompare(b.reservation_date));
 
-    const wb = new ExcelJS.Workbook();
+    const wb = new (getExcelJS()).Workbook();
     wb.creator = 'Adzkiya Mom Baby Care';
     wb.created = new Date();
 
@@ -4589,9 +5285,42 @@ function noteInvoiceNumber(invoice_no) {
 }
 
 
+// Item kwitansi dari panel: nama teks, harga angka ≥ 0, qty bulat 1–1000.
+// Dulu disimpan mentah — harga "abc" menghasilkan total NaN yang tersimpan
+// (rekap/P&L rusak) dan item null membuat endpoint crash (500).
+function normalizeReceiptItems(items) {
+  if (!Array.isArray(items) || !items.length) return { error: 'Items kosong' };
+  if (items.length > 200) return { error: 'Item terlalu banyak (maks. 200)' };
+  const out = [];
+  for (const it of items) {
+    if (!it || typeof it !== 'object' || Array.isArray(it)) return { error: 'Item kwitansi tidak valid' };
+    const name = typeof it.name === 'string' ? it.name.trim().slice(0, 200) : '';
+    const price = Number(it.price);
+    const qty = it.qty == null || it.qty === '' ? 1 : Number(it.qty);
+    if (!name) return { error: 'Nama item kwitansi wajib diisi' };
+    if (!Number.isFinite(price) || price < 0 || price > 1e10) return { error: `Harga item "${name}" tidak valid` };
+    if (!Number.isInteger(qty) || qty < 1 || qty > 1000) return { error: `Jumlah item "${name}" tidak valid` };
+    // Kolom tambahan (kategori, satuan, ...) hanya disalin bila primitif.
+    const extra = {};
+    for (const [k, v] of Object.entries(it)) {
+      if (k === '__proto__' || k === 'constructor' || k === 'prototype') continue;
+      if (['string', 'number', 'boolean'].includes(typeof v)) extra[k] = typeof v === 'string' ? v.slice(0, 500) : v;
+    }
+    out.push({ ...extra, name, price, qty });
+  }
+  return { items: out };
+}
+const textField = (v, max = 500) => (v == null ? '' : (typeof v === 'string' || typeof v === 'number') ? String(v).trim().slice(0, max) : '');
+
 app.post('/api/admin/receipts', auth, (req, res) => {
-  const { patient_name, whatsapp, address, service_date, service_time, service_times, service_slots, items, transport_fee, discount } = req.body;
-  if (!items || !items.length) return res.status(400).json({ error: 'Items kosong' });
+  const body = (req.body && typeof req.body === 'object' && !Array.isArray(req.body)) ? req.body : {};
+  const { service_date, service_time, service_times, service_slots, transport_fee, discount } = body;
+  const patient_name = textField(body.patient_name, 200);
+  const whatsapp = textField(body.whatsapp, 40);
+  const address = textField(body.address, 500);
+  const norm = normalizeReceiptItems(body.items);
+  if (norm.error) return res.status(400).json({ error: norm.error });
+  const items = norm.items;
   const subtotal = items.reduce((s, it) => s + (it.price * it.qty), 0);
   // Normalize multi-waktu + multi-tanggal: prefer service_slots (array
   // of {date, time}) for the full flexibility. Fall back to
@@ -4608,13 +5337,17 @@ app.post('/api/admin/receipts', auth, (req, res) => {
   }
   if (!slots.length && Array.isArray(service_times) && service_times.length) {
     slots = service_times
-      .filter((t) => /^\d{1,2}:\d{2}$/.test(t))
+      .filter((t) => typeof t === 'string' && /^\d{1,2}:\d{2}$/.test(t))
       .map((t) => ({ date: service_date, time: t }));
   }
-  if (!slots.length && service_time && /^\d{1,2}:\d{2}$/.test(service_time)) {
+  if (!slots.length && typeof service_time === 'string' && /^\d{1,2}:\d{2}$/.test(service_time)) {
     slots = [{ date: service_date, time: service_time }];
   }
   if (!slots.length) slots = [{ date: service_date, time: '09:00' }];
+  // Tanggal wajib valid — dulu tanggal kosong/aneh ikut tersimpan.
+  if (slots.some((s) => typeof s.date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(s.date))) {
+    return res.status(400).json({ error: 'Tanggal layanan tidak valid (format YYYY-MM-DD)' });
+  }
   // Dedupe by (date, time)
   slots = slots.filter((s, i) => slots.findIndex((x) => x.date === s.date && x.time === s.time) === i);
 
@@ -5189,7 +5922,7 @@ app.get(/^\/kwitansi\/([^/?#]+)\/?$/, (req, res) => {
       address: s.address,
       phone: s.phone,
       practitioner: s.practitioner,
-      has_logo: !!s.logo_b64,
+      has_logo: hasSettingImage(s, 'logo'),
       has_owner_signature: !!s.owner_signature_b64
     }
   }));
@@ -6392,15 +7125,15 @@ app.get('/api/admin/settings', auth, (req, res) => {
   // WHETHER a key is set (has_* flags), not the value itself. The
   // admin re-enters a key only when rotating it.
   const {
-    logo_b64, hero_b64, qris_b64, owner_signature_b64,
+    logo_b64, hero_b64, qris_b64, logo_ref, hero_ref, qris_ref, owner_signature_b64,
     ai_gemini_api_key, ai_openrouter_api_key, ai_assistant_access_token, ai_assistant_app_secret,
     ...rest
   } = s;
   res.json({
     ...rest,
-    has_logo: !!logo_b64,
-    has_hero: !!hero_b64,
-    has_qris: !!qris_b64,
+    has_logo: !!(logo_b64 || logo_ref),
+    has_hero: !!(hero_b64 || hero_ref),
+    has_qris: !!(qris_b64 || qris_ref),
     has_owner_signature: !!owner_signature_b64,
     has_ai_gemini: !!ai_gemini_api_key,
     has_ai_openrouter: !!ai_openrouter_api_key,
@@ -6451,6 +7184,10 @@ app.put('/api/admin/settings', auth, (req, res) => {
   // (Frontend tidak pernah mengirimnya; ini murni pertahanan terhadap
   // payload tangan yang dibuat manual.)
   ['__proto__', 'constructor', 'prototype'].forEach((k) => { delete body[k]; });
+  const checked = sanitizeSettingsPatch(body, DB.settings || {});
+  if (checked.error) return res.status(400).json({ error: checked.error });
+  Object.keys(body).forEach((k) => { if (!(k in checked.patch)) delete body[k]; });
+  Object.assign(body, checked.patch);
   // Batasi ukuran total supaya settings tidak bisa dipakai menjejalkan
   // data besar (menggembungkan state + backup + biaya storage).
   if (JSON.stringify({ ...DB.settings, ...body }).length > 4 * 1024 * 1024) {
@@ -6460,6 +7197,67 @@ app.put('/api/admin/settings', auth, (req, res) => {
   save();
   res.json({ ok: true });
 });
+
+// Pengaturan dari panel wajib SEJENIS dengan nilai yang sudah ada: daftar
+// tetap daftar, teks tetap teks, angka/boolean dikonversi bila masuk akal.
+// Dulu body digabung apa adanya — objek di kolom `phone` atau teks di
+// `testimonials`/`blackout_dates` tersimpan dan merusak beranda/kalender.
+// Kolom penunjuk internal (rujukan app_blobs) tidak bisa ditulis dari sini.
+const SETTINGS_INTERNAL_KEYS = new Set(['logo_ref', 'hero_ref', 'qris_ref']);
+function sanitizeSettingsPatch(body, current) {
+  const patch = {};
+  const kindOf = (v) => (v === null || v === undefined) ? 'none' : Array.isArray(v) ? 'array' : typeof v;
+  for (const [k, v] of Object.entries(body || {})) {
+    if (SETTINGS_INTERNAL_KEYS.has(k) || k === '__proto__' || k === 'constructor' || k === 'prototype') continue;
+    if (v === undefined || typeof v === 'function') continue;
+    const want = kindOf(current[k]);
+    const got = kindOf(v);
+    if (want === 'none' || v === null) { patch[k] = v; continue; }
+    if (want === 'array') {
+      if (got !== 'array') return { error: `Pengaturan "${k}" harus berupa daftar` };
+      patch[k] = v;
+    } else if (want === 'object') {
+      if (got !== 'object') return { error: `Pengaturan "${k}" harus berupa objek` };
+      patch[k] = v;
+    } else if (want === 'string') {
+      if (got === 'string') patch[k] = v;
+      else if (got === 'number' && Number.isFinite(v)) patch[k] = String(v);
+      else return { error: `Pengaturan "${k}" harus berupa teks` };
+    } else if (want === 'number') {
+      if (v === '') continue; // kolom angka dikosongkan di form → biarkan nilai lama
+      const n = Number(v);
+      if ((got !== 'number' && got !== 'string') || !Number.isFinite(n)) return { error: `Pengaturan "${k}" harus berupa angka` };
+      patch[k] = n;
+    } else if (want === 'boolean') {
+      if (got === 'boolean') patch[k] = v;
+      else if (v === 'true' || v === 1 || v === '1') patch[k] = true;
+      else if (v === 'false' || v === 0 || v === '0') patch[k] = false;
+      else return { error: `Pengaturan "${k}" harus berupa ya/tidak` };
+    } else {
+      patch[k] = v;
+    }
+  }
+  // Isi daftar yang dibaca halaman publik dibersihkan.
+  if (Array.isArray(patch.blackout_dates)) {
+    patch.blackout_dates = [...new Set(patch.blackout_dates.filter((d) => typeof d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d)))].sort();
+  }
+  if (Array.isArray(patch.testimonials)) {
+    patch.testimonials = patch.testimonials
+      .filter((t) => t && typeof t === 'object' && !Array.isArray(t))
+      .map((t) => {
+        const out = { ...t };
+        if (out.rating !== undefined) {
+          const r = Math.round(Number(out.rating));
+          out.rating = Number.isFinite(r) ? Math.min(5, Math.max(1, r)) : 5;
+        }
+        return out;
+      });
+  }
+  for (const k of ['socials', 'bank_accounts', 'whatsapp_templates']) {
+    if (Array.isArray(patch[k])) patch[k] = patch[k].filter((x) => x && typeof x === 'object' && !Array.isArray(x));
+  }
+  return { patch };
+}
 
 // Decode + validate an owner-signature payload coming in via PUT /settings
 // or POST /owner-signature. Returns { b64, mime } on success or null on
@@ -6513,6 +7311,8 @@ app.post('/api/admin/settings/upload', auth, upload.single('file'), (req, res) =
   }
   DB.settings[`${kind}_b64`] = req.file.buffer.toString('base64');
   DB.settings[`${kind}_mime`] = req.file.mimetype;
+  // Rujukan lama (app_blobs) tidak dipakai lagi; blobnya dibersihkan GC.
+  DB.settings[`${kind}_ref`] = null;
   save();
   res.json({ ok: true });
 });
@@ -6682,6 +7482,7 @@ app.delete('/api/admin/settings/:kind', auth, (req, res) => {
   if (!['logo', 'hero', 'qris'].includes(k)) return res.status(400).json({ error: 'kind invalid' });
   DB.settings[`${k}_b64`] = null;
   DB.settings[`${k}_mime`] = null;
+  DB.settings[`${k}_ref`] = null;
   save();
   res.json({ ok: true });
 });
@@ -6834,6 +7635,12 @@ app.post('/api/admin/storage/test-connection', auth, async (req, res) => {
 // "Sinkronkan Data Darurat ke Database" (memakai koneksi aktif).
 async function switchStorageToDatabase(connStr, kindOverride, opts) {
   const kind = kindOverride || activeDatabaseKind();
+  // Bukti transfer yang tersimpan di app_blobs database LAMA ikut dibawa:
+  // tarik kembali ke inline sebelum berpindah (dipindah lagi ke app_blobs
+  // database baru pada simpan berikutnya). Tanpa ini rujukan proof_ref
+  // menggantung di database baru → bukti hilang dari panel.
+  await inlineProofRefsFromCurrentPool();
+  if (DB.settings) DB.settings = await inlineSettingImages(DB.settings);
   const opened = await openDbPoolAndReadState(connStr, kind);
   if (!opened || !opened.pool) throw new Error('Tidak bisa membuka koneksi database');
   const { state: merged, report } = mergeTransactionalState(opened.state || {}, DB);
@@ -7132,7 +7939,8 @@ function decryptBackupEnvelope(envelope, passphrase) {
 // Kumpulkan payload backup. Rahasia (kunci AI, token WA, TTD pemilik, log
 // chat) dan foto bukti transfer sengaja TIDAK ikut — lihat penjelasan di
 // endpoint /api/admin/backup.
-function buildBackupPayload() {
+async function buildBackupPayload() {
+  const settingsWithImages = await inlineSettingImages(DB.settings || {});
   return {
     exported_at: new Date().toISOString(),
     reservations: DB.reservations.map((r) => {
@@ -7164,29 +7972,29 @@ function buildBackupPayload() {
         // instalasi baru.
         supply_alert_last_at,
         ...rest
-      } = (DB.settings || {});
+      } = settingsWithImages;
       return rest;
     })()
   };
 }
 
-app.get('/api/admin/backup', auth, (req, res) => {
+app.get('/api/admin/backup', auth, async (req, res) => {
   // PENTING: respons ini berisi data pasien dalam teks polos. Hanya
   // dipakai oleh tombol "JSON biasa" (opsional) dan proses restore lama.
   // Untuk pemakaian sehari-hari pakai /api/admin/backup/encrypted.
   console.warn('[backup] Backup POLOS (tidak terenkripsi) diunduh oleh ' + (req.user && req.user.email ? req.user.email : 'admin'));
   res.setHeader('Cache-Control', 'private, no-store');
-  res.json(buildBackupPayload());
+  res.json(await buildBackupPayload());
 });
 
 // Backup terenkripsi AES-256-GCM. Dipakai tombol utama di panel admin.
-app.post('/api/admin/backup/encrypted', auth, (req, res) => {
+app.post('/api/admin/backup/encrypted', auth, async (req, res) => {
   try {
     const passphrase = String((req.body && req.body.passphrase) || '');
     if (passphrase.length < 8) {
       return res.status(400).json({ error: 'Passphrase minimal 8 karakter (semakin panjang semakin aman).' });
     }
-    const envelope = encryptBackupPayload(buildBackupPayload(), passphrase);
+    const envelope = encryptBackupPayload(await buildBackupPayload(), passphrase);
     res.setHeader('Cache-Control', 'private, no-store');
     res.json(envelope);
   } catch (e) {
@@ -7213,7 +8021,26 @@ app.post('/api/admin/restore', auth, restoreJsonParser, (req, res) => {
         return res.status(400).json({ error: e.message });
       }
     }
-    const { reservations = [], receipts = [], settings, mode = 'append', sync_reservations } = body;
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      return res.status(400).json({ error: 'File backup tidak valid' });
+    }
+    // Validasi SELURUH isi sebelum data apa pun diubah. Dulu satu elemen
+    // null di daftar kwitansi membuat restore crash SETELAH mode "replace"
+    // mengosongkan data → simpan berikutnya mengabadikan data yang hilang.
+    const asRecordList = (v) => (v == null ? [] : Array.isArray(v) ? v.filter((x) => x && typeof x === 'object' && !Array.isArray(x)) : null);
+    const reservations = asRecordList(body.reservations);
+    const receipts = asRecordList(body.receipts);
+    if (reservations === null || receipts === null) {
+      return res.status(400).json({ error: 'File backup tidak valid: reservations/receipts harus berupa daftar' });
+    }
+    const settings = body.settings;
+    if (settings != null && (typeof settings !== 'object' || Array.isArray(settings))) {
+      return res.status(400).json({ error: 'File backup tidak valid: settings harus berupa objek' });
+    }
+    for (const k of ['supplies', 'supply_recipes', 'supply_moves']) {
+      if (body[k] != null && !Array.isArray(body[k])) return res.status(400).json({ error: 'File backup tidak valid: ' + k + ' harus berupa daftar' });
+    }
+    const { mode = 'append', sync_reservations } = body;
     // Buku stok ikut di-restore (kalau ada di file backup). Dedupe: barang &
     // resep per nama, riwayat per (barang, waktu, jenis, jumlah) — jadi
     // restore berulang tidak menggandakan data. Riwayat ditautkan ke barang
@@ -7295,9 +8122,9 @@ app.post('/api/admin/restore', auth, restoreJsonParser, (req, res) => {
     }
     // Bump the receipt counter so the next auto-generated invoice
     // number doesn't collide with the ones we just restored.
-    const maxReceiptId = receipts.reduce((m, r) => Math.max(m, r.id || 0), 0);
+    const maxReceiptId = receipts.reduce((m, r) => Math.max(m, Number.isFinite(Number(r.id)) ? Number(r.id) : 0), 0);
     if (maxReceiptId > (DB._seq.receipts || 0)) DB._seq.receipts = maxReceiptId;
-    const maxResvId = reservations.reduce((m, r) => Math.max(m, r.id || 0), 0);
+    const maxResvId = reservations.reduce((m, r) => Math.max(m, Number.isFinite(Number(r.id)) ? Number(r.id) : 0), 0);
     if (maxResvId > (DB._seq.reservations || 0)) DB._seq.reservations = maxResvId;
     if (settings && mode === 'replace') {
       // Don't blindly replace — merge: keep the settings the user
@@ -7305,6 +8132,13 @@ app.post('/api/admin/restore', auth, restoreJsonParser, (req, res) => {
       // restored values for business_name, address, bank_accounts,
       // etc. To fully replace, use a separate "Reset all" action.
       DB.settings = { ...DB.settings, ...settings };
+      // Gambar dari backup (inline) menggantikan rujukan app_blobs lama;
+      // backup tanpa gambar berarti gambar dikosongkan, seperti dulu.
+      for (const kind of SETTING_IMAGE_KINDS) {
+        if (Object.prototype.hasOwnProperty.call(settings, kind + '_b64')) {
+          DB.settings[kind + '_ref'] = settings[kind + '_b64'] ? null : (settings[kind + '_ref'] || null);
+        }
+      }
     }
     save();
     res.json({
@@ -7664,7 +8498,7 @@ function buildReservationFromAIData(data) {
   const aiConflicts = findScheduleConflicts(slots);
   const aiSched = schedConf();
   if (aiConflicts.length && aiSched.mode === 'block') {
-    return { ok: false, error: 'jadwal bentrok: ' + describeConflicts(aiConflicts) };
+    return { ok: false, error: 'jadwal bentrok: ' + describeConflicts(aiConflicts, { publicView: true }) };
   }
   const blackoutSet = new Set((DB.settings && DB.settings.blackout_dates) || []);
   const blackout = slots.find((sl) => blackoutSet.has(sl.date));
@@ -8595,6 +9429,14 @@ app.post('/api/webhook/whatsapp', webhookLimiter, async (req, res) => {
   }
   // Meta requires 200 OK within 5s or it retries
   res.status(200).send('OK');
+  // Balasan AI diproses SETELAH 200 terkirim → daftarkan ke runtime
+  // (keepAlive) supaya tidak dibekukan Vercel di tengah jalan, lalu
+  // simpan (log percakapan, reservasi dari chat).
+  keepAlive(processWhatsAppWebhook(req.body).then(() => flush()).catch((e) => console.error('[wa-webhook] simpan gagal:', e && e.message)));
+});
+
+async function processWhatsAppWebhook(body) {
+  const req = { body };
   try {
     if (!DB.settings.ai_assistant_enabled) {
       console.log('[wa-webhook] AI disabled, ignoring incoming message');
@@ -8700,7 +9542,7 @@ app.post('/api/webhook/whatsapp', webhookLimiter, async (req, res) => {
     console.error('[wa-webhook] Error:', sanitizeAIError(e));
     recordAIError(e);
   }
-});
+}
 
 // ADMIN: get AI conversation logs
 app.get('/api/admin/ai/conversations', auth, (req, res) => {
@@ -9004,13 +9846,25 @@ app.use((req, res, next) => {
 });
 
 app.use((error, req, res, next) => {
+  // Respons sudah mulai terkirim → serahkan ke Express (menutup koneksi).
+  if (res.headersSent) return next(error);
   if (error instanceof multer.MulterError) {
     const message = error.code === 'LIMIT_FILE_SIZE'
       ? ('Ukuran file maksimal ' + UPLOAD_MAX_LABEL)
       : 'File tidak didukung atau jumlah file berlebih';
     return res.status(400).json({ error: message });
   }
-  console.error(error);
+  // Kesalahan dari sisi KLIEN (JSON rusak, body terlalu besar, charset aneh,
+  // dsb. dari body-parser) dulu dijawab 500 "kesalahan server".
+  const clientStatus = Number(error && (error.status || error.statusCode));
+  if (clientStatus >= 400 && clientStatus < 500) {
+    const message = error.type === 'entity.parse.failed' ? 'Format data (JSON) tidak valid'
+      : error.type === 'entity.too.large' ? 'Data yang dikirim terlalu besar'
+      : (error.expose && error.message) ? String(error.message).slice(0, 200)
+      : 'Permintaan tidak valid';
+    return res.status(clientStatus).json({ error: message });
+  }
+  console.error('[http] ' + req.method + ' ' + req.path + ':', error && error.stack ? error.stack : error);
   res.status(500).json({ error: 'Terjadi kesalahan pada server' });
 });
 

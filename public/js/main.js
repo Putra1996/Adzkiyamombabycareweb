@@ -52,7 +52,15 @@ async function loadServices() {
       // Fallback: kalau host lain diblokir (offline/CORS), coba same-origin.
       res = await fetch('/api/services');
     }
-    SERVICES_CATS = await res.json();
+    const data = await res.json();
+    // Respons error (mis. {error:...} saat 429/500) bukan daftar kategori —
+    // jangan biarkan grid crash; tampilkan pesan singkat saja.
+    if (!Array.isArray(data)) {
+      SERVICES_CATS = [];
+      grid.textContent = 'Daftar layanan belum bisa dimuat. Muat ulang halaman sebentar lagi.';
+      return;
+    }
+    SERVICES_CATS = data;
     renderServices('all');
     tabs.querySelectorAll('.cat-tab').forEach(t => {
       t.onclick = () => {
@@ -87,7 +95,7 @@ function translateCat(rawCat) {
 // Build the tabs + grid using fresh translations every time the
 // language changes (the i18n module fires the `i18n:applied` event).
 function renderServices(filter) {
-  const cats = SERVICES_CATS || [];
+  const cats = Array.isArray(SERVICES_CATS) ? SERVICES_CATS : [];
   const grid = document.getElementById('serviceGrid');
   const tabs = document.getElementById('catTabs');
   if (!grid) return;
@@ -122,12 +130,17 @@ function renderServices(filter) {
     c.items.forEach(it => {
       const card = document.createElement('div');
       card.className = 'service-card';
+      // Nama/kategori layanan berasal dari katalog (data server) — di-escape,
+      // dan tombol memakai listener (bukan onclick string) supaya nama yang
+      // memuat tanda kutip/backslash tidak bisa menyuntik atribut/skrip.
+      const escS = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
       card.innerHTML = `
-        <div class="scat">${translateCat(c.cat)}</div>
-        <h4>${it.name}</h4>
-        <div class="price">${fmtRp(it.price)} <small>${perSession}</small></div>
-        <button class="order-btn" onclick="goReserve('${it.name.replace(/'/g, "\\'")}', ${it.price})">${orderLabel} →</button>
+        <div class="scat">${escS(translateCat(c.cat))}</div>
+        <h4>${escS(it.name)}</h4>
+        <div class="price">${escS(fmtRp(it.price))} <small>${escS(perSession)}</small></div>
+        <button type="button" class="order-btn">${escS(orderLabel)} →</button>
       `;
+      card.querySelector('.order-btn').addEventListener('click', () => goReserve(it.name, it.price));
       grid.appendChild(card);
     });
   });

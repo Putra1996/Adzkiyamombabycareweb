@@ -27,7 +27,11 @@ try {
 }
 
 const settings = data.settings || {};
-const logoB64 = settings.logo_b64 || '';
+// Logo bawaan lama (1024×1280, 145 KB) diganti seed-logo.png 512 px (21 KB):
+// data.json lama yang masih menyimpannya memakai versi baru.
+const OLD_SEED_LOGO_SHA256 = '6e2c64cefedce9dbdd45dc113f8a91478013df85968ca0394d31a61b0c3debba';
+let logoB64 = settings.logo_b64 || '';
+if (logoB64 && require('crypto').createHash('sha256').update(logoB64).digest('hex') === OLD_SEED_LOGO_SHA256) logoB64 = '';
 
 // Save logo if available
 if (logoB64) {
